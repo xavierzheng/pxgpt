@@ -10,17 +10,16 @@ from .base import BaseProvider, APIResponse, TokenUsage
 class LiteLLMProvider(BaseProvider):
     """LiteLLM provider for multiple LLM services"""
     
-    # Model mappings for different providers
-    MODELS = {
-        "openai": "gpt-4-vision-preview",
-        "google": "gemini-1.5-pro-latest", 
-        "ollama": "llama3.2-vision"
-    }
-    
     def __init__(self, config, provider: str):
         super().__init__(config)
         self.llm_provider = provider
-        self.model = self.MODELS.get(provider, provider)
+        base_model = config.get_model(provider)
+        
+        # For Ollama, prepend the provider prefix required by LiteLLM
+        if provider == "ollama":
+            self.model = f"ollama/{base_model}"
+        else:
+            self.model = base_model
         
         # Set up provider-specific configuration
         self._setup_provider()
@@ -35,6 +34,10 @@ class LiteLLMProvider(BaseProvider):
             api_key = self.config.get_api_key("openai")
             if api_key:
                 litellm.api_key = api_key
+            
+            # Support custom base URL for LM Studio
+            if self.config.openai_base_url:
+                litellm.api_base = self.config.openai_base_url
         
         elif self.llm_provider == "google":
             api_key = self.config.get_api_key("google") 
@@ -102,14 +105,23 @@ class LiteLLMProvider(BaseProvider):
         # Add system message at the beginning
         full_messages = [{"role": "system", "content": combined_system}] + converted_messages
         
+        # Prepare request parameters
+        params = {
+            "model": self.model,
+            "messages": full_messages,
+            "max_tokens": self.config.max_tokens,
+            "timeout": self.config.timeout
+        }
+        
+        # GPT-5 models only support temperature=1
+        if "gpt-5" in self.model:
+            params["temperature"] = 1.0
+            print(f"## Note: GPT-5 models only support temperature=1, overriding configured temperature")
+        else:
+            params["temperature"] = self.config.temperature
+        
         # Send request
-        response = litellm.completion(
-            model=self.model,
-            messages=full_messages,
-            temperature=self.config.temperature,
-            max_tokens=self.config.max_tokens,
-            timeout=self.config.timeout
-        )
+        response = litellm.completion(**params)
         
         # Extract usage information
         usage = TokenUsage(

@@ -1,0 +1,15 @@
+You will be analyzing several images of a specific cultivar from the Brassica genus. Your task is to describe the plant morphology from all images in detail. Follow these steps:
+
+1. Analyze these plant images step by step using the provided json schema
+2. Use the rockwool cubes (2.5 cm in length, width, and height), ColorChecker, and ruler as scale reference
+3. Consider that photos are taken from different angles of the same plant under constant light conditions
+4. Be aware the photographer may have moved, resulting in backlit shots
+5. Note the plant may have been repositioned to capture different aspects
+
+<think>
+First, systematically analyze the images and record your observations of all phenotypic traits defined in the json schema. Consider lighting conditions, viewing angles, and use the rockwool cube dimensions and colorchecker for scale reference in <think> section.
+</think>
+
+<report>
+Based on your analysis, provide the complete phenotypic report following the JSON schema exactly, with all fields included in a single-line format with no whitespace into <report> section.
+</report>

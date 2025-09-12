@@ -1,21 +1,33 @@
 # PXGPT - Plant Analysis Tool
 
-A command-line tool for analyzing plant images using multiple LLM providers (Anthropic Claude, OpenAI, Google, Ollama).
+**PXGPT** (Phenotype eXplore GPT) is a command-line tool for analyzing plant images using multiple LLM providers (Anthropic Claude, OpenAI, Google, Ollama, LM Studio).
 
 ## Features
 
-- **Multiple LLM Providers**: Support for Anthropic, OpenAI, Google, and local Ollama models
+- **Multiple LLM Providers**: Support for Anthropic, OpenAI, Google, Ollama, and LM Studio
 - **Prompt Caching**: Automatic prompt caching for Anthropic (reduces costs on repeated requests)
 - **Unified Interface**: Consistent CLI across all providers
 - **Robust Error Handling**: Automatic retries with exponential backoff
 - **Structured Output**: Support for JSON schema validation
 
+## 📖 User Manual
+
+**For complete plant phenotyping workflows, advanced usage, and troubleshooting, please read the [User Manual](user_manual.md).**
+
+The user manual covers:
+- Complete plant phenotyping workflow (analyze → merge → manual schema generation → structured analysis)
+- Provider configuration and optimization
+- Best practices for prompt engineering
+- Batch processing large germplasm collections
+- Schema design using GUI interfaces (Claude.app, ChatGPT, Gemini)
+- Troubleshooting and debugging
+
 ## Installation
 
 1. Clone the repository:
 ```bash
-git clone <repository-url>
-cd PlantGPT/script/ForGitHub
+git clone https://github.com/xavierzheng/pxgpt.git
+cd pxgpt
 ```
 
 2. Install dependencies:
@@ -49,6 +61,41 @@ OLLAMA_BASE_URL=http://localhost:11434
 
 # Default provider
 DEFAULT_PROVIDER=anthropic
+```
+
+### Local Provider Setup
+
+#### Using LM Studio
+
+LM Studio provides an OpenAI-compatible API. To use it:
+
+1. **Start LM Studio** and load your preferred vision model (e.g., gemma3:12b, llama-3.2-1b-instruct)
+
+2. **Configure your .env** to point to LM Studio:
+   ```bash
+   # Point OpenAI provider to LM Studio
+   OPENAI_BASE_URL=http://localhost:1234/v1
+   OPENAI_API_KEY=lm-studio
+   OPENAI_MODEL=gemma3:12b  # Match the model you loaded in LM Studio
+   ```
+
+3. **Use with openai provider**:
+   ```bash
+   pxgpt analyze --provider openai --input-folder /path/to/images --output results.txt
+   ```
+
+**Alternative: Temporary override without .env changes:**
+```bash
+OPENAI_BASE_URL=http://localhost:1234/v1 OPENAI_API_KEY=lm-studio OPENAI_MODEL=gemma3:12b \
+pxgpt analyze --provider openai --input-folder /path/to/images --output results.txt
+```
+
+#### Using Ollama
+
+For Ollama, use the default configuration:
+```bash
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=gemma3:12b  # Or your preferred vision model
 ```
 
 ## Usage
@@ -92,6 +139,7 @@ Basic image analysis with text output.
 - `--system-prompt`: System prompt file path
 - `--prompt`: User prompt file path
 - `--provider`: LLM provider (anthropic, openai, google, ollama)
+  - Note: Use `openai` for LM Studio with custom base URL
 
 ### `pxgpt schema`
 
@@ -104,6 +152,7 @@ Structured JSON analysis with schema validation.
 - `--schema`: JSON schema file path
 - `--prompt`: User prompt file path  
 - `--provider`: LLM provider (anthropic, openai, google, ollama)
+  - Note: Use `openai` for LM Studio with custom base URL
 
 ## Providers
 
@@ -114,18 +163,24 @@ Structured JSON analysis with schema validation.
 
 ### OpenAI GPT-4 Vision
 - **Prompt Caching**: Not supported
-- **Models**: gpt-4-vision-preview
+- **Models**: gpt-5-2025-08-07
 - **Via**: LiteLLM
 
 ### Google Gemini
 - **Prompt Caching**: Not supported  
-- **Models**: gemini-1.5-pro-latest
+- **Models**: gemini-2.5-pro
 - **Via**: LiteLLM
 
 ### Ollama (Local)
 - **Prompt Caching**: Not supported
-- **Models**: llama3.2-vision (or other vision models)
+- **Models**: gemma3:12b (or other vision models)
 - **Local**: Runs on your machine
+
+### LM Studio (Local)
+- **Prompt Caching**: Not supported
+- **Models**: Any model you load (gemma3:12b, etc.)
+- **Local**: Runs on your machine
+- **Setup**: Use OpenAI provider with custom base URL
 
 ## Error Handling
 
@@ -135,14 +190,6 @@ The tool includes robust error handling:
 - **Connection Errors**: Exponential backoff with jitter
 - **File Errors**: Clear error messages for missing/unreadable files
 - **API Errors**: Provider-specific error handling
-
-## Migration from Original Scripts
-
-The original scripts are preserved:
-- `AskClaude_001_each.py` → `pxgpt analyze`
-- `AskClaude_004_apply_schema.py` → `pxgpt schema`
-
-Both maintain the same functionality but with improved error handling and multi-provider support.
 
 ## Development
 
@@ -154,6 +201,10 @@ pxgpt/
 ├── commands/       # CLI commands
 └── main.py         # CLI entry point
 ```
+
+## Documentation
+
+For comprehensive usage instructions, workflow examples, and troubleshooting, see the **[User Manual](user_manual.md)**.
 
 ## License
 

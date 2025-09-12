@@ -9,7 +9,9 @@ from .base import BaseProvider, APIResponse, TokenUsage
 class AnthropicProvider(BaseProvider):
     """Anthropic provider with caching support"""
     
-    MODEL_NAME = "claude-3-7-sonnet-20250219"
+    def __init__(self, config):
+        super().__init__(config)
+        self.model_name = config.get_model("anthropic")
     
     @property
     def provider_name(self) -> str:
@@ -31,7 +33,7 @@ class AnthropicProvider(BaseProvider):
         try:
             system_messages = self._build_system_messages(system_prompt, schema)
             count = self.client.beta.messages.count_tokens(
-                model=self.MODEL_NAME,
+                model=self.model_name,
                 system=system_messages,
                 messages=messages
             )
@@ -66,7 +68,7 @@ class AnthropicProvider(BaseProvider):
         
         # Send request
         response = self.client.messages.create(
-            model=self.MODEL_NAME,
+            model=self.model_name,
             max_tokens=self.config.max_tokens,
             temperature=self.config.temperature,
             system=system_messages,
@@ -83,6 +85,7 @@ class AnthropicProvider(BaseProvider):
         
         # Print usage stats
         print(f"## Request ID: {response._request_id}")
+        print(f"## Model: {self.model_name}")
         print(f"## cache_creation_input_tokens: {usage.cache_creation_tokens}")
         print(f"## cache_read_input_tokens: {usage.cache_read_tokens}")
         print(f"## Actual input tokens: {usage.input_tokens}")
@@ -92,7 +95,7 @@ class AnthropicProvider(BaseProvider):
             content=response.content[0].text,
             usage=usage,
             request_id=response._request_id,
-            model=self.MODEL_NAME
+            model=self.model_name
         )
     
     def _is_rate_limit_error(self, error: Exception) -> bool:
