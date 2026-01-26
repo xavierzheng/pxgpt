@@ -1,4 +1,4 @@
-# PXGPT User Manual - Plant Phenotyping with Large Language Models
+# pxGPT User Manual - Plant Phenotyping with Large Language Models
 
 ## Table of Contents
 
@@ -15,18 +15,18 @@
 
 ## Introduction
 
-**PXGPT** (Phenotype eXplore GPT) is a command-line tool designed for large-scale plant phenotyping using Large Language Models (LLMs). It enables researchers to automatically analyze plant images and extract both descriptive and structured phenotypic data from germplasm collections.
+**pxGPT** (Phenotype eXplorer GPT) is a command-line tool designed for large-scale plant phenotyping using Large Language Models (LLMs). It enables researchers to automatically analyze plant images and extract both descriptive and structured phenotypic data from germplasm collections.
 
 ### What is Plant Phenotyping?
 
-Plant phenotyping is the comprehensive assessment of plant traits such as growth, development, tolerance, resistance, architecture, physiology, ecology, yield, and the basic functional units of a plant. PXGPT automates this process by:
+Plant phenotyping is the comprehensive assessment of plant traits such as growth, development, tolerance, resistance, architecture, physiology, ecology, yield, and the basic functional units of a plant. pxGPT automates this process by:
 
 1. **Analyzing plant images** with natural language descriptions
 2. **Merging descriptions** from multiple samples
 3. **Generating JSON schemas** that capture phenotypic variation
 4. **Extracting structured data** using validated schemas
 
-### Why Use PXGPT?
+### Why Use pxGPT?
 
 - **Scale**: Process hundreds or thousands of plant images automatically
 - **Consistency**: Standardized analysis across your entire germplasm collection
@@ -479,7 +479,7 @@ Error: CUDA out of memory
 
 Enable verbose logging:
 ```bash
-export PXGPT_DEBUG=1
+export pxGPT_DEBUG=1
 pxgpt analyze --verbose --input-folder /data/images --output results.txt
 ```
 
@@ -596,18 +596,18 @@ df = pd.json_normalize(data)
 
 When reporting bugs, please include:
 - Complete error message
-- PXGPT version
+- pxGPT version
 - Provider and model used  
 - Sample images (if possible)
 - Configuration (remove API keys)
 
 ### Citation
 
-If you use PXGPT in your research, please cite:
+If you use pxGPT in your research, please cite:
 ```
 [Your citation format here]
 ```
 
 ---
 
-**PXGPT** - Empowering plant research through automated phenotyping with Large Language Models.
+**pxGPT** - Empowering plant research through automated phenotyping with Large Language Models.

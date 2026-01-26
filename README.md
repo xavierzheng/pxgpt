@@ -1,6 +1,6 @@
-# PXGPT - Plant Analysis Tool
+# pxGPT - Plant Analysis Tool
 
-**PXGPT** (Phenotype eXplore GPT) is a command-line tool for analyzing plant images using multiple LLM providers (Anthropic Claude, OpenAI, Google, Ollama, LM Studio).
+**pxGPT** (Phenotype eXplorer GPT) is a command-line tool for analyzing plant images using multiple LLM providers (Anthropic Claude, OpenAI, Google, Ollama, LM Studio).
 
 ## Features
 
@@ -9,6 +9,7 @@
 - **Unified Interface**: Consistent CLI across all providers
 - **Robust Error Handling**: Automatic retries with exponential backoff
 - **Structured Output**: Support for JSON schema validation
+- **Example of master json schema**: To more easily understand the structure of master json schema, see the flattern example [Example_master_schema.tsv](Example_master_schema.tsv)
 
 ## 📖 User Manual
 
