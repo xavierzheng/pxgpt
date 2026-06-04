@@ -1,211 +1,199 @@
 # pxGPT - Plant Analysis Tool
 
-**pxGPT** (Phenotype eXplorer GPT) is a command-line tool for analyzing plant images using multiple LLM providers (Anthropic Claude, OpenAI, Google, Ollama, LM Studio).
+**pxGPT** (Phenotype eXplorer GPT) is a command-line tool for large-scale plant phenotyping using multiple LLM providers (Anthropic Claude, OpenAI, Google, Ollama, LM Studio).
 
 ## Features
 
-- **Multiple LLM Providers**: Support for Anthropic, OpenAI, Google, Ollama, and LM Studio
-- **Prompt Caching**: Automatic prompt caching for Anthropic (reduces costs on repeated requests)
-- **Unified Interface**: Consistent CLI across all providers
-- **Robust Error Handling**: Automatic retries with exponential backoff
-- **Structured Output**: Support for JSON schema validation
-- **Example of master json schema**: To more easily understand the structure of master json schema, see the flattern example [Example_master_schema.tsv](Example_master_schema.tsv)
+- **Batch API** (Stage 1 & 3): submit hundreds of plant lines in a single API call; fire-and-forget with checkpoint-based result retrieval
+- **Files API**: upload each image once, reuse the same `file_id` across Stage 1 and Stage 3 — no re-uploading 10 k images
+- **Adaptive thinking** (Stage 3): native `output_config.effort` on claude-sonnet-4-6; temperature guard enforced automatically
+- **Native structured output** (Stage 3): schema passed directly as `output_config.format`; no regex or tag parsing
+- **Schema normalizer**: one command adds `additionalProperties: false` and `required` arrays to every object in your schema
+- **Multiple providers**: Anthropic, OpenAI, Google, Ollama, LM Studio
+- **Prompt caching**: automatic for Anthropic (reduces costs on repeated system prompts)
+- **Robust error handling**: exponential backoff, per-request failure isolation, crash-safe manifest
+- **Example master schema**: see [Example_master_schema.tsv](Example_master_schema.tsv) for the flattened field reference
+
+## Pipeline overview
+
+| Stage | Automated? | Command |
+|-------|-----------|---------|
+| 1 — per-line descriptions | ✅ | `pxgpt describe-batch` |
+| 2 — schema synthesis | Manual (human-in-the-loop) | GUI session with an LLM |
+| 3 — structured phenotyping | ✅ | `pxgpt phenotype-batch` |
 
 ## 📖 User Manual
 
-**For complete plant phenotyping workflows, advanced usage, and troubleshooting, please read the [User Manual](user_manual.md).**
+**For complete workflows, advanced usage, and troubleshooting see the [User Manual](user_manual.md).**
 
-The user manual covers:
-- Complete plant phenotyping workflow (analyze → merge → manual schema generation → structured analysis)
-- Provider configuration and optimization
-- Best practices for prompt engineering
-- Batch processing large germplasm collections
-- Schema design using GUI interfaces (Claude.app, ChatGPT, Gemini)
-- Troubleshooting and debugging
+---
 
 ## Installation
 
-1. Clone the repository:
 ```bash
 git clone https://github.com/xavierzheng/pxgpt.git
 cd pxgpt
-```
-
-2. Install dependencies:
-```bash
 pip install -r requirements.txt
-```
-
-3. Install the package:
-```bash
 pip install -e .
-```
-
-4. Set up your environment:
-```bash
-cp .env.example .env
-# Edit .env with your API keys
+cp .env.example .env   # then fill in your API keys
 ```
 
 ## Configuration
 
-Copy `.env.example` to `.env` and configure your API keys:
+Key variables in `.env`:
 
 ```bash
-# Required: At least one provider API key
-ANTHROPIC_API_KEY=your_anthropic_key_here
-OPENAI_API_KEY=your_openai_key_here
-GOOGLE_API_KEY=your_google_key_here
-
-# For local Ollama
-OLLAMA_BASE_URL=http://localhost:11434
-
-# Default provider
+ANTHROPIC_API_KEY=your_key_here
 DEFAULT_PROVIDER=anthropic
+
+# Model (default already set to the current recommended model)
+ANTHROPIC_MODEL=claude-sonnet-4-6
+
+# Batch token budgets
+STAGE1_MAX_TOKENS=16384   # raise to 65536 for long descriptions
+STAGE3_MAX_TOKENS=16384
+
+# Adaptive thinking effort for Stage 3 (low/medium/high/xhigh/max, or "" to disable)
+STAGE3_EFFORT=medium
+
+# Set true to allow up to 300 k output tokens per response in Stage 1 batches
+BATCH_300K_OUTPUT=false
+
+# Parallel image upload threads
+UPLOAD_CONCURRENCY=10
 ```
 
-### Local Provider Setup
+### Local providers (LM Studio / Ollama)
 
-#### Using LM Studio
-
-LM Studio provides an OpenAI-compatible API. To use it:
-
-1. **Start LM Studio** and load your preferred vision model (e.g., gemma3:12b, llama-3.2-1b-instruct)
-
-2. **Configure your .env** to point to LM Studio:
-   ```bash
-   # Point OpenAI provider to LM Studio
-   OPENAI_BASE_URL=http://localhost:1234/v1
-   OPENAI_API_KEY=lm-studio
-   OPENAI_MODEL=gemma3:12b  # Match the model you loaded in LM Studio
-   ```
-
-3. **Use with openai provider**:
-   ```bash
-   pxgpt analyze --provider openai --input-folder /path/to/images --output results.txt
-   ```
-
-**Alternative: Temporary override without .env changes:**
 ```bash
-OPENAI_BASE_URL=http://localhost:1234/v1 OPENAI_API_KEY=lm-studio OPENAI_MODEL=gemma3:12b \
-pxgpt analyze --provider openai --input-folder /path/to/images --output results.txt
-```
+# LM Studio (OpenAI-compatible)
+OPENAI_BASE_URL=http://localhost:1234/v1
+OPENAI_API_KEY=lm-studio
+OPENAI_MODEL=gemma3:12b
 
-#### Using Ollama
-
-For Ollama, use the default configuration:
-```bash
+# Ollama
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=gemma3:12b  # Or your preferred vision model
+OLLAMA_MODEL=gemma3:12b
 ```
+
+---
 
 ## Usage
 
-### Basic Analysis
+### Batch workflow (recommended for large collections)
 
-Analyze images with text output:
+**Image layout**: one subdirectory per plant line inside a root folder; the subdir name is used as the line ID.
+
+```
+images/
+├── s0001/
+│   ├── angle1.jpg
+│   └── angle2.jpg
+├── s0002/
+│   └── ...
+```
+
+**Step 1 — normalize your schema** (one-time, in-place):
+```bash
+pxgpt normalize-schema --schema prompts/phenotype_schema.json
+```
+
+**Step 2 — Stage 1 descriptions**:
+```bash
+pxgpt describe-batch \
+  --input-dir ./images \
+  --output descriptions.txt \
+  --system-prompt prompts/phenotyping_system.txt \
+  --prompt prompts/describe_plant.txt
+# Prints batch ID and saves checkpoint_<batch_id>.json
+```
+
+**Step 3 — Stage 3 structured phenotyping** (can run concurrently with Stage 1; images are already uploaded):
+```bash
+pxgpt phenotype-batch \
+  --input-dir ./images \
+  --schema prompts/phenotype_schema.json \
+  --output phenotypes/ \
+  --system-prompt prompts/phenotyping_system_schema.txt \
+  --prompt prompts/extract_traits.txt
+```
+
+**Step 4 — retrieve results** (once the Anthropic batch finishes, usually within a few hours):
+```bash
+pxgpt fetch-results --checkpoint checkpoint_<batch_id>.json
+```
+
+### Single-sample commands (for testing / small runs)
 
 ```bash
+# Plain text description
 pxgpt analyze \
-  --input-folder /path/to/images \
-  --output results.txt \
-  --system-prompt system.txt \
-  --prompt user_prompt.txt \
-  --provider anthropic
-```
+  --input-folder images/s0001 \
+  --output s0001_desc.txt \
+  --system-prompt prompts/phenotyping_system.txt \
+  --prompt prompts/describe_plant.txt
 
-### Structured Analysis
-
-Generate structured JSON output with schema validation:
-
-```bash
+# Structured JSON (uses native structured output for Anthropic)
 pxgpt schema \
-  --input-folder /path/to/images \
-  --output results.json \
-  --system-prompt system.txt \
-  --schema plant_schema.json \
-  --prompt user_prompt.txt \
-  --provider anthropic
+  --input-folder images/s0001 \
+  --output s0001.json \
+  --system-prompt prompts/phenotyping_system_schema.txt \
+  --schema prompts/phenotype_schema.json \
+  --prompt prompts/extract_traits.txt
 ```
+
+---
 
 ## Commands
 
-### `pxgpt analyze`
+| Command | Purpose |
+|---------|---------|
+| `pxgpt describe-batch` | Stage 1: upload images via Files API, submit batch for descriptions |
+| `pxgpt phenotype-batch` | Stage 3: reuse file_ids, submit batch with structured output |
+| `pxgpt fetch-results` | Retrieve results for any pending batch from a checkpoint file |
+| `pxgpt normalize-schema` | Add `additionalProperties: false` + `required` to all objects in a schema |
+| `pxgpt analyze` | Single-folder text description (sync, all providers) |
+| `pxgpt schema` | Single-folder structured JSON (sync, all providers) |
 
-Basic image analysis with text output.
+Run `pxgpt <command> --help` for full argument details.
 
-**Options:**
-- `--input-folder`: Path to folder containing .jpg images
-- `--output`: Output file path  
-- `--system-prompt`: System prompt file path
-- `--prompt`: User prompt file path
-- `--provider`: LLM provider (anthropic, openai, google, ollama)
-  - Note: Use `openai` for LM Studio with custom base URL
-
-### `pxgpt schema`
-
-Structured JSON analysis with schema validation.
-
-**Options:**
-- `--input-folder`: Path to folder containing .jpg images
-- `--output`: Output file path
-- `--system-prompt`: System prompt file path
-- `--schema`: JSON schema file path
-- `--prompt`: User prompt file path  
-- `--provider`: LLM provider (anthropic, openai, google, ollama)
-  - Note: Use `openai` for LM Studio with custom base URL
+---
 
 ## Providers
 
-### Anthropic Claude
-- **Prompt Caching**: Enabled (reduces costs for repeated schema/system prompts)
-- **Models**: claude-3-7-sonnet-20250219
-- **Token Estimation**: Supported
+| Provider | Caching | Batch API | Notes |
+|----------|---------|-----------|-------|
+| **Anthropic** (default) | ✅ | ✅ | Native thinking, structured output, Files API |
+| **OpenAI** | — | — | Via LiteLLM; also handles LM Studio |
+| **Google Gemini** | — | — | Via LiteLLM |
+| **Ollama** | — | — | Local; no API cost |
 
-### OpenAI GPT-4 Vision
-- **Prompt Caching**: Not supported
-- **Models**: gpt-5-2025-08-07
-- **Via**: LiteLLM
+---
 
-### Google Gemini
-- **Prompt Caching**: Not supported  
-- **Models**: gemini-2.5-pro
-- **Via**: LiteLLM
+## Project structure
 
-### Ollama (Local)
-- **Prompt Caching**: Not supported
-- **Models**: gemma3:12b (or other vision models)
-- **Local**: Runs on your machine
-
-### LM Studio (Local)
-- **Prompt Caching**: Not supported
-- **Models**: Any model you load (gemma3:12b, etc.)
-- **Local**: Runs on your machine
-- **Setup**: Use OpenAI provider with custom base URL
-
-## Error Handling
-
-The tool includes robust error handling:
-
-- **Rate Limits**: Automatic retry with configurable delays
-- **Connection Errors**: Exponential backoff with jitter
-- **File Errors**: Clear error messages for missing/unreadable files
-- **API Errors**: Provider-specific error handling
-
-## Development
-
-Project structure:
 ```
 pxgpt/
-├── core/           # Common utilities
-├── providers/      # LLM provider implementations  
-├── commands/       # CLI commands
-└── main.py         # CLI entry point
+├── core/
+│   ├── config.py          # All config with env-var overrides
+│   ├── batch_utils.py     # Temperature guard, poll, result writers
+│   ├── files_manager.py   # Files API upload + manifest
+│   ├── schema_utils.py    # JSON schema normalizer
+│   ├── image_utils.py     # Base64 + file_id content builders
+│   └── file_utils.py      # File I/O helpers
+├── providers/
+│   ├── anthropic_provider.py
+│   ├── litellm_provider.py
+│   └── base.py
+├── commands/
+│   ├── describe.py        # describe-batch
+│   ├── phenotype.py       # phenotype-batch
+│   ├── fetch_results.py   # fetch-results
+│   ├── normalize_schema.py
+│   ├── analyze.py
+│   └── schema.py
+└── main.py
 ```
-
-## Documentation
-
-For comprehensive usage instructions, workflow examples, and troubleshooting, see the **[User Manual](user_manual.md)**.
 
 ## License
 

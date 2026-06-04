@@ -1,4 +1,4 @@
-# pxGPT User Manual - Plant Phenotyping with Large Language Models
+# pxGPT User Manual — Plant Phenotyping with Large Language Models
 
 ## Table of Contents
 
@@ -7,32 +7,33 @@
 3. [Complete Workflow](#complete-workflow)
 4. [Command Reference](#command-reference)
 5. [Provider Configuration](#provider-configuration)
-6. [Best Practices](#best-practices)
-7. [Troubleshooting](#troubleshooting)
-8. [Advanced Usage](#advanced-usage)
+6. [Schema Design](#schema-design)
+7. [Best Practices](#best-practices)
+8. [Troubleshooting](#troubleshooting)
+9. [Advanced Usage](#advanced-usage)
 
 ---
 
 ## Introduction
 
-**pxGPT** (Phenotype eXplorer GPT) is a command-line tool designed for large-scale plant phenotyping using Large Language Models (LLMs). It enables researchers to automatically analyze plant images and extract both descriptive and structured phenotypic data from germplasm collections.
+**pxGPT** (Phenotype eXplorer GPT) is a command-line tool for large-scale plant phenotyping using Large Language Models. It processes germplasm collections of hundreds of plant lines with thousands of images through a two-stage automated pipeline, with a deliberate human-in-the-loop step between stages for schema design.
 
-### What is Plant Phenotyping?
+### Pipeline overview
 
-Plant phenotyping is the comprehensive assessment of plant traits such as growth, development, tolerance, resistance, architecture, physiology, ecology, yield, and the basic functional units of a plant. pxGPT automates this process by:
+| Stage | Automated? | Description |
+|-------|-----------|-------------|
+| **1 — Descriptions** | ✅ `describe-batch` | Feed multi-angle images per line → rich descriptive text |
+| **2 — Schema synthesis** | Manual | Paste Stage 1 output into a conversational LLM session; design a JSON schema that captures the observed variation |
+| **3 — Structured phenotyping** | ✅ `phenotype-batch` | Feed the same images + your schema → validated JSON per line |
 
-1. **Analyzing plant images** with natural language descriptions
-2. **Merging descriptions** from multiple samples
-3. **Generating JSON schemas** that capture phenotypic variation
-4. **Extracting structured data** using validated schemas
+Stages 1 and 3 reference the **same uploaded images**: each image is uploaded once via the Files API and its `file_id` is stored in a manifest, so re-running or adding Stage 3 after Stage 1 never re-uploads anything.
 
-### Why Use pxGPT?
+### Why pxGPT?
 
-- **Scale**: Process hundreds or thousands of plant images automatically
-- **Consistency**: Standardized analysis across your entire germplasm collection
-- **Flexibility**: Support for multiple LLM providers (Anthropic, OpenAI, Google, Ollama, LM Studio)
-- **Structured Output**: Generate both human-readable descriptions and machine-readable JSON
-- **Cost Optimization**: Automatic prompt caching for Anthropic Claude reduces API costs
+- **Scale**: process hundreds of lines / ~10 000 images in a single Batch API submission
+- **Cost**: images uploaded once; prompt caching on repeated system prompts; 50–90 % cache savings typical
+- **Accuracy**: adaptive thinking (`output_config.effort`) on Stage 3 improves structured extraction quality
+- **Reliability**: fire-and-forget batches with checkpoint files; per-request failure isolation; crash-safe manifest
 
 ---
 
@@ -41,573 +42,571 @@ Plant phenotyping is the comprehensive assessment of plant traits such as growth
 ### 1. Installation
 
 ```bash
-# Clone the repository
-git clone <repository-url>
-cd PlantGPT/script/ForGitHub
-
-# Install dependencies
+git clone https://github.com/xavierzheng/pxgpt.git
+cd pxgpt
 pip install -r requirements.txt
-
-# Install the package
 pip install -e .
 ```
 
 ### 2. Configuration
 
 ```bash
-# Copy environment template
 cp .env.example .env
-
-# Edit .env with your API keys
-vim .env
+vim .env          # add ANTHROPIC_API_KEY at minimum
 ```
 
-If you want to use commercial LLM provider: At least one API key
+### 3. Image layout
+
+Create one subdirectory per plant line inside a root folder. The subdirectory name becomes the line ID (used as `custom_id` in the batch and as the output filename in Stage 3):
+
+```
+images/
+├── s0001/
+│   ├── top_view.jpg
+│   ├── side_left.jpg
+│   └── roots.jpg
+├── s0002/
+│   └── ...
+└── s0N/
+    └── ...
+```
+
+Supported image formats: `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`
+
+### 4. Normalize your schema (one-time)
+
+Before the first Stage 3 run, normalize your JSON schema to meet the Anthropic structured-output requirements:
+
 ```bash
-ANTHROPIC_API_KEY=your_anthropic_key_here
-OPENAI_API_KEY=your_openai_key_here  
-GOOGLE_API_KEY=your_google_key_here
+pxgpt normalize-schema --schema prompts/phenotype_schema.json
 ```
 
-### 3. First Analysis
-
-```bash
-# Analyze a folder of plant images
-pxgpt analyze \
-  --input-folder /path/to/plant/images \
-  --output plant_descriptions.txt \
-  --system-prompt system_prompt.txt \
-  --prompt user_prompt.txt \
-  --provider anthropic
-```
+This adds `additionalProperties: false` and an empty `required` array to every object node, and strips the `format` keyword (e.g. `"format": "date"`) which is not supported by the API.
 
 ---
 
 ## Complete Workflow
 
-### Overview
+### Stage 1 — Batch descriptions
 
-The complete plant phenotyping workflow consists of four main steps:
-
-```
-Images → [analyze] → Descriptions → [merge] → Combined Report → [schema] → JSON Template → [analyze with schema] → Structured Data
-```
-
-### Step 1: Initial Analysis
-
-Generate descriptive text for each plant image:
+Submit all plant lines in one batch call. Images are uploaded to the Files API first (skipping any already in the manifest):
 
 ```bash
-pxgpt analyze \
-  --input-folder germplasm_images/cultivar_001 \
-  --output results/cultivar_001_description.txt \
+pxgpt describe-batch \
+  --input-dir ./images \
+  --output descriptions.txt \
   --system-prompt prompts/phenotyping_system.txt \
   --prompt prompts/describe_plant.txt \
-  --provider anthropic
+  --manifest file_manifest.json
 ```
 
-**Input**: 
-- Folder containing `.jpg` plant images
-- System prompt defining the analysis context
-- User prompt asking for specific phenotypic traits
+**What happens:**
+1. Discovers all subdirectories in `--input-dir`
+2. Uploads new images via `client.beta.files` (parallel, up to `UPLOAD_CONCURRENCY` threads); skips already-uploaded files found in `--manifest`
+3. Submits a Message Batch (one request per plant line)
+4. Saves `checkpoint_<batch_id>.json` and exits immediately (fire-and-forget)
 
-**Output**: 
-- Text file with `<report>...</report>` tagged descriptions
+**Output format** (`descriptions.txt`):
+```
+### s0001
 
-### Step 2: Merge Descriptions
+[Rich morphological description of the plant...]
 
-Combine descriptions from multiple cultivars/samples:
+---
+
+### s0002
+
+[...]
+```
+
+This format is designed to be copy-pasted directly into a conversational LLM session for Stage 2.
+
+**Retrieve results when the batch finishes** (check status on the Anthropic console or just run):
+```bash
+pxgpt fetch-results --checkpoint checkpoint_<batch_id>.json
+```
+
+**Optional: block and poll** (for small test batches):
+```bash
+pxgpt describe-batch ... --wait
+```
+
+---
+
+### Stage 2 — Schema synthesis (manual, human-in-the-loop)
+
+This stage is intentionally kept manual. Open a conversational LLM session (Claude.ai with extended thinking recommended) and paste the contents of `descriptions.txt`.
+
+**Prompt template:**
+
+```
+You are a professional botanist and data scientist. Based on the phenotyping
+reports below, generate a comprehensive JSON schema covering all possible
+phenotypic descriptions for this Brassica collection.
+
+Requirements:
+- Use ontology-like terms
+- Transform qualitative traits to enum with all observed values
+- Standardize units for quantitative traits
+- Include every trait observed in at least one cultivar — nothing is too rare
+- For every object node: include additionalProperties: false and a required array
+
+[Paste descriptions.txt content here]
+```
+
+**Iterate** until the schema covers all observed variation. Save the final schema to a file (e.g. `prompts/phenotype_schema.json`), then normalize it:
 
 ```bash
-# Create list of all sample names
-ls germplasm_images/ > sample_names.txt
-
-# Merge all descriptions
-for i in $(cat sample_names.txt); do
-    echo "# This is cultivar ${i}" >> combined_phenotypes.txt
-    python extract_report_tags.py results/${i}_description.txt >> combined_phenotypes.txt
-    echo " " >> combined_phenotypes.txt
-    echo " " >> combined_phenotypes.txt
-done
+pxgpt normalize-schema --schema prompts/phenotype_schema.json
 ```
 
-**Purpose**: Create a comprehensive document containing all phenotypic variation observed across your germplasm collection.
+---
 
-### Step 3: Generate JSON Schema (Manual GUI Approach)
+### Stage 3 — Batch structured phenotyping
 
-**Why Use GUI Instead of CLI:** Creating comprehensive phenotyping schemas requires iterative refinement and deep analysis of phenotypic variation. Using GUI interfaces like claude.app, ChatGPT, or Gemini allows for:
-- Extended thinking mode for complex schema design
-- Multiple conversation rounds to build comprehensive coverage
-- Real-time refinement and clarification
-- Better handling of edge cases and rare phenotypes
-
-**Recommended Approach:**
-
-1. **Prepare your input:**
-   - Use the `combined_phenotypes.txt` file from Step 2
-   - This contains all phenotypic variation across your germplasm collection
-
-2. **Choose your platform:**
-   - **Claude.app** (Recommended): Enable extended thinking for deep analysis
-   - **ChatGPT**: Use GPT-4 or newer for best results
-   - **Gemini**: Google's AI platform
-
-3. **Start the conversation with this prompt:**
-
-```
-You are a professional botanist and data scientist. Your task is based on the provided document, which contains phenotyping reports of individual cultivars, to generate a comprehensive JSON schema to cover all possible phenotypic descriptions. This will serve as the standard template for future vision-based LLM plant phenotyping, so use ontology-like terms and be as comprehensive as possible. 
-
-Do not ignore any feature found in only one cultivar. They are all critical. For qualitative descriptions, transform them into ordinal catalog ontology using enum. For quantitative descriptions, standardize units. You have to list all possibilities in as much detail as possible.
-
-[Paste your combined_phenotypes.txt content here]
-
-Please use extended thinking to analyze all the phenotypic variation and create a comprehensive JSON schema.
-```
-
-4. **Iterative refinement:**
-   - Review the generated schema carefully
-   - Ask for specific additions: "Add more detailed leaf shape categories"
-   - Request clarifications: "Standardize all measurement units to metric"
-   - Build on previous responses: "Expand the stress indicators section"
-
-5. **Save the final schema:**
-   - Copy the final JSON schema to a file (e.g., `phenotype_schema.json`)
-   - Validate JSON syntax using online validators
-   - Test with a small dataset before full deployment
-
-### Step 4: Structured Analysis
-
-Apply the generated schema to extract structured phenotypic data:
+Submit all plant lines for structured extraction. The same manifest from Stage 1 is reused, so no images are re-uploaded:
 
 ```bash
-pxgpt schema \
-  --input-folder germplasm_images/cultivar_001 \
-  --output structured_data/cultivar_001.json \
+pxgpt phenotype-batch \
+  --input-dir ./images \
+  --schema prompts/phenotype_schema.json \
+  --output phenotypes/ \
   --system-prompt prompts/phenotyping_system_schema.txt \
-  --schema phenotype_schema.json \
   --prompt prompts/extract_traits.txt \
-  --provider anthropic
+  --manifest file_manifest.json
 ```
 
-**Output**: Validated JSON with structured phenotypic measurements and classifications.
+**API features used:**
+- `output_config.effort = "medium"` (configurable via `STAGE3_EFFORT`) — adaptive thinking
+- `output_config.format = {"type": "json_schema", "schema": …}` — native structured output; the schema grammar is compiled once and cached across all requests in the batch
+- Temperature is **not sent** when effort is set (the API enforces this; the guard is automatic)
+
+**Retrieve results:**
+```bash
+pxgpt fetch-results --checkpoint checkpoint_<batch_id>.json
+```
+
+**Output**: one `{line_id}.json` file per plant line in the `--output` directory. If JSON parsing fails for a line, a `{line_id}.err.txt` file is written instead for manual inspection.
+
+---
+
+### Downstream analysis
+
+**Load all JSON files into a single DataFrame (Python):**
+
+```python
+import json
+import pandas as pd
+from pathlib import Path
+
+records = []
+for f in sorted(Path("phenotypes/").glob("*.json")):
+    data = json.loads(f.read_text())
+    data["_line_id"] = f.stem
+    records.append(pd.json_normalize(data))
+
+df = pd.concat(records, ignore_index=True)
+```
+
+**R:**
+```r
+library(jsonlite)
+library(dplyr)
+
+files <- list.files("phenotypes/", pattern = "\\.json$", full.names = TRUE)
+df <- bind_rows(lapply(files, function(f) {
+  d <- fromJSON(f, flatten = TRUE)
+  d$line_id <- tools::file_path_sans_ext(basename(f))
+  d
+}))
+```
 
 ---
 
 ## Command Reference
 
+### `pxgpt describe-batch`
+
+Stage 1 batch description.
+
+```
+pxgpt describe-batch \
+  --input-dir PATH \
+  --output FILE \
+  --system-prompt FILE \
+  --prompt FILE \
+  [--manifest FILE]      # default: file_manifest.json
+  [--wait]               # poll until done; default is fire-and-forget
+```
+
+Output file: grouped plain text, one `### {line_id}` section per plant line.
+
+---
+
+### `pxgpt phenotype-batch`
+
+Stage 3 batch structured phenotyping.
+
+```
+pxgpt phenotype-batch \
+  --input-dir PATH \
+  --schema FILE \
+  --output DIR \
+  --system-prompt FILE \
+  --prompt FILE \
+  [--manifest FILE]      # default: file_manifest.json
+  [--wait]
+```
+
+Output directory: one `{line_id}.json` per plant line; `{line_id}.err.txt` for parse failures.
+
+---
+
+### `pxgpt fetch-results`
+
+Retrieve results for any pending or completed batch.
+
+```
+pxgpt fetch-results \
+  --checkpoint FILE \    # checkpoint_<batch_id>.json written at submit time
+  [--output PATH]        # override the output path stored in the checkpoint
+```
+
+Prints batch status. If the batch is still processing, exits with a message. If ended, writes results and prints a token-usage summary.
+
+---
+
+### `pxgpt normalize-schema`
+
+Prepare a JSON schema for Anthropic structured outputs.
+
+```
+pxgpt normalize-schema \
+  --schema FILE \
+  [--output FILE]        # default: overwrite in-place
+```
+
+Changes applied:
+- Adds `additionalProperties: false` to every `object` node
+- Adds `required: []` to every object that has a `properties` dict but no `required` array
+- Strips `"format"` keyword (e.g. `"format": "date"`) — not supported by the API
+- Strips the root `$schema` meta-key
+
+---
+
 ### `pxgpt analyze`
 
-Basic image analysis with descriptive text output.
+Single-folder text description (sync, all providers). Useful for testing prompts on one plant line.
 
-**Syntax:**
-```bash
-pxgpt analyze --input-folder PATH --output FILE --prompt FILE --system-prompt FILE [OPTIONS]
 ```
-
-**Required Arguments:**
-- `--input-folder PATH`: Directory containing `.jpg` images
-- `--output FILE`: Output file path for results
-- `--prompt FILE`: User prompt file
-- `--system-prompt FILE`: System prompt file
-
-**Optional Arguments:**
-- `--provider {anthropic,openai,google,ollama}`: LLM provider (default: anthropic)
-
-**Example:**
-```bash
 pxgpt analyze \
-  --input-folder /data/wheat_images \
-  --output wheat_analysis.txt \
-  --system-prompt system_wheat.txt \
-  --prompt describe_morphology.txt \
-  --provider anthropic
+  --input-folder PATH \
+  --output FILE \
+  --system-prompt FILE \
+  --prompt FILE \
+  [--provider {anthropic,openai,google,ollama}]
 ```
+
+---
 
 ### `pxgpt schema`
 
-Structured analysis with JSON schema validation.
+Single-folder structured JSON output (sync, all providers). For Anthropic, uses native `output_config.format`; for other providers, appends the schema to the system prompt.
 
-**Syntax:**
-```bash
-pxgpt schema --input-folder PATH --output FILE --prompt FILE --system-prompt FILE --schema FILE [OPTIONS]
 ```
-
-**Required Arguments:**
-- `--input-folder PATH`: Directory containing `.jpg` images  
-- `--output FILE`: Output JSON file path
-- `--prompt FILE`: User prompt file
-- `--system-prompt FILE`: System prompt file
-- `--schema FILE`: JSON schema file for validation
-
-**Optional Arguments:**
-- `--provider {anthropic,openai,google,ollama}`: LLM provider (default: anthropic)
-
-**Example:**
-```bash
 pxgpt schema \
-  --input-folder /data/rice_images \
-  --output rice_phenotypes.json \
-  --system-prompt system_rice.txt \
-  --prompt extract_traits.txt \
-  --schema rice_schema.json \
-  --provider anthropic
+  --input-folder PATH \
+  --output FILE \
+  --system-prompt FILE \
+  --schema FILE \
+  --prompt FILE \
+  [--provider {anthropic,openai,google,ollama}]
 ```
 
 ---
 
 ## Provider Configuration
 
-### Anthropic Claude (Recommended for Research)
+### Anthropic Claude (recommended)
 
-**Advantages:**
-- Prompt caching reduces costs for repeated analysis
-- Excellent vision capabilities
-- Reliable structured output
-
-**Configuration:**
 ```bash
 ANTHROPIC_API_KEY=your_key_here
-ANTHROPIC_MODEL=claude-3-7-sonnet-20250219
+ANTHROPIC_MODEL=claude-sonnet-4-6
+
+# Thinking effort for Stage 3 and the schema command
+STAGE3_EFFORT=medium   # low | medium | high | xhigh | max | ""
+
+# Token budgets
+STAGE1_MAX_TOKENS=16384   # up to 65536 on sync; up to 300000 with BATCH_300K_OUTPUT=true
+STAGE3_MAX_TOKENS=16384
 ```
 
-### OpenAI GPT-4/GPT-5
+**Prompt caching**: the system prompt is cached with `cache_control: ephemeral` on every request. Repeated Stage 3 runs over the same collection see 50–90 % cache hit rates on the (large) system prompt.
 
-**Note:** GPT-5 models only support `temperature=1`
+**300 k output tokens** (for very verbose Stage 1 descriptions):
+```bash
+BATCH_300K_OUTPUT=true
+STAGE1_MAX_TOKENS=65536   # or higher, up to 300000
+```
 
-**Configuration:**
+### OpenAI / LM Studio
+
 ```bash
 OPENAI_API_KEY=your_key_here
 OPENAI_MODEL=gpt-5-2025-08-07
+
+# LM Studio (OpenAI-compatible local server)
+OPENAI_BASE_URL=http://localhost:1234/v1
+OPENAI_API_KEY=lm-studio
+OPENAI_MODEL=gemma3:12b
 ```
+
+Note: GPT-5 models only accept `temperature=1`; pxGPT handles this automatically.
 
 ### Google Gemini
 
-**Configuration:**
 ```bash
-GOOGLE_API_KEY=your_key_here  
+GOOGLE_API_KEY=your_key_here
 GOOGLE_MODEL=gemini-2.5-pro
 ```
 
-### Ollama (Local)
+### Ollama (local)
 
-**Advantages:**
-- No API costs
-- Complete data privacy
-- Works offline
-
-**Setup:**
-1. Install Ollama: https://ollama.ai/
-2. Pull a vision model: `ollama pull gemma3:12b`
-3. Configure:
 ```bash
 OLLAMA_BASE_URL=http://localhost:11434
 OLLAMA_MODEL=gemma3:12b
 ```
 
-### LM Studio (Local)
-
-**Setup:**
-1. Install LM Studio: https://lmstudio.ai/
-2. Load a vision-capable model
-3. Start the local server
-4. Configure as OpenAI provider:
-```bash
-OPENAI_BASE_URL=http://localhost:1234/v1
-OPENAI_API_KEY=lm-studio
-OPENAI_MODEL=your-loaded-model-name
-```
-
-**Usage:**
-```bash
-pxgpt analyze --provider openai --input-folder /data/images --output results.txt
-```
+Ensure the service is running (`ollama serve`) and the model is downloaded (`ollama pull gemma3:12b`).
 
 ---
 
-## Best Practices
+## Schema Design
 
-### Prompt Engineering for Plant Phenotyping
+### Design principles
 
-**System Prompt Template:**
-```
-You are an expert plant biologist specializing in [CROP] phenotyping. 
-Analyze the provided plant images and describe the following traits:
+1. **Use enum for all qualitative traits** — the model selects from your list exactly; never invents new values.
+2. **Standardize units** — pick one unit per measurement type (e.g. always `cm`).
+3. **Cover rare phenotypes** — a trait seen in only one cultivar matters; include it.
+4. **Flat is fine** — nested objects work, but deeply nested schemas increase the chance of the model losing track.
 
-MORPHOLOGICAL TRAITS:
-- Plant height and architecture
-- Leaf shape, size, and arrangement  
-- Stem characteristics
-- Root system (if visible)
+### Required structure for Anthropic structured output
 
-DEVELOPMENTAL TRAITS:
-- Growth stage
-- Flowering status
-- Fruit/seed development
-
-STRESS INDICATORS:
-- Disease symptoms
-- Pest damage  
-- Nutritional deficiencies
-- Environmental stress
-
-Format your response within <report></report> tags.
-Be precise, consistent, and use standardized botanical terminology.
-```
-
-**User Prompt Example:**
-```
-Please analyze these [CROP] images and provide a comprehensive phenotypic description. 
-Focus on traits that vary between genotypes and could be used for:
-- Breeding selection
-- Genetic mapping
-- Stress tolerance assessment
-
-Quantify measurements when possible (e.g., "leaves approximately 15cm long" rather than "long leaves").
-```
-
-### Image Organization
-
-**Recommended Directory Structure:**
-```
-germplasm_collection/
-├── cultivar_001/
-│   ├── plant_001.jpg
-│   ├── plant_002.jpg
-│   └── plant_003.jpg
-├── cultivar_002/
-│   ├── plant_001.jpg
-│   └── plant_002.jpg
-└── cultivar_N/
-    └── ...
-```
-
-### Schema Design
-
-**Effective JSON Schema Structure:**
+Every `object` node must have:
 ```json
 {
   "type": "object",
+  "additionalProperties": false,
+  "required": ["field1", "field2"],
+  "properties": { ... }
+}
+```
+
+Run `pxgpt normalize-schema` to add these automatically. Review the `required` arrays afterward — you may want to add all property names to `required` so the model always fills them in (use `"NA"` for unknown string fields, and your best estimate for numeric/boolean fields).
+
+### Example schema fragment
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["growth_stage", "leaf_morphology"],
   "properties": {
-    "morphology": {
-      "type": "object", 
-      "properties": {
-        "plant_height_cm": {"type": "number"},
-        "leaf_length_cm": {"type": "number"},
-        "leaf_shape": {"enum": ["oval", "lanceolate", "linear"]},
-        "branching_pattern": {"enum": ["alternate", "opposite", "whorled"]}
-      }
-    },
-    "development": {
+    "growth_stage": {
       "type": "object",
+      "additionalProperties": false,
+      "required": ["stage", "true_leaf_count"],
       "properties": {
-        "growth_stage": {"enum": ["vegetative", "flowering", "fruiting"]},
-        "maturity_days": {"type": "number"}
+        "stage": {
+          "type": "string",
+          "enum": ["cotyledon","early_vegetative","mid_vegetative","bolting","flowering"]
+        },
+        "true_leaf_count": {"type": "integer"}
       }
-    },
-    "stress_indicators": {
-      "type": "array",
-      "items": {"type": "string"}
     }
   }
 }
 ```
 
-### Cost Optimization
+See [Example_master_schema.tsv](Example_master_schema.tsv) for the flattened field reference of the included Brassica schema.
 
-**For Anthropic Claude:**
-- Use prompt caching by keeping system prompts and schemas consistent
-- Process images in batches with the same schema
-- Estimated cost savings: 50-90% for repeated schema usage
+---
 
-**For All Providers:**
-- Optimize image sizes
-- Use specific, focused prompts to reduce output tokens
-- Batch process multiple images per request when supported
+## Best Practices
+
+### Prompt engineering
+
+**Stage 1 system prompt** (`prompts/phenotyping_system.txt`): brief role definition. Keep it stable across runs — it is cached.
+
+**Stage 1 user prompt** (`prompts/describe_plant.txt`): ask for all morphological traits you care about. The richer the descriptions, the better the Stage 2 schema synthesis.
+
+**Stage 3 system prompt** (`prompts/phenotyping_system_schema.txt`): define output requirements. Include "Use NA only for string fields when a value cannot be confidently determined."
+
+**Stage 3 user prompt** (`prompts/extract_traits.txt`): instruct the model to fill in every field, use scale references (rockwool cube, ColorChecker, ruler), and return a single valid JSON object.
+
+### Upload concurrency
+
+10 parallel uploads is a safe default. Raise to 20–30 if your network is fast and you have many small images:
+```bash
+UPLOAD_CONCURRENCY=20
+```
+
+### Manifest reuse
+
+Always pass `--manifest file_manifest.json` to both `describe-batch` and `phenotype-batch`. If you accidentally omit it on a Stage 3 run, all 10 k images are re-uploaded. The manifest path defaults to `file_manifest.json` in the current directory.
+
+### Running Stage 3 without Stage 1
+
+If you already have a manifest from a previous run (or built it with `describe-batch`), `phenotype-batch` will reuse all cached `file_id`s. Only genuinely new images are uploaded.
+
+### Cost optimization
+
+- Prompt caching is automatic for Anthropic: the system prompt is marked `cache_control: ephemeral`. Each Stage 3 batch call uses the cached prompt for all requests after the first.
+- Keep system prompts identical across runs (no date stamps, no per-line insertions) so the cache key matches.
+- For Stage 1, moderate `STAGE1_MAX_TOKENS` (16 384) is usually enough for descriptive text. Enable `BATCH_300K_OUTPUT=true` only if descriptions are being truncated.
 
 ---
 
 ## Troubleshooting
 
-### Common Issues
+### "ANTHROPIC_API_KEY is not set"
 
-**1. "Provider not configured" Error**
-```
-Error: Provider 'anthropic' not configured
-```
-**Solution:** Add your API key to `.env`:
+Add the key to `.env` and confirm it is in the same directory where you run `pxgpt`:
 ```bash
-ANTHROPIC_API_KEY=your_actual_key_here
+ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-**2. "No .jpg files found" Error**
-```
-Error: No .jpg files found in directory
-```
-**Solution:** 
-- Ensure images are in `.jpg` format (not `.jpeg`, `.png`, etc.)
-- Use absolute paths for input folders
-- Check file permissions
+### No images found / wrong image format
 
-**3. Rate Limit Errors**
-```
-Error: Rate limit exceeded
-```
-**Solution:**
-- Wait for the automatic retry (60s for Anthropic)
-- Reduce batch size
-- Spread requests over time
+- Supported extensions: `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`
+- Images must be inside subdirectories of `--input-dir`, not directly in the root folder
+- Use absolute paths if relative paths are ambiguous
 
-**4. Schema Validation Failures**
-```
-Error: Response does not match schema
-```
-**Solution:**
-- Simplify your JSON schema
-- Make more properties optional
-- Improve your prompts to be more specific about expected format
+### Batch status shows `errored` requests
 
-**5. GPU Memory Issues (Ollama/LM Studio)**
-```
-Error: CUDA out of memory
-```
-**Solution:**
-- Use smaller models (e.g., `gemma3:7b` instead of `gemma3:12b`)
-- Reduce image resolution
-- Process fewer images simultaneously
+`fetch-results` writes `.err.txt` files for failed lines. Common causes:
+- Image too large or corrupted → check the original file
+- Schema validation error → run `pxgpt normalize-schema` and verify the schema is valid JSON
+- Model overloaded → re-submit just the failed lines
 
-### Debug Mode
+### JSON parse failures in Stage 3 output
 
-Enable verbose logging:
+A `{line_id}.err.txt` file contains the raw response. Usually caused by:
+- Schema contains unsupported keywords → re-run `pxgpt normalize-schema`
+- `output_config.format` schema is invalid → validate with `python -m json.tool schema.json`
+- The model ran out of `max_tokens` mid-JSON → raise `STAGE3_MAX_TOKENS`
+
+### Temperature error (400 Bad Request)
+
+This should never happen with pxGPT ≥ 0.3.0 — the temperature guard is enforced centrally. If you see it after manual changes to the code, check that `build_request_params` from `core/batch_utils.py` is being used consistently.
+
+### Batch takes too long / need partial results
+
+Batches can take up to 24 hours for large jobs. `fetch-results` is idempotent — run it as many times as you like; it only writes when `processing_status == "ended"`. You can check status on the Anthropic console at any time using the batch ID printed at submit time.
+
+### Rate limit on image uploads
+
+Reduce `UPLOAD_CONCURRENCY` (e.g. to 5) and re-run. The manifest ensures already-uploaded images are skipped automatically.
+
+### Verbose error output
+
 ```bash
-export pxGPT_DEBUG=1
-pxgpt analyze --verbose --input-folder /data/images --output results.txt
+pxgpt --verbose describe-batch ...
 ```
-
-### Provider-Specific Issues
-
-**Anthropic:**
-- Ensure your API key has sufficient credits
-- Check model availability in your region
-
-**OpenAI:**
-- GPT-5 models only support `temperature=1.0`
-- Verify model name spelling
-
-**Ollama:**
-- Ensure Ollama service is running: `ollama serve`
-- Verify model is downloaded: `ollama list`
 
 ---
 
 ## Advanced Usage
 
-### Batch Processing Script
+### Running stages concurrently
 
-Process entire germplasm collections:
+Because both stages use the same manifest and the batch API is asynchronous, you can submit both stages back-to-back immediately after Stage 1 completes the upload phase (the batch itself does not need to finish before Stage 3 uploads):
 
+```bash
+# Submit Stage 1
+pxgpt describe-batch --input-dir ./images --output descriptions.txt \
+  --system-prompt prompts/phenotyping_system.txt \
+  --prompt prompts/describe_plant.txt
+# → all images are now uploaded; checkpoint_S1.json saved
+
+# Submit Stage 3 immediately (reuses file_ids from manifest)
+pxgpt phenotype-batch --input-dir ./images \
+  --schema prompts/phenotype_schema.json \
+  --output phenotypes/ \
+  --system-prompt prompts/phenotyping_system_schema.txt \
+  --prompt prompts/extract_traits.txt
+# → no uploads; checkpoint_S3.json saved
+
+# Retrieve results for both when done
+pxgpt fetch-results --checkpoint checkpoint_<S1_id>.json
+pxgpt fetch-results --checkpoint checkpoint_<S3_id>.json
+```
+
+### Per-project .env files
+
+```bash
+# project_A.env
+DEFAULT_PROVIDER=anthropic
+ANTHROPIC_MODEL=claude-sonnet-4-6
+STAGE3_EFFORT=high
+STAGE1_MAX_TOKENS=32768
+
+source project_A.env && pxgpt describe-batch ...
+```
+
+### Integration with HPC job schedulers
+
+For SLURM: wrap each `pxgpt` command in a job script. The batch submission itself is fast (seconds). The long wait is on Anthropic's side, so the SLURM job can exit immediately after `describe-batch` / `phenotype-batch` prints the checkpoint path. Submit a second short job (with a dependency or a manual trigger) to run `fetch-results`.
+
+Example:
 ```bash
 #!/bin/bash
-# batch_phenotype.sh
+#SBATCH --job-name=pxgpt_submit
+#SBATCH --time=00:30:00
 
-GERMPLASM_DIR="/data/germplasm_collection"
-OUTPUT_DIR="/results"
-PROVIDER="anthropic"
+module load miniconda3/3.12.4
+source activate pxgpt
 
-mkdir -p "$OUTPUT_DIR"
+pxgpt describe-batch \
+  --input-dir /data/images \
+  --output /results/descriptions.txt \
+  --system-prompt prompts/phenotyping_system.txt \
+  --prompt prompts/describe_plant.txt
 
-# Step 1: Analyze all cultivars
-for cultivar in $(ls "$GERMPLASM_DIR"); do
-    echo "Processing $cultivar..."
-    
-    pxgpt analyze \
-        --input-folder "$GERMPLASM_DIR/$cultivar" \
-        --output "$OUTPUT_DIR/${cultivar}_description.txt" \
-        --system-prompt system_phenotype.txt \
-        --prompt describe_plant.txt \
-        --provider "$PROVIDER"
-done
-
-# Step 2: Merge all descriptions
-echo "Merging descriptions..."
-for cultivar in $(ls "$GERMPLASM_DIR"); do
-    echo "# Cultivar: $cultivar" >> "$OUTPUT_DIR/combined_phenotypes.txt"
-    python extract_report_tags.py "$OUTPUT_DIR/${cultivar}_description.txt" >> "$OUTPUT_DIR/combined_phenotypes.txt"
-    echo "" >> "$OUTPUT_DIR/combined_phenotypes.txt"
-done
-
-# Step 3: Generate schema (manual step - review combined_phenotypes.txt first)
-echo "Review combined_phenotypes.txt and run schema generation manually"
-echo "pxgpt analyze --input-folder sample_images --output schema.json --prompt combined_phenotypes.txt --system-prompt schema_system.txt"
+# Checkpoint file is now in the working directory
+echo "Batch submitted. Checkpoint: checkpoint_*.json"
 ```
 
-### Custom Configuration Files
+### Custom configuration per stage
 
-Create project-specific configurations:
+Override any `Config` field via environment variables in the same shell:
 
 ```bash
-# wheat_config.env
-DEFAULT_PROVIDER=anthropic
-ANTHROPIC_MODEL=claude-3-7-sonnet-20250219
-MAX_TOKENS=8192
-TEMPERATURE=0.5
-
-# Load custom config
-set -a && source wheat_config.env && set +a
-pxgpt analyze --input-folder wheat_images --output wheat_results.txt
-```
-
-### Integration with Research Pipelines
-
-**With R for Statistical Analysis:**
-```r
-# Load structured phenotype data
-library(jsonlite)
-phenotypes <- fromJSON("structured_phenotypes.json")
-
-# Perform GWAS, heritability analysis, etc.
-# ...
-```
-
-**With Python for Machine Learning:**
-```python
-import json
-import pandas as pd
-
-# Load and process phenotype data
-with open("structured_phenotypes.json") as f:
-    data = json.load(f)
-
-df = pd.json_normalize(data)
-# Continue with ML pipeline...
+STAGE3_EFFORT=high STAGE3_MAX_TOKENS=32768 \
+  pxgpt phenotype-batch --input-dir ./images ...
 ```
 
 ---
 
 ## Support and Contributing
 
-### Getting Help
+### Getting help
 
-1. Check this user manual first
-2. Review the [README.md](README.md) for installation issues
-3. Enable debug mode for detailed error messages
-4. Check provider-specific documentation
+1. Check this user manual
+2. Enable `--verbose` for full tracebacks
+3. Check the [CHANGELOG.md](CHANGELOG.md) for recent breaking changes
+4. Open an issue at https://github.com/xavierzheng/pxgpt/issues
 
-### Reporting Issues
+### Reporting issues
 
-When reporting bugs, please include:
-- Complete error message
-- pxGPT version
-- Provider and model used  
-- Sample images (if possible)
-- Configuration (remove API keys)
+Include: full error message, pxGPT version (`pxgpt --version`), provider and model, anonymized `.env` (no API keys), checkpoint file if the error is batch-related.
 
 ### Citation
 
-If you use pxGPT in your research, please cite:
 ```
 [Your citation format here]
 ```
 
 ---
 
-**pxGPT** - Empowering plant research through automated phenotyping with Large Language Models.
+**pxGPT** — Empowering plant research through automated phenotyping with Large Language Models.

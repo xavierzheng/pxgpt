@@ -92,8 +92,13 @@ class LiteLLMProvider(BaseProvider):
         
         return converted_messages
     
-    def _send_request(self, messages: List[Dict[str, Any]], 
-                      system_prompt: str, schema: Optional[str] = None) -> APIResponse:
+    def _send_request(
+        self,
+        messages: List[Dict[str, Any]],
+        system_prompt: str,
+        schema: Optional[str] = None,
+        output_config: Optional[Dict[str, Any]] = None,  # not used by LiteLLM
+    ) -> APIResponse:
         """Send request via LiteLLM"""
         
         # Build combined system prompt (no caching support)

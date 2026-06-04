@@ -31,11 +31,7 @@ Your task is to describe the plant morphology from all images in detail. Follow 
 5. Before drawing conclusions, ensure:
    - All key identifying features have been examined
    - Lighting effects are considered
-   - You've checked for conflicting evidence
+   - You have checked for conflicting evidence
    - Previous assumptions are not influencing your judgment
 
-First, analyze the images and think through your observations using <think> tags. Consider all aspects mentioned above and any other relevant details you notice.
-
-Then, based on your analysis, write a detailed report describing the plant morphology in <report> tags. Your report should be comprehensive, covering all aspects of the plant's appearance and structure as observed in the images.
-
-Remember to be as detailed as possible in your descriptions and to draw conclusions only after confirming multiple features.
+Write a detailed report describing the plant morphology.  Your report should be comprehensive, covering all aspects of the plant's appearance and structure as observed in the images.  Be as detailed as possible and draw conclusions only after confirming multiple features.

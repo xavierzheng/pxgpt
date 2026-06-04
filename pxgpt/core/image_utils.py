@@ -2,58 +2,48 @@
 
 import base64
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import Dict, List, Any
 
 
 def get_base64_encoded_image(image_path: str) -> str:
-    """Convert image to base64 encoding
-    
-    Args:
-        image_path: Path to the image file
-        
-    Returns:
-        Base64 encoded image
-    """
-    with open(image_path, "rb") as image_file:
-        return base64.b64encode(image_file.read()).decode('utf-8')
+    """Convert image file to base64 string."""
+    with open(image_path, "rb") as f:
+        return base64.b64encode(f.read()).decode("utf-8")
 
 
 def create_image_content_list(folder_path: str) -> List[Dict[str, Any]]:
-    """Convert all .jpg files in folder to base64 content list
-    
-    Args:
-        folder_path: Path to folder containing images
-        
-    Returns:
-        List of image content dictionaries for API
-    """
+    """Return base64 image content blocks for every .jpg in *folder_path*."""
     image_paths = list(Path(folder_path).glob("*.jpg"))
-    content_list = []
-    
-    for img_path in image_paths:
-        content_list.append({
+    return [
+        {
             "type": "image",
             "source": {
                 "type": "base64",
                 "media_type": "image/jpeg",
-                "data": get_base64_encoded_image(str(img_path))
-            }
-        })
-    
-    return content_list
+                "data": get_base64_encoded_image(str(p)),
+            },
+        }
+        for p in image_paths
+    ]
 
 
 def create_multi_image_message(folder_path: str, prompt_text: str) -> List[Dict[str, Any]]:
-    """Create message with multiple images and text prompt
-    
-    Args:
-        folder_path: Path to folder containing images
-        prompt_text: Text prompt
-        
-    Returns:
-        Message list for API with images and prompt, images first
+    """Return a messages list with base64 images followed by the text prompt."""
+    content = create_image_content_list(folder_path)
+    content.append({"type": "text", "text": prompt_text})
+    return [{"role": "user", "content": content}]
+
+
+def build_file_id_content_list(file_ids: Dict[str, str]) -> List[Dict[str, Any]]:
+    """Return image content blocks referencing Files-API file_ids.
+
+    Used in beta batch requests where images have already been uploaded.
+    Preserves insertion order of *file_ids* (filename → file_id mapping).
     """
-    content_list = create_image_content_list(folder_path)
-    content_list.append({"type": "text", "text": prompt_text})
-    
-    return [{"role": "user", "content": content_list}]
+    return [
+        {
+            "type": "image",
+            "source": {"type": "file", "file_id": fid},
+        }
+        for fid in file_ids.values()
+    ]

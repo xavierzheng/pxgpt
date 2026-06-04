@@ -1,15 +1,18 @@
-You will be analyzing several images of a specific cultivar from the Brassica genus. Your task is to describe the plant morphology from all images in detail. Follow these steps:
+You will be analyzing several images of a specific cultivar from the Brassica genus. Your task is to fill in every field of the provided JSON schema based on careful observation of all images.
 
-1. Analyze these plant images step by step using the provided json schema
-2. Use the rockwool cubes (2.5 cm in length, width, and height), ColorChecker, and ruler as scale reference
-3. Consider that photos are taken from different angles of the same plant under constant light conditions
-4. Be aware the photographer may have moved, resulting in backlit shots
-5. Note the plant may have been repositioned to capture different aspects
+Follow these steps:
 
-<think>
-First, systematically analyze the images and record your observations of all phenotypic traits defined in the json schema. Consider lighting conditions, viewing angles, and use the rockwool cube dimensions and colorchecker for scale reference in <think> section.
-</think>
+1. Analyze the images systematically, covering all phenotypic traits defined in the schema.
+2. Use the rockwool cubes (2.5 cm × 2.5 cm × 2.5 cm), ColorChecker, and ruler as scale references.
+3. Consider that photos are taken from different angles of the same plant under constant light conditions.
+4. Be aware the photographer may have moved, resulting in backlit shots.
+5. Note the plant may have been repositioned to capture different aspects.
 
-<report>
-Based on your analysis, provide the complete phenotypic report following the JSON schema exactly, with all fields included in a single-line format with no whitespace into <report> section.
-</report>
+For each field in the schema:
+- Provide the most accurate value you can determine from the images.
+- Use "NA" only for string fields where a value cannot be confidently determined.
+- For numeric fields that cannot be measured, provide your best estimate from the scale references.
+- For boolean fields, choose the most likely value based on your observation.
+- For enum fields, select the single best-matching option.
+
+Return the complete phenotypic data as a single valid JSON object that conforms to the schema exactly.

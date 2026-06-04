@@ -1,124 +1,122 @@
-"""Structured JSON analysis command with schema validation."""
+"""Single-request structured JSON analysis (Stage 3, non-batch).
 
+Useful for testing a schema against one folder before running the full batch.
+For Anthropic the schema is passed via native structured output
+(``output_config.format``); for other providers it is appended to the system
+prompt (legacy path).
+"""
+
+import json
 import argparse
 from typing import Optional
 
 from ..core.config import Config
 from ..core.image_utils import create_multi_image_message
 from ..core.file_utils import read_file_safely, write_file_safely
+from ..core.schema_utils import load_normalized
 from ..providers.anthropic_provider import AnthropicProvider
 from ..providers.litellm_provider import LiteLLMProvider
 
 
 def create_provider(provider_name: str, config: Config):
-    """Factory function to create appropriate provider"""
     if provider_name == "anthropic":
         return AnthropicProvider(config)
-    elif provider_name in ["openai", "google", "ollama"]:
+    elif provider_name in {"openai", "google", "ollama"}:
         return LiteLLMProvider(config, provider_name)
-    else:
-        raise ValueError(f"Unsupported provider: {provider_name}")
+    raise ValueError(f"Unsupported provider: {provider_name}")
 
 
 def schema_command(args):
-    """Execute the schema command"""
-    
-    # Load configuration
     config = Config.from_env()
-    
-    # Override provider if specified
     provider_name = args.provider or config.provider
-    
-    # Validate provider configuration
+
     if not config.validate_provider(provider_name):
-        raise ValueError(f"Provider '{provider_name}' is not properly configured. Check your API keys.")
-    
-    # Read input files
+        raise ValueError(
+            f"Provider '{provider_name}' is not properly configured.  "
+            "Check your API keys."
+        )
+
     try:
         system_prompt = read_file_safely(args.system_prompt, "system prompt")
-        prompt_text = read_file_safely(args.prompt, "prompt")
-        json_schema = read_file_safely(args.schema, "JSON schema")
+        user_prompt = read_file_safely(args.prompt, "user prompt")
     except (FileNotFoundError, IOError) as e:
         print(f"File error: {e}")
         return 1
-    
-    # Create messages
+
     try:
-        messages = create_multi_image_message(args.input_folder, prompt_text)
+        messages = create_multi_image_message(args.input_folder, user_prompt)
     except Exception as e:
         print(f"Error processing images: {e}")
         return 1
-    
-    # Create provider and send request
+
+    provider = create_provider(provider_name, config)
+    print(f"Using provider: {provider.provider_name}")
+
     try:
-        provider = create_provider(provider_name, config)
-        print(f"Using provider: {provider.provider_name}")
-        
-        # Show caching support info
-        if provider.supports_caching():
-            print("## Prompt caching: ENABLED")
+        if provider_name == "anthropic":
+            # Native structured output — schema is NOT in the system prompt
+            schema_dict = load_normalized(args.schema)
+            output_config = config.stage3_output_config(schema=schema_dict)
+            thinking_on = bool(output_config.get("effort"))
+            print(f"Structured output: native (output_config.format)")
+            print(f"Thinking effort:   {output_config.get('effort', 'off')}")
+            print(f"Temperature sent:  {'no (thinking active)' if thinking_on else 'yes'}")
+
+            response = provider.send_request_with_retry(
+                messages=messages,
+                system_prompt=system_prompt,
+                output_config=output_config,
+            )
         else:
-            print("## Prompt caching: NOT SUPPORTED (using combined system prompt)")
-        
-        response = provider.send_request_with_retry(
-            messages=messages,
-            system_prompt=system_prompt,
-            schema=json_schema
-        )
-        
-        # Write output
-        write_file_safely(args.output, response.content, "output")
-        print(f"Results successfully written to file: {args.output}")
-        
-        return 0
-        
+            # Legacy: schema text in system prompt
+            schema_text = read_file_safely(args.schema, "JSON schema")
+            print(f"Structured output: schema in system prompt (legacy)")
+            response = provider.send_request_with_retry(
+                messages=messages,
+                system_prompt=system_prompt,
+                schema=schema_text,
+            )
     except Exception as e:
         print(f"Error during schema analysis: {e}")
         return 1
 
+    write_file_safely(args.output, response.content, "output")
+    print(f"Results written to: {args.output}")
+    return 0
+
 
 def setup_schema_parser(subparsers):
-    """Set up the schema command parser"""
     parser = subparsers.add_parser(
-        'schema',
-        help='Structured JSON analysis with schema validation',
-        description='Generate structured JSON output for plant images using AI with schema validation'
+        "schema",
+        help="Single-request structured JSON analysis (Stage 3, non-batch)",
+        description=(
+            "Analyze one folder of images against a JSON schema.  "
+            "For Anthropic, uses native structured output via output_config.format."
+        ),
     )
-    
     parser.add_argument(
-        '--input-folder',
-        required=True,
-        help='Path to folder containing images'
+        "--input-folder", required=True,
+        help="Path to folder containing images",
     )
-    
     parser.add_argument(
-        '--output',
-        required=True,
-        help='Output file path'
+        "--output", required=True,
+        help="Output file path",
     )
-    
     parser.add_argument(
-        '--system-prompt',
-        required=True, 
-        help='System prompt file path'
+        "--system-prompt", required=True,
+        help="System prompt file path",
     )
-    
     parser.add_argument(
-        '--schema',
-        required=True,
-        help='JSON schema file path'
+        "--schema", required=True,
+        help="JSON schema file path",
     )
-    
     parser.add_argument(
-        '--prompt',
-        required=True,
-        help='User prompt file path'
+        "--prompt", required=True,
+        help="User prompt file path",
     )
-    
     parser.add_argument(
-        '--provider',
-        choices=['anthropic', 'openai', 'google', 'ollama'],
-        help='LLM provider to use (overrides config/env)'
+        "--provider",
+        choices=["anthropic", "openai", "google", "ollama"],
+        help="LLM provider (overrides config/env)",
     )
-    
     parser.set_defaults(func=schema_command)
