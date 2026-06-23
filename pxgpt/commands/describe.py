@@ -22,7 +22,9 @@ Workflow
 6. Print the batch ID and exit (fire-and-forget default).
    With ``--wait``: poll until complete and write grouped output immediately.
 
-Stage 1 uses NO thinking (no ``output_config.effort``) so temperature is sent.
+Stage 1 uses NO thinking by default (so temperature is sent).  Set
+``DESCRIBE_EFFORT`` (or pass ``--effort``) to enable Anthropic adaptive
+thinking; when effort is set, the temperature guard omits temperature.
 """
 
 import json
@@ -51,6 +53,15 @@ def describe_batch_command(args):
         return 1
 
     client = Anthropic(api_key=config.anthropic_api_key, max_retries=0)
+
+    # Resolve thinking effort: --effort overrides DESCRIBE_EFFORT; "off" disables.
+    # Default off → no reasoning and temperature is sent (the original behavior).
+    effort = config.describe_effort if args.effort is None else args.effort
+    if effort == "off":
+        effort = ""
+    describe_output_config = config.build_output_config(effort)  # {} when off
+    print(f"Thinking effort: {effort or 'off'}"
+          f"{' (temperature omitted while thinking)' if effort else ' (temperature sent)'}")
 
     try:
         system_prompt = read_file_safely(args.system_prompt, "system prompt")
@@ -141,14 +152,15 @@ def describe_batch_command(args):
         content = image_blocks + [{"type": "text", "text": user_prompt}]
         messages = [{"role": "user", "content": content}]
 
-        # Stage 1: no effort → temperature is included
+        # Stage 1: effort off by default → temperature included; the temperature
+        # guard in build_request_params drops it automatically if effort is set.
         params = build_request_params(
             model=config.anthropic_model,
             max_tokens=config.stage1_max_tokens,
             system=system_blocks,
             messages=messages,
             temperature=config.temperature,
-            output_config=None,
+            output_config=describe_output_config,
         )
         requests.append({"custom_id": line_id, "params": params})
 
@@ -240,6 +252,14 @@ def setup_describe_parser(subparsers):
         help="Disable the Files API and embed images inline as base64 in each "
              "request (default: use the Files API). Can also be set via "
              "USE_FILES_API=false in the environment / .env",
+    )
+    parser.add_argument(
+        "--effort",
+        choices=["off", "low", "medium", "high", "xhigh", "max"],
+        default=None,
+        help="Anthropic adaptive thinking effort (overrides DESCRIBE_EFFORT). "
+             "default = off = none = no reasoning + temperature is sent; "
+             "a level enables reasoning (temperature then omitted).",
     )
     parser.add_argument(
         "--wait", action="store_true",

@@ -53,9 +53,11 @@ ANTHROPIC_MODEL=claude-sonnet-4-6
 STAGE1_MAX_TOKENS=16384   # raise to 65536 for long descriptions
 STAGE3_MAX_TOKENS=16384
 
-# Adaptive thinking effort. Default "" = OFF (no reasoning, temperature is sent).
-# Set a level (low/medium/high/xhigh/max) to enable reasoning; --effort overrides per run.
-STAGE3_EFFORT=     # Stage 3 / schema command
+# Adaptive thinking effort. default = off = none = NO reasoning + temperature is sent.
+# (blank, "off", and "none" are equivalent.) Set a level low/medium/high/xhigh/max to
+# enable reasoning; the --effort flag overrides per run.
+STAGE3_EFFORT=     # Stage 3 / schema command   (off | low | medium | high | xhigh | max)
+DESCRIBE_EFFORT=   # Stage 1 describe-batch
 ANALYZE_EFFORT=    # sync analyze command
 
 # Set true to allow up to 300 k output tokens per response in Stage 1 batches

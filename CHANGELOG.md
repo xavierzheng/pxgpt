@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Changed
+- **Effort env vars accept `off`/`none`** (in addition to blank) as the
+  "no reasoning" value, so they match the `--effort off` flag. Across
+  `STAGE3_EFFORT`, `DESCRIBE_EFFORT`, `ANALYZE_EFFORT`, `OPENAI_REASONING_EFFORT`:
+  **default = off = none = no reasoning + temperature is sent**; a level
+  (`low`…`max`) enables reasoning.
 - **Reasoning is now OFF by default everywhere.** `STAGE3_EFFORT` default changed
   from `medium` → `""` (empty). Stage 3 (`phenotype-batch`) and the `schema`
   command now run **without reasoning and send `temperature`** by default;
@@ -10,6 +15,12 @@
   (or pass `--effort`) to opt back into adaptive thinking.
 
 ### New features
+- **`DESCRIBE_EFFORT` reasoning knob for Stage 1**: `describe-batch` now accepts
+  `--effort {off,low,medium,high,xhigh,max}` (and the `DESCRIBE_EFFORT` env),
+  enabling Anthropic adaptive thinking for the description stage. **Default off**
+  — Stage 1 keeps its original behavior (no reasoning, temperature sent). When
+  effort is set, the temperature guard omits temperature and native thinking
+  blocks are stripped from the saved description.
 - **`analyze` / `schema` support more backends**: `lmstudio` and `vllm` are now
   first-class `--provider` values alongside `openai`, `ollama`, `google`. LM
   Studio and vLLM route through LiteLLM's OpenAI-compatible path

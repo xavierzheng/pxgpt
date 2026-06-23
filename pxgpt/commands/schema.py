@@ -131,6 +131,7 @@ def setup_schema_parser(subparsers):
         choices=["off", "low", "medium", "high", "xhigh", "max"],
         default=None,
         help="Anthropic adaptive thinking effort (overrides STAGE3_EFFORT). "
-             "Ignored for non-anthropic providers.",
+             "default = off = none = no reasoning + temperature is sent; "
+             "a level enables reasoning. Ignored for non-anthropic providers.",
     )
     parser.set_defaults(func=schema_command)

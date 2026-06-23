@@ -239,10 +239,13 @@ pxgpt describe-batch \
   --prompt FILE \
   [--manifest FILE]      # default: file_manifest.json (ignored with --no-files-api)
   [--no-files-api]       # embed images inline as base64 instead of uploading
+  [--effort {off,low,medium,high,xhigh,max}]   # overrides DESCRIBE_EFFORT; default off
   [--wait]               # poll until done; default is fire-and-forget
 ```
 
 Output file: grouped descriptions, one section per plant line/cultivar.
+
+By default Stage 1 runs **without reasoning** and sends `temperature` (the model's whole response is the description — no `<think>`/`<report>` tags needed). Enable Anthropic adaptive thinking with `--effort` (e.g. `--effort medium`) or by setting `DESCRIBE_EFFORT`; thinking blocks are produced natively and stripped from the saved description.
 
 ---
 
@@ -425,11 +428,12 @@ For Anthropic, `schema` runs **without reasoning by default** (and sends `temper
 ANTHROPIC_API_KEY=your_key_here
 ANTHROPIC_MODEL=claude-sonnet-4-6
 
-# Thinking effort for Stage 3 and the schema command.
-# Default "" = no reasoning + temperature is sent. Set a level to enable reasoning.
-STAGE3_EFFORT=          # "" (default, off) | low | medium | high | xhigh | max
-# Thinking effort for the sync `analyze` command (Anthropic). Default "" (off).
-ANALYZE_EFFORT=         # "" (default, off) | low | medium | high | xhigh | max
+# Adaptive thinking effort (Anthropic). For every knob below:
+#   default = off = none = NO reasoning + temperature IS sent
+#   (blank, "off", "none" are all equivalent). Set a level to enable reasoning.
+STAGE3_EFFORT=          # off/none (default) | low | medium | high | xhigh | max  — Stage 3 / schema
+DESCRIBE_EFFORT=        # off/none (default) | low | medium | high | xhigh | max  — Stage 1 describe-batch
+ANALYZE_EFFORT=         # off/none (default) | low | medium | high | xhigh | max  — sync analyze
 
 # Token budgets
 STAGE1_MAX_TOKENS=16384   # up to 65536 on sync; up to 300000 with BATCH_300K_OUTPUT=true

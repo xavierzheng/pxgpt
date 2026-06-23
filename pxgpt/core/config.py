@@ -10,6 +10,16 @@ VALID_EFFORT_LEVELS = {"low", "medium", "high", "xhigh", "max"}
 VALID_OPENAI_EFFORT_LEVELS = {"minimal", "low", "medium", "high"}
 
 
+def _normalize_effort(value: str) -> str:
+    """Map the "no reasoning" spellings to the empty string.
+
+    ``off``, ``none`` and ``""`` (any case) all mean: no reasoning + temperature
+    is sent. This lets the env vars and the ``--effort off`` CLI flag agree.
+    """
+    v = (value or "").strip()
+    return "" if v.lower() in ("", "off", "none") else v
+
+
 @dataclass
 class Config:
     """Configuration for PXGPT."""
@@ -53,16 +63,17 @@ class Config:
     stage1_max_tokens: int = 16384   # Stage 1 descriptions (raise to 300 k if needed)
     stage3_max_tokens: int = 16384   # Stage 3 structured JSON
 
-    # Thinking / effort level for Stage 3 and the schema command.
-    # Valid values: "low", "medium", "high", "xhigh", "max"
-    # Default "" (off): Stage 3 runs WITHOUT reasoning and DOES send temperature.
-    # Reasoning is opt-in via STAGE3_EFFORT or the --effort flag.
-    stage3_effort: str = ""
+    # Adaptive thinking effort (Anthropic). For all three knobs below:
+    #   default = "" = off = none = NO reasoning + temperature IS sent.
+    # Enable reasoning with a level: "low" | "medium" | "high" | "xhigh" | "max"
+    # (env vars also accept "off"/"none"; the --effort flag overrides per run).
 
-    # Thinking / effort level for the sync `analyze` command (Anthropic only).
-    # Default "" (off) preserves the original non-thinking behavior; the
-    # --effort CLI flag overrides this per run.
+    # Stage 3 (phenotype-batch) and the schema command — env STAGE3_EFFORT.
+    stage3_effort: str = ""
+    # Sync `analyze` command — env ANALYZE_EFFORT.
     analyze_effort: str = ""
+    # Stage 1 (describe-batch) — env DESCRIBE_EFFORT.
+    describe_effort: str = ""
 
     # Set True to request the output-300k-2026-03-24 beta header on Stage 1
     # batches, raising the per-response output cap from 64 k to 300 k tokens.
@@ -78,8 +89,9 @@ class Config:
     upload_concurrency: int = 10
 
     # --- OpenAI batch settings (describe-batch-openai / phenotype-batch-openai) ---
-    # Reasoning effort for OpenAI reasoning models (gpt-5, o-series). Valid:
-    # "minimal", "low", "medium", "high", or "" to omit the param entirely.
+    # Reasoning effort for OpenAI reasoning models (gpt-5, o-series).
+    # default = "" = off = none = no reasoning param sent.
+    # Enable with: "minimal" | "low" | "medium" | "high" (env also accepts off/none).
     openai_reasoning_effort: str = ""
     # Completion window passed to the OpenAI Batch API.
     openai_batch_completion_window: str = "24h"
@@ -90,23 +102,30 @@ class Config:
     @classmethod
     def from_env(cls) -> "Config":
         """Create config from environment variables."""
-        stage3_effort = os.getenv("STAGE3_EFFORT", "")
+        # Effort env vars accept off/none/"" — all mean: no reasoning + temperature.
+        stage3_effort = _normalize_effort(os.getenv("STAGE3_EFFORT", ""))
         if stage3_effort not in VALID_EFFORT_LEVELS and stage3_effort != "":
             raise ValueError(
-                f"STAGE3_EFFORT must be one of {VALID_EFFORT_LEVELS} or '' (empty), "
+                f"STAGE3_EFFORT must be one of {VALID_EFFORT_LEVELS} or off/none, "
                 f"got: {stage3_effort!r}"
             )
-        openai_reasoning_effort = os.getenv("OPENAI_REASONING_EFFORT", "")
+        openai_reasoning_effort = _normalize_effort(os.getenv("OPENAI_REASONING_EFFORT", ""))
         if openai_reasoning_effort not in VALID_OPENAI_EFFORT_LEVELS and openai_reasoning_effort != "":
             raise ValueError(
                 f"OPENAI_REASONING_EFFORT must be one of {VALID_OPENAI_EFFORT_LEVELS} "
-                f"or '' (empty), got: {openai_reasoning_effort!r}"
+                f"or off/none, got: {openai_reasoning_effort!r}"
             )
-        analyze_effort = os.getenv("ANALYZE_EFFORT", "")
+        analyze_effort = _normalize_effort(os.getenv("ANALYZE_EFFORT", ""))
         if analyze_effort not in VALID_EFFORT_LEVELS and analyze_effort != "":
             raise ValueError(
-                f"ANALYZE_EFFORT must be one of {VALID_EFFORT_LEVELS} or '' (empty), "
+                f"ANALYZE_EFFORT must be one of {VALID_EFFORT_LEVELS} or off/none, "
                 f"got: {analyze_effort!r}"
+            )
+        describe_effort = _normalize_effort(os.getenv("DESCRIBE_EFFORT", ""))
+        if describe_effort not in VALID_EFFORT_LEVELS and describe_effort != "":
+            raise ValueError(
+                f"DESCRIBE_EFFORT must be one of {VALID_EFFORT_LEVELS} or off/none, "
+                f"got: {describe_effort!r}"
             )
         return cls(
             provider=os.getenv("DEFAULT_PROVIDER", "anthropic"),
@@ -133,6 +152,7 @@ class Config:
             stage3_max_tokens=int(os.getenv("STAGE3_MAX_TOKENS", "16384")),
             stage3_effort=stage3_effort,
             analyze_effort=analyze_effort,
+            describe_effort=describe_effort,
             batch_300k_output=os.getenv("BATCH_300K_OUTPUT", "false").lower() in ("1", "true", "yes"),
             use_files_api=os.getenv("USE_FILES_API", "true").lower() in ("1", "true", "yes"),
             upload_concurrency=int(os.getenv("UPLOAD_CONCURRENCY", "10")),

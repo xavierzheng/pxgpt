@@ -129,8 +129,9 @@ def setup_analyze_parser(subparsers):
         '--effort',
         choices=['off', 'low', 'medium', 'high', 'xhigh', 'max'],
         default=None,
-        help='Anthropic adaptive thinking effort (overrides ANALYZE_EFFORT; '
-             'default off). Ignored for non-anthropic providers.'
+        help='Anthropic adaptive thinking effort (overrides ANALYZE_EFFORT). '
+             'default = off = none = no reasoning + temperature is sent; '
+             'a level enables reasoning. Ignored for non-anthropic providers.'
     )
 
     parser.set_defaults(func=analyze_command)
