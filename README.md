@@ -80,12 +80,12 @@ OLLAMA_MODEL=gemma3:12b
 
 # LM Studio (OpenAI-compatible)
 LMSTUDIO_BASE_URL=http://localhost:1234/v1
-LMSTUDIO_MODEL=qwen2-vl-7b
+LMSTUDIO_MODEL=gemma4:12b
 LMSTUDIO_API_KEY=lm-studio          # any non-empty placeholder
 
 # vLLM (OpenAI-compatible) — VLLM_MODEL is required (the served model name)
 VLLM_BASE_URL=http://localhost:8000/v1
-VLLM_MODEL=Qwen/Qwen2-VL-7B-Instruct
+VLLM_MODEL=gemma4:12b
 VLLM_API_KEY=EMPTY                  # match --api-key if the server sets one
 ```
 

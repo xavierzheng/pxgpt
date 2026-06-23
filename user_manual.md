@@ -472,16 +472,16 @@ Note: GPT-5 / o-series reasoning models only accept the default `temperature`; p
 ```bash
 # Ollama — pxgpt analyze --provider ollama ...
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=gemma3:12b           # a vision model, e.g. gemma3 / llava / qwen2-vl
+OLLAMA_MODEL=gemma4:12b           # a vision model, e.g. gemma4 / gemma3 / llava
 
 # LM Studio (OpenAI-compatible) — pxgpt analyze --provider lmstudio ...
 LMSTUDIO_BASE_URL=http://localhost:1234/v1
-LMSTUDIO_MODEL=qwen2-vl-7b        # name as shown in LM Studio
+LMSTUDIO_MODEL=gemma4:12b         # name as shown in LM Studio
 LMSTUDIO_API_KEY=lm-studio        # any non-empty placeholder
 
 # vLLM (OpenAI-compatible) — pxgpt schema --provider vllm ...
 VLLM_BASE_URL=http://localhost:8000/v1
-VLLM_MODEL=Qwen/Qwen2-VL-7B-Instruct   # REQUIRED: the served model name
+VLLM_MODEL=gemma4:12b            # REQUIRED: the served model name
 VLLM_API_KEY=EMPTY                # match the server's --api-key if set
 ```
 
@@ -490,7 +490,7 @@ How each is routed through LiteLLM: `ollama/<model>` @ `OLLAMA_BASE_URL`; `opena
 For `schema` on these providers, the JSON schema is appended to the system prompt (Anthropic-style native structured output is not used). Make the user prompt request **JSON-only** output — the bundled `prompts/extract_traits.txt` already does this.
 
 - Ollama: ensure `ollama serve` is running and the model is pulled (`ollama pull gemma3:12b`).
-- vLLM: start with e.g. `vllm serve Qwen/Qwen2-VL-7B-Instruct --port 8000`; set `VLLM_MODEL` to the same name.
+- vLLM: start with e.g. `vllm serve google/gemma-4-12b-it --port 8000`; set `VLLM_MODEL` to the same served name.
 
 ### Google Gemini
 
