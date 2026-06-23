@@ -247,6 +247,8 @@ Output file: grouped descriptions, one section per plant line/cultivar.
 
 By default Stage 1 runs **without reasoning** and sends `temperature` (the model's whole response is the description — no `<think>`/`<report>` tags needed). Enable Anthropic adaptive thinking with `--effort` (e.g. `--effort medium`) or by setting `DESCRIBE_EFFORT`; thinking blocks are produced natively and stripped from the saved description.
 
+> Using a legacy `<think>`/`<report>` prompt instead of native reasoning? The tags are saved verbatim — post-process the output with [`pxgpt extract-report`](#pxgpt-extract-report) to keep only the `<report>` body.
+
 ---
 
 ### `pxgpt phenotype-batch`
@@ -365,6 +367,40 @@ from anthropic import Anthropic; Anthropic().beta.files.delete("file_...")
 
 ---
 
+### `pxgpt extract-report`
+
+Two ways to get the model to reason before answering:
+
+1. **Native reasoning** (recommended) — enable adaptive thinking with `--effort` / `*_EFFORT`. The reasoning happens in a separate channel and is stripped automatically; the saved output is already clean. **No extraction needed.**
+2. **Chain-of-thought tags** (backward-compatible) — prompt the model to emit `<think>...</think><report>...</report>`. The whole response (tags and all) is saved verbatim, so you post-process it with `extract-report` to keep only the `<report>` body.
+
+`extract-report` supports both a **single-response file** and the **grouped** multi-cultivar file from `describe-batch` / `describe-batch-openai` (one `<report>` per `### <id>` section).
+
+```
+pxgpt extract-report \
+  --input FILE \                      # a single response, or a grouped describe output
+  [--output FILE] \                   # default: print to stdout
+  [--mode {auto,grouped,single}]      # default auto (detects '### ' section headers)
+```
+
+- **grouped** mode extracts the `<report>` from every `### <id>` section and preserves the section structure (`### <id>` + `---` separators).
+- **single** mode treats the whole file as one response.
+- `<think>` reasoning is **discarded**; only `<report>` is kept. Unclosed tags (e.g. a response truncated by the token limit) are auto-closed before extraction.
+
+Examples:
+
+```bash
+# Batch: clean a grouped describe output (all cultivars at once)
+pxgpt extract-report --input descriptions.txt --output descriptions.clean.txt
+
+# Single file -> stdout
+pxgpt extract-report --input one_plant.txt > one_plant.clean.txt
+```
+
+> The standalone `extract_report_tags.py` script is still available for the simple single-file case (`python extract_report_tags.py FILE`), but `pxgpt extract-report` is preferred — it also handles the grouped batch output.
+
+---
+
 ### `pxgpt normalize-schema`
 
 Prepare a JSON schema for Anthropic structured outputs.
@@ -398,6 +434,53 @@ pxgpt analyze \
 ```
 
 `--effort` enables Anthropic adaptive thinking (overrides `ANALYZE_EFFORT`; default **off**, preserving the original non-thinking behavior). When thinking is active, `temperature` is omitted automatically and the thinking blocks are stripped from the output. Ignored for non-anthropic providers.
+
+#### Recipe: gather descriptions from `analyze` (single-folder mode)
+
+`analyze` processes **one folder at a time**, so the classic workflow is to loop over cultivars and then merge the per-cultivar descriptions into one document — e.g. to feed Stage 2 (schema synthesis). This is the single-file counterpart to `describe-batch`.
+
+**1. Run `analyze` per cultivar:**
+
+```bash
+for i in $(ls germplasm_images/); do
+  pxgpt analyze \
+    --input-folder germplasm_images/${i} \
+    --output results/${i}_description.txt \
+    --system-prompt prompts/phenotyping_system.txt \
+    --prompt prompts/describe_plant.txt \
+    --provider anthropic
+done
+```
+
+**2. Merge the descriptions into one document:**
+
+- **If your prompt uses `<think>`/`<report>` tags** — extract the `<report>` from each file and concatenate with a header per cultivar:
+
+  ```bash
+  : > combined_phenotypes.txt   # start fresh
+  for i in $(ls germplasm_images/); do
+    echo "# This is cultivar ${i}"              >> combined_phenotypes.txt
+    pxgpt extract-report --input results/${i}_description.txt >> combined_phenotypes.txt
+    printf '\n\n'                               >> combined_phenotypes.txt
+  done
+  ```
+
+  (Each file is a single response, so `extract-report` runs in `single` mode automatically. The legacy `python extract_report_tags.py results/${i}_description.txt` works identically here.)
+
+- **If you use native reasoning (`--effort`) or a plain prompt** — there are no tags, so the whole file *is* the description. Just concatenate, no extraction:
+
+  ```bash
+  : > combined_phenotypes.txt
+  for i in $(ls germplasm_images/); do
+    echo "# This is cultivar ${i}" >> combined_phenotypes.txt
+    cat results/${i}_description.txt >> combined_phenotypes.txt
+    printf '\n\n' >> combined_phenotypes.txt
+  done
+  ```
+
+**3.** Feed `combined_phenotypes.txt` into Stage 2 schema synthesis (see the pipeline overview).
+
+> Tip: for many cultivars, `describe-batch` (one batch call, grouped output) is cheaper and simpler than looping `analyze`. If you already have a grouped describe output with tags, run `pxgpt extract-report --input descriptions.txt --output descriptions.clean.txt` once instead of the loop.
 
 ---
 

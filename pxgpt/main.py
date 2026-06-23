@@ -15,6 +15,7 @@ from .commands.openai_batch import (
 )
 from .commands.fetch_results import setup_fetch_results_parser
 from .commands.cleanup_files import setup_cleanup_files_parser
+from .commands.extract_report import setup_extract_report_parser
 from .commands.normalize_schema import setup_normalize_schema_parser
 
 
@@ -57,6 +58,7 @@ def main():
     setup_phenotype_batch_openai_parser(subparsers)
     setup_fetch_results_parser(subparsers)
     setup_cleanup_files_parser(subparsers)
+    setup_extract_report_parser(subparsers)
     setup_normalize_schema_parser(subparsers)
 
     if len(sys.argv) == 1:

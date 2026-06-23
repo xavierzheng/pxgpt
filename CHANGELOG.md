@@ -15,6 +15,14 @@
   (or pass `--effort`) to opt back into adaptive thinking.
 
 ### New features
+- **`extract-report` command**: backward-compatible extractor for the legacy
+  `<think>...</think><report>...</report>` chain-of-thought prompt convention.
+  Keeps only the `<report>` body (discards `<think>`); auto-closes truncated
+  tags. Handles a single-response file **and** the grouped multi-cultivar
+  `describe-batch` output (one `<report>` per `### <id>` section) via
+  `--mode {auto,grouped,single}`. The standalone `extract_report_tags.py` stays
+  available for the simple single-file case. Use this only with the
+  chain-of-thought prompt path; native reasoning (`--effort`) needs no extraction.
 - **`DESCRIBE_EFFORT` reasoning knob for Stage 1**: `describe-batch` now accepts
   `--effort {off,low,medium,high,xhigh,max}` (and the `DESCRIBE_EFFORT` env),
   enabling Anthropic adaptive thinking for the description stage. **Default off**

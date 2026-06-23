@@ -174,6 +174,7 @@ pxgpt schema \
 | `pxgpt phenotype-batch-openai` | Stage 3 (OpenAI): strict structured output on the OpenAI Batch API |
 | `pxgpt fetch-results` | Retrieve results for any pending batch (Anthropic or OpenAI) from a checkpoint |
 | `pxgpt cleanup-files` | Delete Files-API uploads from a manifest (both providers); OpenAI bills for storage |
+| `pxgpt extract-report` | Extract `<report>` from `<think>`/`<report>` output (single or grouped); back-compat for non-native reasoning |
 | `pxgpt normalize-schema` | Add `additionalProperties: false` + `required` to all objects in a schema |
 | `pxgpt analyze` | Single-folder text description (sync, all providers) |
 | `pxgpt schema` | Single-folder structured JSON (sync, all providers) |
@@ -220,6 +221,7 @@ pxgpt/
 │   ├── openai_batch.py    # describe-batch-openai / phenotype-batch-openai
 │   ├── fetch_results.py   # fetch-results (provider-aware)
 │   ├── cleanup_files.py   # cleanup-files (delete Files-API uploads)
+│   ├── extract_report.py  # extract-report (<think>/<report> back-compat)
 │   ├── normalize_schema.py
 │   ├── analyze.py
 │   └── schema.py
