@@ -2,23 +2,26 @@
 
 Input layout
 ------------
-Same as Stage 1: ``--input-dir`` with one subdir per plant line.  Stage 3
-reuses the file_ids already present in the manifest from Stage 1, so images
-are NOT re-uploaded if the manifest is up-to-date.
+Same as Stage 1: ``--input-dir`` with one subdir per plant line.  By default
+Stage 3 reuses the file_ids already present in the manifest from Stage 1, so
+images are NOT re-uploaded if the manifest is up-to-date.  With
+``--no-files-api`` (or ``USE_FILES_API=false``) images are embedded inline as
+base64 instead and the manifest is not used.
 
 Workflow
 --------
 1. Normalize the user-supplied JSON schema (in memory only; the on-disk file
    is not touched — use ``pxgpt normalize-schema`` for that).
-2. Load / reuse file_ids from the manifest (upload only if missing).
+2. Images: load / reuse file_ids from the manifest (upload only if missing),
+   or embed inline as base64 when the Files API is disabled.
 3. Build one batch request per plant line with:
      output_config = {
          "effort":  "<stage3_effort>",          # adaptive thinking
          "format":  {"type": "json_schema", …}  # structured output
      }
-4. Submit with ``files-api-2025-04-14`` beta header.
+4. Submit with ``files-api-2025-04-14`` beta header (omitted in base64 mode).
 5. Save checkpoint and exit (fire-and-forget default).
-   With ``--wait``: poll and write per-line JSON files immediately.
+   With ``--wait``: poll and write one JSON file per plant line/cultivar immediately.
 
 Stage 3 uses ``output_config.effort`` → temperature is NOT sent.
 """
@@ -32,7 +35,7 @@ from anthropic import Anthropic
 
 from ..core.config import Config
 from ..core.file_utils import read_file_safely
-from ..core.image_utils import build_file_id_content_list
+from ..core.image_utils import build_file_id_content_list, build_base64_content_list
 from ..core.files_manager import FilesManager, IMAGE_EXTENSIONS
 from ..core.schema_utils import load_normalized
 from ..core.batch_utils import (
@@ -86,39 +89,53 @@ def phenotype_batch_command(args):
     print(f"\nFound {len(plant_lines)} plant line(s) in {input_dir}")
 
     # ------------------------------------------------------------------
-    # Upload / reuse images
+    # Collect images: reuse/upload via Files API (default) or embed inline base64
     # ------------------------------------------------------------------
-    print(f"\n--- Checking / uploading images (manifest: {args.manifest}) ---")
-    files_mgr = FilesManager(client, args.manifest)
-    line_file_ids: Dict[str, Dict[str, str]] = {}
+    use_files_api = config.use_files_api and not args.no_files_api
+    line_image_blocks: Dict[str, List[Dict]] = {}
 
-    for line_dir in plant_lines:
-        images = [p for p in line_dir.iterdir() if p.suffix.lower() in IMAGE_EXTENSIONS]
-        if not images:
-            print(f"  {line_dir.name}: no images, skipping")
-            continue
+    if use_files_api:
+        print(f"\n--- Checking / uploading images (manifest: {args.manifest}) ---")
+        files_mgr = FilesManager(client, args.manifest)
 
-        already = sum(
-            1 for p in images
-            if files_mgr.get_file_id(str(p)) is not None
-        )
-        new_count = len(images) - already
-        print(f"  {line_dir.name}: {len(images)} image(s)  "
-              f"({already} cached, {new_count} to upload)")
+        for line_dir in plant_lines:
+            images = [p for p in line_dir.iterdir() if p.suffix.lower() in IMAGE_EXTENSIONS]
+            if not images:
+                print(f"  {line_dir.name}: no images, skipping")
+                continue
 
-        file_ids = files_mgr.upload_folder(
-            str(line_dir), concurrency=config.upload_concurrency
-        )
-        line_file_ids[line_dir.name] = file_ids
+            already = sum(
+                1 for p in images
+                if files_mgr.get_file_id(str(p)) is not None
+            )
+            new_count = len(images) - already
+            print(f"  {line_dir.name}: {len(images)} image(s)  "
+                  f"({already} cached, {new_count} to upload)")
 
-    if not line_file_ids:
+            file_ids = files_mgr.upload_folder(
+                str(line_dir), concurrency=config.upload_concurrency
+            )
+            line_image_blocks[line_dir.name] = build_file_id_content_list(file_ids)
+    else:
+        print("\n--- Files API disabled: embedding images inline as base64 ---")
+        for line_dir in plant_lines:
+            images = sorted(
+                p for p in line_dir.iterdir() if p.suffix.lower() in IMAGE_EXTENSIONS
+            )
+            if not images:
+                print(f"  {line_dir.name}: no images, skipping")
+                continue
+            print(f"  {line_dir.name}: {len(images)} image(s) embedded inline")
+            line_image_blocks[line_dir.name] = build_base64_content_list(images)
+
+    if not line_image_blocks:
         print("Error: no images found to process")
         return 1
 
     # ------------------------------------------------------------------
     # Build batch requests
     # ------------------------------------------------------------------
-    print(f"\n--- Building {len(line_file_ids)} batch request(s) ---")
+    print(f"\n--- Building {len(line_image_blocks)} batch request(s) ---")
     requests: List[Dict] = []
     system_blocks = [
         {
@@ -128,8 +145,7 @@ def phenotype_batch_command(args):
         }
     ]
 
-    for line_id, file_ids in line_file_ids.items():
-        image_blocks = build_file_id_content_list(file_ids)
+    for line_id, image_blocks in line_image_blocks.items():
         content = image_blocks + [{"type": "text", "text": user_prompt}]
         messages = [{"role": "user", "content": content}]
 
@@ -147,11 +163,11 @@ def phenotype_batch_command(args):
     # ------------------------------------------------------------------
     # Submit batch
     # ------------------------------------------------------------------
-    betas: List[str] = ["files-api-2025-04-14"]
+    betas: List[str] = ["files-api-2025-04-14"] if use_files_api else []
     print(f"\n--- Submitting batch ({len(requests)} requests) ---")
     batch = client.beta.messages.batches.create(requests=requests, betas=betas)
     batch_id = batch.id
-    line_ids = list(line_file_ids.keys())
+    line_ids = list(line_image_blocks.keys())
 
     print(f"Batch ID:  {batch_id}")
     print(f"Status:    {batch.processing_status}")
@@ -223,7 +239,14 @@ def setup_phenotype_parser(subparsers):
     )
     parser.add_argument(
         "--manifest", default="file_manifest.json",
-        help="Path to the Files-API manifest (default: file_manifest.json)",
+        help="Path to the Files-API manifest (default: file_manifest.json); "
+             "ignored when --no-files-api is set",
+    )
+    parser.add_argument(
+        "--no-files-api", action="store_true",
+        help="Disable the Files API and embed images inline as base64 in each "
+             "request (default: use the Files API). Can also be set via "
+             "USE_FILES_API=false in the environment / .env",
     )
     parser.add_argument(
         "--wait", action="store_true",

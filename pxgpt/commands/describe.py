@@ -9,12 +9,15 @@ Each subdir may contain any mix of .jpg / .jpeg / .png / .gif / .webp files.
 Workflow
 --------
 1. Discover plant-line subdirectories.
-2. Upload all images via the Files API (skipping already-uploaded files
-   found in the manifest).
-3. Build one batch request per plant line (images → file_id content blocks
-   + user prompt).
-4. Submit the batch with the ``files-api-2025-04-14`` beta header (and
-   optionally ``output-300k-2026-03-24`` when ``batch_300k_output`` is True).
+2. Images: by default upload all images via the Files API (skipping
+   already-uploaded files found in the manifest). With ``--no-files-api``
+   (or ``USE_FILES_API=false``) skip uploading and embed images inline as
+   base64 in each request instead.
+3. Build one batch request per plant line (images → file_id or base64
+   content blocks + user prompt).
+4. Submit the batch with the ``files-api-2025-04-14`` beta header (omitted in
+   base64 mode) and optionally ``output-300k-2026-03-24`` when
+   ``batch_300k_output`` is True.
 5. Save a checkpoint JSON file.
 6. Print the batch ID and exit (fire-and-forget default).
    With ``--wait``: poll until complete and write grouped output immediately.
@@ -31,7 +34,7 @@ from anthropic import Anthropic
 
 from ..core.config import Config
 from ..core.file_utils import read_file_safely
-from ..core.image_utils import build_file_id_content_list
+from ..core.image_utils import build_file_id_content_list, build_base64_content_list
 from ..core.files_manager import FilesManager, IMAGE_EXTENSIONS
 from ..core.batch_utils import (
     build_request_params,
@@ -72,41 +75,59 @@ def describe_batch_command(args):
     print(f"Found {len(plant_lines)} plant line(s) in {input_dir}")
 
     # ------------------------------------------------------------------
-    # Upload images
+    # Collect images: upload via Files API (default) or embed inline as base64
     # ------------------------------------------------------------------
-    print(f"\n--- Uploading images (manifest: {args.manifest}) ---")
-    files_mgr = FilesManager(client, args.manifest)
-    line_file_ids: Dict[str, Dict[str, str]] = {}
+    use_files_api = config.use_files_api and not args.no_files_api
+    line_image_blocks: Dict[str, List[Dict]] = {}
 
-    for line_dir in plant_lines:
-        images = [p for p in line_dir.iterdir() if p.suffix.lower() in IMAGE_EXTENSIONS]
-        if not images:
-            print(f"  {line_dir.name}: no images, skipping")
-            continue
+    if use_files_api:
+        print(f"\n--- Uploading images (manifest: {args.manifest}) ---")
+        files_mgr = FilesManager(client, args.manifest)
 
-        already = sum(
-            1 for p in images
-            if files_mgr.get_file_id(str(p)) is not None
-        )
-        new_count = len(images) - already
-        print(f"  {line_dir.name}: {len(images)} image(s)  "
-              f"({already} cached, {new_count} to upload)")
+        for line_dir in plant_lines:
+            images = [p for p in line_dir.iterdir() if p.suffix.lower() in IMAGE_EXTENSIONS]
+            if not images:
+                print(f"  {line_dir.name}: no images, skipping")
+                continue
 
-        file_ids = files_mgr.upload_folder(
-            str(line_dir), concurrency=config.upload_concurrency
-        )
-        line_file_ids[line_dir.name] = file_ids
+            already = sum(
+                1 for p in images
+                if files_mgr.get_file_id(str(p)) is not None
+            )
+            new_count = len(images) - already
+            print(f"  {line_dir.name}: {len(images)} image(s)  "
+                  f"({already} cached, {new_count} to upload)")
 
-    if not line_file_ids:
-        print("Error: no images found to process")
-        return 1
+            file_ids = files_mgr.upload_folder(
+                str(line_dir), concurrency=config.upload_concurrency
+            )
+            line_image_blocks[line_dir.name] = build_file_id_content_list(file_ids)
 
-    print(f"\nTotal manifest entries: {files_mgr.stats()['total']}")
+        if not line_image_blocks:
+            print("Error: no images found to process")
+            return 1
+
+        print(f"\nTotal manifest entries: {files_mgr.stats()['total']}")
+    else:
+        print("\n--- Files API disabled: embedding images inline as base64 ---")
+        for line_dir in plant_lines:
+            images = sorted(
+                p for p in line_dir.iterdir() if p.suffix.lower() in IMAGE_EXTENSIONS
+            )
+            if not images:
+                print(f"  {line_dir.name}: no images, skipping")
+                continue
+            print(f"  {line_dir.name}: {len(images)} image(s) embedded inline")
+            line_image_blocks[line_dir.name] = build_base64_content_list(images)
+
+        if not line_image_blocks:
+            print("Error: no images found to process")
+            return 1
 
     # ------------------------------------------------------------------
     # Build batch requests
     # ------------------------------------------------------------------
-    print(f"\n--- Building {len(line_file_ids)} batch request(s) ---")
+    print(f"\n--- Building {len(line_image_blocks)} batch request(s) ---")
     requests: List[Dict] = []
     system_blocks = [
         {
@@ -116,8 +137,7 @@ def describe_batch_command(args):
         }
     ]
 
-    for line_id, file_ids in line_file_ids.items():
-        image_blocks = build_file_id_content_list(file_ids)
+    for line_id, image_blocks in line_image_blocks.items():
         content = image_blocks + [{"type": "text", "text": user_prompt}]
         messages = [{"role": "user", "content": content}]
 
@@ -135,7 +155,9 @@ def describe_batch_command(args):
     # ------------------------------------------------------------------
     # Submit batch
     # ------------------------------------------------------------------
-    betas: List[str] = ["files-api-2025-04-14"]
+    betas: List[str] = []
+    if use_files_api:
+        betas.append("files-api-2025-04-14")
     if config.batch_300k_output:
         betas.append("output-300k-2026-03-24")
         print(f"Using 300 k output token budget (output-300k-2026-03-24)")
@@ -143,7 +165,7 @@ def describe_batch_command(args):
     print(f"\n--- Submitting batch ({len(requests)} requests) ---")
     batch = client.beta.messages.batches.create(requests=requests, betas=betas)
     batch_id = batch.id
-    line_ids = list(line_file_ids.keys())
+    line_ids = list(line_image_blocks.keys())
 
     print(f"Batch ID:  {batch_id}")
     print(f"Status:    {batch.processing_status}")
@@ -198,7 +220,7 @@ def setup_describe_parser(subparsers):
     )
     parser.add_argument(
         "--output", required=True,
-        help="Output text file (grouped descriptions, one section per line)",
+        help="Output text file (grouped descriptions, one section per plant line/cultivar)",
     )
     parser.add_argument(
         "--system-prompt", required=True,
@@ -210,7 +232,14 @@ def setup_describe_parser(subparsers):
     )
     parser.add_argument(
         "--manifest", default="file_manifest.json",
-        help="Path to the Files-API manifest (default: file_manifest.json)",
+        help="Path to the Files-API manifest (default: file_manifest.json); "
+             "ignored when --no-files-api is set",
+    )
+    parser.add_argument(
+        "--no-files-api", action="store_true",
+        help="Disable the Files API and embed images inline as base64 in each "
+             "request (default: use the Files API). Can also be set via "
+             "USE_FILES_API=false in the environment / .env",
     )
     parser.add_argument(
         "--wait", action="store_true",

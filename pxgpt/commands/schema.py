@@ -18,10 +18,13 @@ from ..providers.anthropic_provider import AnthropicProvider
 from ..providers.litellm_provider import LiteLLMProvider
 
 
+LITELLM_PROVIDERS = {"openai", "google", "ollama", "lmstudio", "vllm"}
+
+
 def create_provider(provider_name: str, config: Config):
     if provider_name == "anthropic":
         return AnthropicProvider(config)
-    elif provider_name in {"openai", "google", "ollama"}:
+    elif provider_name in LITELLM_PROVIDERS:
         return LiteLLMProvider(config, provider_name)
     raise ValueError(f"Unsupported provider: {provider_name}")
 
@@ -56,7 +59,11 @@ def schema_command(args):
         if provider_name == "anthropic":
             # Native structured output — schema is NOT in the system prompt
             schema_dict = load_normalized(args.schema)
-            output_config = config.stage3_output_config(schema=schema_dict)
+            # --effort overrides STAGE3_EFFORT; "off" disables thinking.
+            effort = config.stage3_effort if args.effort is None else args.effort
+            if effort == "off":
+                effort = ""
+            output_config = config.build_output_config(effort, schema=schema_dict)
             thinking_on = bool(output_config.get("effort"))
             print(f"Structured output: native (output_config.format)")
             print(f"Thinking effort:   {output_config.get('effort', 'off')}")
@@ -116,7 +123,14 @@ def setup_schema_parser(subparsers):
     )
     parser.add_argument(
         "--provider",
-        choices=["anthropic", "openai", "google", "ollama"],
+        choices=["anthropic", "openai", "google", "ollama", "lmstudio", "vllm"],
         help="LLM provider (overrides config/env)",
+    )
+    parser.add_argument(
+        "--effort",
+        choices=["off", "low", "medium", "high", "xhigh", "max"],
+        default=None,
+        help="Anthropic adaptive thinking effort (overrides STAGE3_EFFORT). "
+             "Ignored for non-anthropic providers.",
     )
     parser.set_defaults(func=schema_command)

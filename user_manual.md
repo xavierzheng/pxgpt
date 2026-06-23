@@ -22,9 +22,9 @@
 
 | Stage | Automated? | Description |
 |-------|-----------|-------------|
-| **1 — Descriptions** | ✅ `describe-batch` | Feed multi-angle images per line → rich descriptive text |
+| **1 — Descriptions** | ✅ `describe-batch` | Feed multi-angle images per plant line/cultivar → rich descriptive text |
 | **2 — Schema synthesis** | Manual | Paste Stage 1 output into a conversational LLM session; design a JSON schema that captures the observed variation |
-| **3 — Structured phenotyping** | ✅ `phenotype-batch` | Feed the same images + your schema → validated JSON per line |
+| **3 — Structured phenotyping** | ✅ `phenotype-batch` | Feed the same images + your schema → validated JSON per plant line/cultivar |
 
 Stages 1 and 3 reference the **same uploaded images**: each image is uploaded once via the Files API and its `file_id` is stored in a manifest, so re-running or adding Stage 3 after Stage 1 never re-uploads anything.
 
@@ -107,6 +107,8 @@ pxgpt describe-batch \
 4. Saves `checkpoint_<batch_id>.json` and exits immediately (fire-and-forget)
 
 **Output format** (`descriptions.txt`):
+Grouped descriptions, one section per plant line/cultivar:
+
 ```
 ### s0001
 
@@ -177,9 +179,9 @@ pxgpt phenotype-batch \
 ```
 
 **API features used:**
-- `output_config.effort = "medium"` (configurable via `STAGE3_EFFORT`) — adaptive thinking
 - `output_config.format = {"type": "json_schema", "schema": …}` — native structured output; the schema grammar is compiled once and cached across all requests in the batch
-- Temperature is **not sent** when effort is set (the API enforces this; the guard is automatic)
+- `output_config.effort` — adaptive thinking, **off by default**. Stage 3 runs without reasoning and sends `temperature`. Enable reasoning by setting `STAGE3_EFFORT` (e.g. `medium`).
+- When `STAGE3_EFFORT` is set, `temperature` is **not sent** (the API enforces this; the guard is automatic)
 
 **Retrieve results:**
 ```bash
@@ -235,11 +237,12 @@ pxgpt describe-batch \
   --output FILE \
   --system-prompt FILE \
   --prompt FILE \
-  [--manifest FILE]      # default: file_manifest.json
+  [--manifest FILE]      # default: file_manifest.json (ignored with --no-files-api)
+  [--no-files-api]       # embed images inline as base64 instead of uploading
   [--wait]               # poll until done; default is fire-and-forget
 ```
 
-Output file: grouped plain text, one `### {line_id}` section per plant line.
+Output file: grouped descriptions, one section per plant line/cultivar.
 
 ---
 
@@ -254,7 +257,8 @@ pxgpt phenotype-batch \
   --output DIR \
   --system-prompt FILE \
   --prompt FILE \
-  [--manifest FILE]      # default: file_manifest.json
+  [--manifest FILE]      # default: file_manifest.json (ignored with --no-files-api)
+  [--no-files-api]       # embed images inline as base64 instead of uploading
   [--wait]
 ```
 
@@ -262,9 +266,48 @@ Output directory: one `{line_id}.json` per plant line; `{line_id}.err.txt` for p
 
 ---
 
+### `pxgpt describe-batch-openai` / `pxgpt phenotype-batch-openai`
+
+OpenAI equivalents of the two Anthropic batch stages, running on the **OpenAI Batch API** via the **Responses** endpoint (`/v1/responses` JSONL). The Responses API is required because an uploaded image can only be referenced by `file_id` there — the Chat Completions API cannot reference uploaded images. Same input layout (one subdirectory per plant line) and the same fire-and-forget / `--wait` workflow.
+
+```
+pxgpt describe-batch-openai \
+  --input-dir PATH \
+  --output FILE \
+  --system-prompt FILE \
+  --prompt FILE \
+  [--manifest FILE]      # default: openai_file_manifest.json (ignored with --no-files-api)
+  [--no-files-api]       # embed images inline as base64 instead of uploading
+  [--wait]
+
+pxgpt phenotype-batch-openai \
+  --input-dir PATH \
+  --schema FILE \
+  --output DIR \
+  --system-prompt FILE \
+  --prompt FILE \
+  [--manifest FILE]
+  [--no-files-api]
+  [--wait]
+```
+
+Key differences from the Anthropic stages:
+
+- **Model**: uses `OPENAI_MODEL` (default `gpt-5-2025-08-07`).
+- **Files API**: images are uploaded with OpenAI's `purpose="vision"` and referenced by `file_id`. Because OpenAI and Anthropic file_ids are different namespaces, the OpenAI manifest defaults to a **separate file** (`openai_file_manifest.json`) — do not point it at the Anthropic `file_manifest.json`.
+- **Structured output** (`phenotype-batch-openai`): the schema is normalized in memory for OpenAI **strict** mode — every property is forced into `required` and `additionalProperties: false` is set on every object (stricter than `pxgpt normalize-schema`, which targets Anthropic). The file on disk is not modified.
+- **Reasoning effort**: set `OPENAI_REASONING_EFFORT` (`minimal`/`low`/`medium`/`high`, or empty to disable) — applied only to reasoning models (gpt-5, o-series). For those models a custom `temperature` is omitted automatically.
+- **Completion window**: `OPENAI_BATCH_COMPLETION_WINDOW` (default `24h`).
+
+Checkpoints are tagged with `"provider": "openai"`, so `pxgpt fetch-results` retrieves them the same way as Anthropic batches.
+
+> **Cost reminder:** OpenAI bills for stored files. After fetching results, delete the uploaded images (and the batch's input/output/error files) with `pxgpt cleanup-files --manifest openai_file_manifest.json --checkpoint checkpoint_<batch_id>.json`. See [`pxgpt cleanup-files`](#pxgpt-cleanup-files).
+
+---
+
 ### `pxgpt fetch-results`
 
-Retrieve results for any pending or completed batch.
+Retrieve results for any pending or completed batch — Anthropic **or** OpenAI. The backend is selected from the checkpoint's `provider` field automatically.
 
 ```
 pxgpt fetch-results \
@@ -273,6 +316,49 @@ pxgpt fetch-results \
 ```
 
 Prints batch status. If the batch is still processing, exits with a message. If ended, writes results and prints a token-usage summary.
+
+---
+
+### `pxgpt cleanup-files`
+
+Delete files uploaded via the Files API once you no longer need them. **OpenAI bills for stored files**, so always clean up OpenAI uploads after fetching results (Anthropic uploads are also removable). The command deletes every `file_id` recorded in a manifest, auto-detecting the provider, and prunes the manifest as it goes. A file that is already gone (HTTP 404) counts as deleted.
+
+```
+pxgpt cleanup-files \
+  --manifest FILE \         # manifest of uploaded images to delete (file_ids)
+  [--provider auto|anthropic|openai]   # default: auto-detect from the manifest
+  [--checkpoint FILE]       # (repeatable) also delete OpenAI batch input/output/error files
+  [--dry-run]               # show what would be deleted, delete nothing
+```
+
+Examples:
+
+```bash
+# Anthropic: delete all uploaded images (provider auto-detected)
+pxgpt cleanup-files --manifest file_manifest.json
+
+# OpenAI: delete uploaded images AND the batch input/output/error files
+pxgpt cleanup-files --manifest openai_file_manifest.json \
+  --checkpoint checkpoint_batch_xxxxxxxx.json
+
+# Preview only — nothing is deleted
+pxgpt cleanup-files --manifest openai_file_manifest.json --dry-run
+```
+
+Notes:
+
+- The **manifest** is the same `--manifest` file you passed to the batch commands (`file_manifest.json` for Anthropic, `openai_file_manifest.json` for OpenAI). After cleanup the deleted entries are removed, so the manifest is safe to keep or discard.
+- `--checkpoint` is **OpenAI-only** and removes the batch's `input`, `output`, and `error` files (extra stored files OpenAI creates per batch). Anthropic batch results are not stored as separate Files-API objects, so no checkpoint cleanup is needed there.
+- Once files are deleted, any manifest still pointing at them is stale — do not reuse it for a new batch, or re-upload first.
+
+Manual alternative (single file, no manifest):
+
+```python
+# OpenAI
+from openai import OpenAI; OpenAI().files.delete("file-...")
+# Anthropic
+from anthropic import Anthropic; Anthropic().beta.files.delete("file_...")
+```
 
 ---
 
@@ -305,7 +391,10 @@ pxgpt analyze \
   --system-prompt FILE \
   --prompt FILE \
   [--provider {anthropic,openai,google,ollama}]
+  [--effort {off,low,medium,high,xhigh,max}]   # Anthropic adaptive thinking; default off
 ```
+
+`--effort` enables Anthropic adaptive thinking (overrides `ANALYZE_EFFORT`; default **off**, preserving the original non-thinking behavior). When thinking is active, `temperature` is omitted automatically and the thinking blocks are stripped from the output. Ignored for non-anthropic providers.
 
 ---
 
@@ -321,7 +410,10 @@ pxgpt schema \
   --schema FILE \
   --prompt FILE \
   [--provider {anthropic,openai,google,ollama}]
+  [--effort {off,low,medium,high,xhigh,max}]   # overrides STAGE3_EFFORT
 ```
+
+For Anthropic, `schema` runs **without reasoning by default** (and sends `temperature`). Enable adaptive thinking with `--effort` (e.g. `--effort medium`) or by setting `STAGE3_EFFORT`.
 
 ---
 
@@ -333,13 +425,23 @@ pxgpt schema \
 ANTHROPIC_API_KEY=your_key_here
 ANTHROPIC_MODEL=claude-sonnet-4-6
 
-# Thinking effort for Stage 3 and the schema command
-STAGE3_EFFORT=medium   # low | medium | high | xhigh | max | ""
+# Thinking effort for Stage 3 and the schema command.
+# Default "" = no reasoning + temperature is sent. Set a level to enable reasoning.
+STAGE3_EFFORT=          # "" (default, off) | low | medium | high | xhigh | max
+# Thinking effort for the sync `analyze` command (Anthropic). Default "" (off).
+ANALYZE_EFFORT=         # "" (default, off) | low | medium | high | xhigh | max
 
 # Token budgets
 STAGE1_MAX_TOKENS=16384   # up to 65536 on sync; up to 300000 with BATCH_300K_OUTPUT=true
 STAGE3_MAX_TOKENS=16384
+
+# Files API (default true). Set false to embed images inline as base64 in every
+# batch request instead of uploading once and reusing file_ids. The
+# --no-files-api flag on describe-batch / phenotype-batch overrides this.
+USE_FILES_API=true
 ```
+
+**Files API vs. inline base64**: with the Files API (default) each image is uploaded once and referenced by `file_id` across Stage 1 and Stage 3 — best for large collections re-used across stages. With `USE_FILES_API=false` (or `--no-files-api`) images are embedded as base64 in each request: no upload step or manifest, useful when the Files API beta is unavailable or for one-off runs, at the cost of re-sending image bytes on every request.
 
 **Prompt caching**: the system prompt is cached with `cache_control: ephemeral` on every request. Repeated Stage 3 runs over the same collection see 50–90 % cache hit rates on the (large) system prompt.
 
@@ -349,19 +451,46 @@ BATCH_300K_OUTPUT=true
 STAGE1_MAX_TOKENS=65536   # or higher, up to 300000
 ```
 
-### OpenAI / LM Studio
+### OpenAI
 
 ```bash
 OPENAI_API_KEY=your_key_here
 OPENAI_MODEL=gpt-5-2025-08-07
+OPENAI_BASE_URL=                  # optional: point the openai provider at a proxy
 
-# LM Studio (OpenAI-compatible local server)
-OPENAI_BASE_URL=http://localhost:1234/v1
-OPENAI_API_KEY=lm-studio
-OPENAI_MODEL=gemma3:12b
+# OpenAI Batch API stages (describe-batch-openai / phenotype-batch-openai)
+OPENAI_REASONING_EFFORT=          # minimal | low | medium | high | "" (gpt-5/o-series only)
+OPENAI_BATCH_COMPLETION_WINDOW=24h
 ```
 
-Note: GPT-5 models only accept `temperature=1`; pxGPT handles this automatically.
+Note: GPT-5 / o-series reasoning models only accept the default `temperature`; pxGPT omits a custom temperature for them automatically.
+
+### Local / self-hosted providers (`analyze` + `schema` only)
+
+`analyze` and `schema` run on Ollama, LM Studio, and vLLM in addition to the cloud providers. Each is a first-class `--provider` value with its own env vars. **Use a vision-capable model** — both commands send images. (The batch stages are Anthropic/OpenAI-only.)
+
+```bash
+# Ollama — pxgpt analyze --provider ollama ...
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=gemma3:12b           # a vision model, e.g. gemma3 / llava / qwen2-vl
+
+# LM Studio (OpenAI-compatible) — pxgpt analyze --provider lmstudio ...
+LMSTUDIO_BASE_URL=http://localhost:1234/v1
+LMSTUDIO_MODEL=qwen2-vl-7b        # name as shown in LM Studio
+LMSTUDIO_API_KEY=lm-studio        # any non-empty placeholder
+
+# vLLM (OpenAI-compatible) — pxgpt schema --provider vllm ...
+VLLM_BASE_URL=http://localhost:8000/v1
+VLLM_MODEL=Qwen/Qwen2-VL-7B-Instruct   # REQUIRED: the served model name
+VLLM_API_KEY=EMPTY                # match the server's --api-key if set
+```
+
+How each is routed through LiteLLM: `ollama/<model>` @ `OLLAMA_BASE_URL`; `openai/<model>` @ `LMSTUDIO_BASE_URL` / `VLLM_BASE_URL` (both expose an OpenAI-compatible API). `api_base`/`api_key` are passed per request, so several providers can be configured at once without clashing. Unsupported parameters are dropped automatically per backend (`drop_params`).
+
+For `schema` on these providers, the JSON schema is appended to the system prompt (Anthropic-style native structured output is not used). Make the user prompt request **JSON-only** output — the bundled `prompts/extract_traits.txt` already does this.
+
+- Ollama: ensure `ollama serve` is running and the model is pulled (`ollama pull gemma3:12b`).
+- vLLM: start with e.g. `vllm serve Qwen/Qwen2-VL-7B-Instruct --port 8000`; set `VLLM_MODEL` to the same name.
 
 ### Google Gemini
 
@@ -369,15 +498,6 @@ Note: GPT-5 models only accept `temperature=1`; pxGPT handles this automatically
 GOOGLE_API_KEY=your_key_here
 GOOGLE_MODEL=gemini-2.5-pro
 ```
-
-### Ollama (local)
-
-```bash
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=gemma3:12b
-```
-
-Ensure the service is running (`ollama serve`) and the model is downloaded (`ollama pull gemma3:12b`).
 
 ---
 
@@ -462,7 +582,7 @@ If you already have a manifest from a previous run (or built it with `describe-b
 ### Cost optimization
 
 - Prompt caching is automatic for Anthropic: the system prompt is marked `cache_control: ephemeral`. Each Stage 3 batch call uses the cached prompt for all requests after the first.
-- Keep system prompts identical across runs (no date stamps, no per-line insertions) so the cache key matches.
+- Keep system prompts identical across runs (no date stamps, no plant-line/cultivar-specific insertions) so the cache key matches.
 - For Stage 1, moderate `STAGE1_MAX_TOKENS` (16 384) is usually enough for descriptive text. Enable `BATCH_300K_OUTPUT=true` only if descriptions are being truncated.
 
 ---

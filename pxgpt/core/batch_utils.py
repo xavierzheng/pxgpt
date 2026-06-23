@@ -140,7 +140,7 @@ def write_phenotype_results(
     line_ids: List[str],
     output_dir: str,
 ) -> Dict[str, int]:
-    """Retrieve batch results and write per-line JSON files to *output_dir*.
+    """Retrieve batch results and write one JSON file per plant line/cultivar.
 
     Returns token-usage totals.
     """

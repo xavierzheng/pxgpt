@@ -1,5 +1,64 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- **Reasoning is now OFF by default everywhere.** `STAGE3_EFFORT` default changed
+  from `medium` → `""` (empty). Stage 3 (`phenotype-batch`) and the `schema`
+  command now run **without reasoning and send `temperature`** by default;
+  structured output (`output_config.format`) is unaffected. Set `STAGE3_EFFORT`
+  (or pass `--effort`) to opt back into adaptive thinking.
+
+### New features
+- **`analyze` / `schema` support more backends**: `lmstudio` and `vllm` are now
+  first-class `--provider` values alongside `openai`, `ollama`, `google`. LM
+  Studio and vLLM route through LiteLLM's OpenAI-compatible path
+  (`openai/<model>` + their own base URL), each with dedicated env vars
+  (`LMSTUDIO_BASE_URL`/`LMSTUDIO_MODEL`/`LMSTUDIO_API_KEY`,
+  `VLLM_BASE_URL`/`VLLM_MODEL`/`VLLM_API_KEY`). `api_base`/`api_key` are now
+  passed per request instead of via LiteLLM globals (no cross-provider clash),
+  `drop_params=True` is set for cross-backend robustness, OpenAI reasoning
+  models (gpt-5/o-series) omit a custom temperature, and Google routes via
+  `gemini/<model>`. vLLM requires `VLLM_MODEL` (clear error otherwise).
+- **`--effort` reasoning control for sync commands**: `analyze` and `schema`
+  accept `--effort {off,low,medium,high,xhigh,max}` (Anthropic adaptive thinking).
+  `analyze` gains optional reasoning (new `ANALYZE_EFFORT` env, default off);
+  `schema`'s flag overrides `STAGE3_EFFORT`. Non-anthropic providers ignore it.
+  Config gains `Config.build_output_config(effort, schema)`.
+- **OpenAI Batch API stages**: new `describe-batch-openai` (Stage 1) and
+  `phenotype-batch-openai` (Stage 3) commands, mirroring the Anthropic batch
+  commands on the OpenAI Batch API using the **Responses** endpoint
+  (`/v1/responses` JSONL). The Responses API is required because images can only
+  be referenced by Files-API `file_id` there (Chat Completions cannot reference
+- **OpenAI Batch API stages**: new `describe-batch-openai` (Stage 1) and
+  `phenotype-batch-openai` (Stage 3) commands, mirroring the Anthropic batch
+  commands on the OpenAI Batch API using the **Responses** endpoint
+  (`/v1/responses` JSONL). The Responses API is required because images can only
+  be referenced by Files-API `file_id` there (Chat Completions cannot reference
+  uploaded images). Images are uploaded once via the OpenAI Files API
+  (`purpose="vision"`) and reused by `file_id` through a separate manifest
+  (`openai_file_manifest.json`); the same `--no-files-api` / `USE_FILES_API=false`
+  toggle embeds them inline as base64. Stage 3 uses OpenAI strict structured
+  outputs (`text.format` json_schema with `strict: true`, all properties
+  required). New env vars:
+  `OPENAI_REASONING_EFFORT` (gpt-5/o-series only) and
+  `OPENAI_BATCH_COMPLETION_WINDOW` (default `24h`).
+- **`fetch-results` is provider-aware**: dispatches on the checkpoint
+  `provider` field (`anthropic` or `openai`); pre-existing checkpoints without
+  the field default to `anthropic`.
+- **`cleanup-files` command**: delete Files-API uploads recorded in a manifest
+  (provider auto-detected) and, for OpenAI, the batch input/output/error files
+  referenced by `--checkpoint`. Supports `--dry-run`; already-deleted files
+  (404) count as deleted; the manifest is pruned as files are removed. OpenAI
+  bills for stored files, so clean up after fetching results. Backed by a new
+  `delete_all()` method on both `FilesManager` and `OpenAIFilesManager`.
+- **Optional Files API for batch stages**: `describe-batch` and `phenotype-batch`
+  no longer *require* the Files API. The Files API is still **on by default**
+  (upload once, reuse `file_id`s). Pass `--no-files-api` (or set
+  `USE_FILES_API=false` in `.env`) to embed each image inline as base64 in the
+  request instead; the `files-api-2025-04-14` beta header and the manifest are
+  skipped in that mode.
+
 ## v0.3.0 — 2026-06-04
 
 ### Breaking changes
@@ -12,8 +71,8 @@
 
 ### New features
 - **Stage 1 — `describe-batch`**: upload images once via the Files API
-  (persistent manifest), submit a Message Batch for rich per-line
-  descriptions, save a checkpoint for later retrieval.
+  (persistent manifest), submit a Message Batch for rich descriptions grouped
+  one section per plant line/cultivar, save a checkpoint for later retrieval.
 - **Stage 3 — `phenotype-batch`**: reuse the Stage 1 manifest, submit a
   Message Batch with `output_config.format` (native structured output) and
   `output_config.effort` (adaptive thinking), write one `.json` per plant line.

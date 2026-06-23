@@ -1,37 +1,33 @@
-"""Files API manager — upload images once, reuse file_ids via a persistent manifest.
+"""OpenAI Files API manager — upload images once, reuse file_ids via a manifest.
 
-The manifest is a JSON file mapping absolute image path → file_id.  It is
-written after every successful upload so a partial run can always be resumed
-without re-uploading already-stored files.
+Mirrors ``core.files_manager.FilesManager`` but targets the OpenAI Files API
+(``client.files.create(file=..., purpose="vision")``) instead of Anthropic's.
+OpenAI file_ids live in a different namespace, so this uses its own manifest
+file (default ``openai_file_manifest.json``) and must never share one with the
+Anthropic manager.
 
-Concurrent uploads are handled with a ThreadPoolExecutor; a threading.Lock
-protects the in-memory manifest and all disk writes.
+The manifest maps absolute image path → OpenAI file_id and is written after
+every successful upload so a partial run can be resumed without re-uploading.
 """
 
 import json
-import mimetypes
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from anthropic import Anthropic
+# Reuse the shared image-extension set and not-found check so both managers agree.
+from .files_manager import IMAGE_EXTENSIONS, _is_not_found
 
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 _MANIFEST_VERSION = 1
+# OpenAI uploads images for vision with this purpose.
+_VISION_PURPOSE = "vision"
 
 
-def _is_not_found(error: Exception) -> bool:
-    """True if *error* indicates the file no longer exists (already deleted)."""
-    if getattr(error, "status_code", None) == 404:
-        return True
-    return "not_found" in str(error).lower() or "no such" in str(error).lower()
+class OpenAIFilesManager:
+    """Upload images via ``client.files.create``; persist file_ids in a manifest."""
 
-
-class FilesManager:
-    """Upload images via ``client.beta.files``; persist file_ids in a manifest."""
-
-    def __init__(self, client: Anthropic, manifest_path: str):
+    def __init__(self, client, manifest_path: str):
         self._client = client
         self._manifest_path = Path(manifest_path)
         self._lock = threading.Lock()
@@ -52,7 +48,7 @@ class FilesManager:
 
     def _save(self) -> None:
         """Overwrite manifest on disk.  Must be called while holding self._lock."""
-        data = {"version": _MANIFEST_VERSION, "files": self._manifest}
+        data = {"version": _MANIFEST_VERSION, "provider": "openai", "files": self._manifest}
         self._manifest_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
     # ------------------------------------------------------------------
@@ -74,12 +70,8 @@ class FilesManager:
                 return self._manifest[abs_path]
 
         path = Path(image_path)
-        mime_type, _ = mimetypes.guess_type(str(path))
-        if not mime_type:
-            mime_type = "image/jpeg"
-
         with open(path, "rb") as f:
-            response = self._client.beta.files.upload(file=(path.name, f, mime_type))
+            response = self._client.files.create(file=f, purpose=_VISION_PURPOSE)
 
         with self._lock:
             self._manifest[abs_path] = response.id
@@ -116,8 +108,7 @@ class FilesManager:
             return result
 
         def _upload(img: Path):
-            file_id = self.upload_image(str(img))
-            return img.name, file_id
+            return img.name, self.upload_image(str(img))
 
         with ThreadPoolExecutor(max_workers=min(concurrency, len(to_upload))) as pool:
             futures = {pool.submit(_upload, img): img for img in to_upload}
@@ -125,7 +116,7 @@ class FilesManager:
                 name, file_id = fut.result()
                 result[name] = file_id
 
-        # Preserve sorted order in returned dict
+        # Preserve sorted order in the returned dict
         return {img.name: result[img.name] for img in images if img.name in result}
 
     @property
@@ -138,7 +129,7 @@ class FilesManager:
             return {"total": len(self._manifest)}
 
     def delete_all(self, dry_run: bool = False):
-        """Delete every uploaded file in the manifest via the Anthropic Files API.
+        """Delete every uploaded file in the manifest via the OpenAI Files API.
 
         Returns ``(deleted_ids, failed)`` where *failed* is a list of
         ``(file_id, error)`` tuples.  A file that is already gone (404) counts
@@ -154,7 +145,7 @@ class FilesManager:
                 deleted.append(fid)
                 continue
             try:
-                self._client.beta.files.delete(fid)
+                self._client.files.delete(fid)
             except Exception as e:  # noqa: BLE001 - report, keep going
                 if not _is_not_found(e):
                     failed.append((fid, str(e)))

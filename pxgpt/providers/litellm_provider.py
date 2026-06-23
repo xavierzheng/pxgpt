@@ -8,45 +8,65 @@ from .base import BaseProvider, APIResponse, TokenUsage
 
 
 class LiteLLMProvider(BaseProvider):
-    """LiteLLM provider for multiple LLM services"""
-    
+    """LiteLLM provider for OpenAI, Ollama, LM Studio, vLLM and Google.
+
+    Model/route resolution per provider (api_base / api_key are passed per call,
+    not via LiteLLM globals, so multiple providers never clash):
+
+    - openai    : ``<model>``           (optional OPENAI_BASE_URL for proxies)
+    - ollama    : ``ollama/<model>``    @ OLLAMA_BASE_URL
+    - lmstudio  : ``openai/<model>``    @ LMSTUDIO_BASE_URL (OpenAI-compatible)
+    - vllm      : ``openai/<model>``    @ VLLM_BASE_URL    (OpenAI-compatible)
+    - google    : ``gemini/<model>``    (Google AI Studio)
+
+    LM Studio and vLLM both expose an OpenAI-compatible server, so they use the
+    ``openai/`` route with their own base URL and a (usually dummy) api_key.
+    """
+
     def __init__(self, config, provider: str):
         super().__init__(config)
         self.llm_provider = provider
-        base_model = config.get_model(provider)
-        
-        # For Ollama, prepend the provider prefix required by LiteLLM
+        self.base_model = config.get_model(provider)
+        self.model = self._resolve_model(provider, self.base_model)
+        self.api_base = self._resolve_api_base(provider)
+        self.api_key = config.get_api_key(provider)
+
+        if provider in ("lmstudio", "vllm") and not self.base_model:
+            raise ValueError(
+                f"No model configured for '{provider}'. Set "
+                f"{'VLLM_MODEL' if provider == 'vllm' else 'LMSTUDIO_MODEL'}."
+            )
+
+    @staticmethod
+    def _resolve_model(provider: str, base_model: str) -> str:
         if provider == "ollama":
-            self.model = f"ollama/{base_model}"
-        else:
-            self.model = base_model
-        
-        # Set up provider-specific configuration
-        self._setup_provider()
-    
+            return f"ollama/{base_model}"
+        if provider in ("lmstudio", "vllm"):
+            # OpenAI-compatible servers route through the openai handler.
+            return f"openai/{base_model}"
+        if provider == "google":
+            return f"gemini/{base_model}"
+        return base_model  # openai (and anything already prefixed)
+
+    def _resolve_api_base(self, provider: str):
+        if provider == "openai":
+            return self.config.openai_base_url  # may be None (real OpenAI)
+        if provider == "ollama":
+            return self.config.ollama_base_url
+        if provider == "lmstudio":
+            return self.config.lmstudio_base_url
+        if provider == "vllm":
+            return self.config.vllm_base_url
+        return None
+
+    def _is_openai_reasoning_model(self) -> bool:
+        m = self.base_model.lower()
+        return "gpt-5" in m or m.startswith(("o1", "o3", "o4"))
+
     @property
     def provider_name(self) -> str:
         return f"litellm-{self.llm_provider}"
-    
-    def _setup_provider(self):
-        """Set up provider-specific configuration"""
-        if self.llm_provider == "openai":
-            api_key = self.config.get_api_key("openai")
-            if api_key:
-                litellm.api_key = api_key
-            
-            # Support custom base URL for LM Studio
-            if self.config.openai_base_url:
-                litellm.api_base = self.config.openai_base_url
-        
-        elif self.llm_provider == "google":
-            api_key = self.config.get_api_key("google") 
-            if api_key:
-                litellm.api_key = api_key
-        
-        elif self.llm_provider == "ollama":
-            litellm.api_base = self.config.ollama_base_url
-    
+
     def _create_client(self):
         """LiteLLM doesn't need explicit client creation"""
         return None
@@ -115,16 +135,22 @@ class LiteLLMProvider(BaseProvider):
             "model": self.model,
             "messages": full_messages,
             "max_tokens": self.config.max_tokens,
-            "timeout": self.config.timeout
+            "timeout": self.config.timeout,
+            # Drop params a given backend doesn't accept instead of erroring —
+            # keeps one code path working across OpenAI / Ollama / LM Studio / vLLM.
+            "drop_params": True,
         }
-        
-        # GPT-5 models only support temperature=1
-        if "gpt-5" in self.model:
-            params["temperature"] = 1.0
-            print(f"## Note: GPT-5 models only support temperature=1, overriding configured temperature")
+        if self.api_base:
+            params["api_base"] = self.api_base
+        if self.api_key:
+            params["api_key"] = self.api_key
+
+        # OpenAI reasoning models (gpt-5 / o-series) only accept the default temperature.
+        if self.llm_provider == "openai" and self._is_openai_reasoning_model():
+            print("## Note: OpenAI reasoning model — using default temperature")
         else:
             params["temperature"] = self.config.temperature
-        
+
         # Send request
         response = litellm.completion(**params)
         

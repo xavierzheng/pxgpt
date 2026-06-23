@@ -9,7 +9,12 @@ from .commands.analyze import setup_analyze_parser
 from .commands.schema import setup_schema_parser
 from .commands.describe import setup_describe_parser
 from .commands.phenotype import setup_phenotype_parser
+from .commands.openai_batch import (
+    setup_describe_batch_openai_parser,
+    setup_phenotype_batch_openai_parser,
+)
 from .commands.fetch_results import setup_fetch_results_parser
+from .commands.cleanup_files import setup_cleanup_files_parser
 from .commands.normalize_schema import setup_normalize_schema_parser
 
 
@@ -48,7 +53,10 @@ def main():
     setup_schema_parser(subparsers)
     setup_describe_parser(subparsers)
     setup_phenotype_parser(subparsers)
+    setup_describe_batch_openai_parser(subparsers)
+    setup_phenotype_batch_openai_parser(subparsers)
     setup_fetch_results_parser(subparsers)
+    setup_cleanup_files_parser(subparsers)
     setup_normalize_schema_parser(subparsers)
 
     if len(sys.argv) == 1:

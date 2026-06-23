@@ -1,14 +1,57 @@
 """Image processing utilities."""
 
 import base64
+import mimetypes
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Iterable
+
+
+# Explicit extension → media_type map. Some systems' mimetypes DB does not know
+# .webp (and occasionally .gif), so we resolve known image types ourselves and
+# only fall back to mimetypes/jpeg for anything else.
+_MEDIA_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
 
 
 def get_base64_encoded_image(image_path: str) -> str:
     """Convert image file to base64 string."""
     with open(image_path, "rb") as f:
         return base64.b64encode(f.read()).decode("utf-8")
+
+
+def build_base64_content_list(image_paths: Iterable) -> List[Dict[str, Any]]:
+    """Return base64 image content blocks for the given image paths.
+
+    Used by the batch stages when the Files API is disabled: each image is
+    embedded inline in the request rather than referenced by file_id. The
+    media_type is derived per file so .png/.webp/.gif are handled correctly
+    (unlike ``create_image_content_list``, which is jpeg-only). Input order is
+    preserved, so callers should pass an already-sorted list.
+    """
+    blocks: List[Dict[str, Any]] = []
+    for p in image_paths:
+        p = Path(p)
+        media_type = _MEDIA_TYPES.get(p.suffix.lower())
+        if not media_type:
+            media_type, _ = mimetypes.guess_type(str(p))
+        if not media_type:
+            media_type = "image/jpeg"
+        blocks.append(
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": media_type,
+                    "data": get_base64_encoded_image(str(p)),
+                },
+            }
+        )
+    return blocks
 
 
 def create_image_content_list(folder_path: str) -> List[Dict[str, Any]]:
