@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixed
+- **Image uploads now retry transient gateway errors.** A Cloudflare `502 Bad
+  Gateway` (or `503`/`504`/`429`/connection/timeout) during a Files-API upload
+  no longer aborts the run — `FilesManager` / `OpenAIFilesManager` retry up to
+  5 times with exponential backoff + jitter, reopening the file each attempt.
+  Non-transient errors (e.g. `400`) still fail fast. Already-uploaded images are
+  skipped via the manifest, so reruns were always safe; this avoids needing one.
+
 ### Changed
 - **Effort env vars accept `off`/`none`** (in addition to blank) as the
   "no reasoning" value, so they match the `--effort off` flag. Across

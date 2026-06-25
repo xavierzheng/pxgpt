@@ -9,6 +9,8 @@ protects the in-memory manifest and all disk writes.
 """
 
 import json
+import time
+import random
 import mimetypes
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -20,12 +22,46 @@ from anthropic import Anthropic
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 _MANIFEST_VERSION = 1
 
+# Upload retry policy for transient gateway errors (e.g. Cloudflare 502/503/504).
+_UPLOAD_MAX_ATTEMPTS = 5
+_UPLOAD_BASE_DELAY = 1.0
+
 
 def _is_not_found(error: Exception) -> bool:
     """True if *error* indicates the file no longer exists (already deleted)."""
     if getattr(error, "status_code", None) == 404:
         return True
     return "not_found" in str(error).lower() or "no such" in str(error).lower()
+
+
+def _is_transient(error: Exception) -> bool:
+    """True for errors worth retrying: 429, any 5xx (incl. Cloudflare 502/503/504),
+    and connection/timeout errors that carry no status code."""
+    code = getattr(error, "status_code", None)
+    if code is not None:
+        return code == 429 or code >= 500
+    name = type(error).__name__.lower()
+    text = str(error).lower()
+    return any(k in name for k in ("connection", "timeout")) or \
+        any(k in text for k in ("connection", "timeout", "502", "503", "504", "bad gateway"))
+
+
+def _upload_with_retry(upload_call, label: str):
+    """Call *upload_call* (a no-arg callable that performs one upload) with
+    exponential backoff on transient errors.  *upload_call* must (re)open the
+    file itself, since a failed attempt consumes the file handle."""
+    for attempt in range(_UPLOAD_MAX_ATTEMPTS):
+        try:
+            return upload_call()
+        except Exception as e:  # noqa: BLE001
+            last = attempt == _UPLOAD_MAX_ATTEMPTS - 1
+            if not _is_transient(e) or last:
+                raise
+            delay = _UPLOAD_BASE_DELAY * (2 ** attempt) + random.uniform(0, 1)
+            code = getattr(e, "status_code", None) or type(e).__name__
+            print(f"  Upload of {label} failed ({code}); "
+                  f"retry {attempt + 1}/{_UPLOAD_MAX_ATTEMPTS - 1} in {delay:.1f}s")
+            time.sleep(delay)
 
 
 class FilesManager:
@@ -78,8 +114,12 @@ class FilesManager:
         if not mime_type:
             mime_type = "image/jpeg"
 
-        with open(path, "rb") as f:
-            response = self._client.beta.files.upload(file=(path.name, f, mime_type))
+        def _do_upload():
+            # Reopen the file on every attempt — a failed upload consumes it.
+            with open(path, "rb") as f:
+                return self._client.beta.files.upload(file=(path.name, f, mime_type))
+
+        response = _upload_with_retry(_do_upload, path.name)
 
         with self._lock:
             self._manifest[abs_path] = response.id

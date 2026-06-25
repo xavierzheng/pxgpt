@@ -16,8 +16,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, Optional
 
-# Reuse the shared image-extension set and not-found check so both managers agree.
-from .files_manager import IMAGE_EXTENSIONS, _is_not_found
+# Reuse the shared image-extension set, not-found check, and upload retry helper.
+from .files_manager import IMAGE_EXTENSIONS, _is_not_found, _upload_with_retry
 
 _MANIFEST_VERSION = 1
 # OpenAI uploads images for vision with this purpose.
@@ -70,8 +70,13 @@ class OpenAIFilesManager:
                 return self._manifest[abs_path]
 
         path = Path(image_path)
-        with open(path, "rb") as f:
-            response = self._client.files.create(file=f, purpose=_VISION_PURPOSE)
+
+        def _do_upload():
+            # Reopen the file on every attempt — a failed upload consumes it.
+            with open(path, "rb") as f:
+                return self._client.files.create(file=f, purpose=_VISION_PURPOSE)
+
+        response = _upload_with_retry(_do_upload, path.name)
 
         with self._lock:
             self._manifest[abs_path] = response.id
