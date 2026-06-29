@@ -137,23 +137,81 @@ pxgpt describe-batch ... --wait
 
 ### Stage 2 — Schema synthesis (manual, human-in-the-loop)
 
-This stage is intentionally kept manual. Open a conversational LLM session (Claude.ai with extended thinking recommended) and paste the contents of `descriptions.txt`.
+This stage is intentionally kept manual. Open a conversational LLM session (Claude.ai with extended thinking recommended or claude code) and paste the contents of `descriptions.txt`.
 
 **Prompt template:**
 
 ```
-You are a professional botanist and data scientist. Based on the phenotyping
-reports below, generate a comprehensive JSON schema covering all possible
-phenotypic descriptions for this Brassica collection.
+# CONTEXT (read first — this drives every rule below)
+You are generating a MASTER PHENOTYPE SCHEMA for vision-based plant phenotyping.
+The downstream consumer is a MULTIMODAL LLM that will look at plant PHOTOGRAPHS and assign a value for each trait. Therefore every trait, every category, and every level must be something that LLM can reliably DISCRIMINATE FROM IMAGES. A category that is botanically real but not visually distinguishable in a photo is useless here and must be merged or dropped. Optimize for: canonical reusable trait names, small mutually-exclusive
+visually-distinct value sets, and biologically coherent organization. Exhaustiveness means "cover every real trait", NOT "list every synonym as a separate category".
 
-Requirements:
-- Use ontology-like terms
-- Transform qualitative traits to enum with all observed values
-- Standardize units for quantitative traits
-- Include every trait observed in at least one cultivar — nothing is too rare
-- For every object node: include additionalProperties: false and a required array
+You are a professional botanist and data scientist. From the provided document (phenotyping reports of individual cultivars), generate a SINGLE master JSON schema.
 
-[Paste descriptions.txt content here]
+OUTPUT: a JSON schema DEFINITION (a template), not a filled-in example for any one plant.
+Output only the JSON, no prose preamble.
+
+## TRAIT GROUPING (biological coherence — mandatory)
+- Organize traits into top-level groups that each correspond to ONE coherent anatomical structure or functional/developmental unit. Examples of valid groups (use only those the data warrants): whole_plant_architecture, root_system, stem, leaf_blade, leaf_margin, leaf_apex_base, leaf_surface, petiole, venation, inflorescence, flower, fruit, seed, phenology.
+- A trait must sit in the group matching the organ/structure it describes.
+- FORBIDDEN: catch-all groups that mix unrelated organs or functions. Do NOT create a group like "health_medium_taxonomy_reproductive". If a trait fits no organ group, create a small well-defined functional group (e.g. "phenology"), never a mixed bucket.
+
+## TRAIT NAMING (ontology-style, canonical)
+- Use canonical, reusable, ontology-style names (e.g. leaf_blade_shape, leaf_margin_type, flower_color_hue, petiole_length). Lowercase snake_case, organ_attribute pattern.
+- The name must be reusable across cultivars and species — never encode one cultivar's specific value into the trait name.
+
+## TRAIT CLASSIFICATION — assign each trait a "scale_type":
+- "nominal": discrete categories with NO inherent order (e.g. leaf shape, color hue).
+- "ordinal": a feature with a GENUINE inherent order (e.g. intensity, relative size, area-proportion bands).
+- "quantitative": a directly measurable continuous value (counts, lengths). Give a standardized "unit"; do NOT bin into an enum.
+
+## NOMINAL VALUE RULES (this is where over-enumeration must be stopped)
+- Consolidate synonyms and near-duplicates onto ONE canonical controlled-vocabulary term. Map observed surface variants (e.g. "violet", "purplish", "magenta-purple") onto the nearest canonical category; do NOT create a separate category per wording.
+- Every category must be (a) mutually exclusive, (b) visually discriminable from a photo by a non-expert, and (c) biologically meaningful.
+- Every canonical category must be grounded in >=1 actual observation in the document. Consolidating variants is required; inventing unobserved categories is forbidden.
+- If a nominal trait exceeds ~7 categories, treat it as a red flag: you are almost certainly splitting synonyms or encoding non-visual distinctions. Consolidate unless each category is genuinely visually distinct AND biologically warranted.
+
+## COLOR HANDLING (decompose — do not let color explode)
+- NEVER create composite color categories (e.g. "light-purplish-green"). Composites are the main cause of enum explosion.
+- Decompose any color trait into separate sub-traits, each small:
+    *_hue       -> nominal, a BASIC canonical palette only (e.g. white, yellow, orange, red, pink, purple, blue, green, brown). Map shades onto the nearest               basic hue; do not enumerate shade words.
+    *_intensity -> ordinal, <=5 levels (this version uses LLM perception, no instrument).
+    *_coverage  -> ordinal area-proportion bands, <=5 levels, only if the document describes how much area the color occupies.
+
+## ORDINAL LEVEL RULES
+- Default max 5 levels; hard max 7. Prefer an ODD number (3, 5, or 7) so midpoint and both extremes are semantically anchored.
+- Every level needs an explicit semantic definition, not a bare number.
+- If a trait truly needs >5 levels, justify it in "design_note"; if you cannot justify it, reduce the levels.
+
+## PER-TRAIT STRUCTURE — each trait is an object with:
+- "trait_name": canonical ontology-style name
+- "description": what the trait captures
+- "scale_type": "nominal" | "ordinal" | "quantitative"
+- "values":
+    nominal      -> array of canonical category strings (unordered)
+    ordinal      -> ordered array of { "level": int, "label": str, "definition": str }
+    quantitative -> null
+- "unit": standardized unit string for quantitative traits; otherwise null
+- "support": integer count of cultivars exhibiting this feature
+- "design_note": brief rationale for the chosen scale_type, categories, and levels; mandatory justification if a nominal trait exceeds 7 categories or an ordinal exceeds 5.
+
+## COVERAGE
+- Include every trait, even one appearing in a single cultivar. Record its "support".
+- Coverage applies to TRAITS, not to synonym-level categories. Cover every real trait; consolidate categories.
+
+## SCHEMA HYGIENE
+- Use only basic JSON Schema constructs (object, array, string, number, integer, boolean, enum). Nesting (organ -> sub-traits) is allowed and encouraged. Do NOT use recursive or self-referential schemas, external $ref, minLength/maxLength, or minimum/maximum, so the schema stays compatible with grammar-constrained structured output downstream.
+
+## FORMAT ANCHOR (illustrative only — derive ALL real content from the document)
+A good leaf color treatment looks like:
+  leaf_color_hue       (nominal, values: [green, purple])
+  leaf_green_intensity (ordinal, 3 levels: pale / medium / deep, each defined)
+NOT a single nominal trait "leaf_color" with values
+  [light green, medium green, dark green, purplish green, green-purple, ...].
+
+All the phenotyping reports are combined into [Paste combined phenotype report file path here]. Use this file as your phenotyping reports source.
+
 ```
 
 **Iterate** until the schema covers all observed variation. Save the final schema to a file (e.g. `prompts/phenotype_schema.json`), then normalize it:
