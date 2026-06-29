@@ -2,6 +2,54 @@
 
 ## Unreleased
 
+### New features
+- **Stage 3 schema sharding (fixes "compiled grammar is too large").** The full
+  Stage 3 structured-output schema (13 organ groups / 46 traits) exceeds the
+  Anthropic structured-outputs internal grammar-size limit and every request
+  errors with `invalid_request_error: The compiled grammar is too large`. The
+  schema is now **sharded by organ group**, bin-packed to a configurable
+  grammar-cost budget, so each call carries a small, compilable schema; the
+  per-shard `{rationale, value}` outputs are **merged back into one record per
+  plant**.
+  - **`shard-schema` command** (`pxgpt/core/shard_builder.py`): generates the
+    shard set from a master schema — under `<shard-dir>/`, one
+    `shard_NN.schema.json` + `shard_NN.prompt.md` per shard, a shared
+    `shards_system.md` (the invariant preamble → cached system block), and
+    `shards_manifest.json`. Quantitative `value` is `{"type":"string"}` (parsed
+    downstream) **not** `anyOf` — union types blow up the grammar. Args:
+    `--master`, `--shard-dir`, `--shard-budget` (default 40), `--combined`. The
+    standalone `build_stage3.py` in the analysis tree is now a thin shim over
+    this module (single source of truth), and the auto-reshard runs it
+    **in-process** (no subprocess).
+  - `phenotype-batch` gains a **sharded mode** (`--shard-dir`): builds one
+    request per *(plant × shard)* with a byte-identical, **cached** system+image
+    prefix (`cache_control` on the last image block) and only the small per-shard
+    prompt + schema as the uncached suffix, so a plant's first shard pays the
+    image cost and the rest hit the cache. `--dispatch {batch,sequential}`
+    (default `batch`) selects one Message Batch for everything vs. near-synchronous
+    per-plant calls (reliable 5-min image cache). A **pre-flight live compile
+    check** verifies each shard schema compiles and **auto-reshards** at a smaller
+    budget (re-running `build_stage3.py`) if one still trips the limit. In sharded
+    mode `--schema`/`--system-prompt`/`--prompt` are optional (taken from the
+    shard set). `--master-schema` overrides the manifest's master path used for
+    merge validation.
+  - `fetch-results` handles the new `phenotype_sharded` checkpoint stage:
+    demultiplexes `custom_id = "<line>__<shard>"`, merges, parses quantitative
+    strings → numbers, validates coverage against the master schema, and writes
+    one `{line_id}.json` per plant plus `{line_id}.gaps.json` for any missing
+    traits / shard errors. Cache-creation vs cache-read tokens are logged.
+
+### Changed
+- **`phenotype-batch --input-dir` is now optional with the Files API.** Stage 3
+  can reuse the images already uploaded by `describe-batch` directly from
+  `--manifest`: when `--input-dir` is omitted, the plant lines and their
+  `file_id`s are reconstructed from the manifest (grouping each uploaded image
+  path by its parent-directory name, the Stage 1 `custom_id`), so the original
+  image tree need not be present on disk and nothing is re-uploaded. Pass
+  `--input-dir` to additionally upload images added since Stage 1.
+  `--input-dir` is still **required** with `--no-files-api`, since inline base64
+  mode must read the image bytes from disk.
+
 ### Fixed
 - **Image uploads now retry transient gateway errors.** A Cloudflare `502 Bad
   Gateway` (or `503`/`504`/`429`/connection/timeout) during a Files-API upload

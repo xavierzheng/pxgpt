@@ -128,20 +128,49 @@ pxgpt describe-batch \
 ```
 When results are fetched, `descriptions.txt` contains grouped descriptions, one section per plant line/cultivar.
 
-**Step 3 — Stage 3 structured phenotyping** (can run concurrently with Stage 1; images are already uploaded):
+**Step 3 — Stage 3 structured phenotyping** (can run concurrently with Stage 1; images are already uploaded). With the Files API, `--input-dir` is optional — the plant lines and their `file_id`s are reused straight from `--manifest`:
 ```bash
 pxgpt phenotype-batch \
-  --input-dir ./images \
   --schema prompts/phenotype_schema.json \
   --output phenotypes/ \
   --system-prompt prompts/phenotyping_system_schema.txt \
-  --prompt prompts/extract_traits.txt
+  --prompt prompts/extract_traits.txt \
+  --manifest file_manifest.json
 ```
 
 **Step 4 — retrieve results** (once the Anthropic batch finishes, usually within a few hours):
 ```bash
 pxgpt fetch-results --checkpoint checkpoint_<batch_id>.json
 ```
+
+#### Large schemas: sharded Stage 3 (fixes "compiled grammar is too large")
+
+A big master schema (many traits/enums/nested groups) can exceed Anthropic's
+structured-outputs **internal grammar-size limit** — every request fails with
+`invalid_request_error: The compiled grammar is too large`. Shard the schema by
+organ group so each call carries a small, compilable schema, then merge:
+
+```bash
+# 1. Generate shards from the master schema (writes <shard-dir>/ + shards_manifest.json)
+pxgpt shard-schema --master master_schema.json --shard-budget 40
+#    -> shard_NN.schema.json, shard_NN.prompt.md, shards_system.md, shards_manifest.json
+
+# 2. Run Stage 3 in sharded mode (one small schema per shard, cached image prefix)
+pxgpt phenotype-batch \
+  --shard-dir path/to/shards \
+  --output phenotypes/ \
+  --manifest file_manifest.json
+#    --dispatch batch (default) | sequential   (sequential = reliable 5-min image cache)
+
+# 3. Fetch + merge: one {line_id}.json per plant, {line_id}.gaps.json for any gaps
+pxgpt fetch-results --checkpoint checkpoint_<batch_id>.json
+```
+
+In sharded mode `--schema`/`--system-prompt`/`--prompt` are optional (the per-shard
+schemas and the shared system preamble come from the shard set). A pre-flight live
+compile check verifies each shard and auto-reshards at a smaller budget if one
+still trips the limit. The system prompt + images form a cached prefix shared
+across a plant's shards; only the small per-shard prompt + schema are re-sent.
 
 ### Single-sample commands (for testing / small runs)
 
@@ -176,6 +205,7 @@ pxgpt schema \
 | `pxgpt cleanup-files` | Delete Files-API uploads from a manifest (both providers); OpenAI bills for storage |
 | `pxgpt extract-report` | Extract `<report>` from `<think>`/`<report>` output (single or grouped); back-compat for non-native reasoning |
 | `pxgpt normalize-schema` | Add `additionalProperties: false` + `required` to all objects in a schema |
+| `pxgpt shard-schema` | Split a master schema into compilable Stage 3 shards (+ per-shard prompts) for `phenotype-batch --shard-dir` |
 | `pxgpt analyze` | Single-folder text description (sync, all providers) |
 | `pxgpt schema` | Single-folder structured JSON (sync, all providers) |
 
@@ -209,6 +239,8 @@ pxgpt/
 │   ├── files_manager.py   # Anthropic Files API upload + manifest
 │   ├── openai_files_manager.py  # OpenAI Files API upload + manifest
 │   ├── schema_utils.py    # JSON schema normalizer
+│   ├── shard_builder.py   # Stage 3 shard generation from a master schema
+│   ├── sharding.py        # Stage 3 shard loading, compile-check, merge/validate
 │   ├── image_utils.py     # Base64 + file_id content builders
 │   └── file_utils.py      # File I/O helpers
 ├── providers/
@@ -223,6 +255,7 @@ pxgpt/
 │   ├── cleanup_files.py   # cleanup-files (delete Files-API uploads)
 │   ├── extract_report.py  # extract-report (<think>/<report> back-compat)
 │   ├── normalize_schema.py
+│   ├── shard_schema.py     # shard-schema (build Stage 3 shards from a master)
 │   ├── analyze.py
 │   └── schema.py
 └── main.py

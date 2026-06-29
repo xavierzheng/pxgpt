@@ -168,6 +168,33 @@ class FilesManager:
         # Preserve sorted order in returned dict
         return {img.name: result[img.name] for img in images if img.name in result}
 
+    def group_by_line(self) -> Dict[str, Dict[str, str]]:
+        """Reconstruct plant lines from the manifest alone, without the image tree.
+
+        Returns ``{line_id: {filename: file_id}}`` where *line_id* is the
+        parent-directory name of each uploaded image path (the same value
+        ``describe-batch`` used as the ``custom_id``).  Filenames are sorted
+        within each line and lines are returned in sorted order, matching the
+        ordering produced when walking ``--input-dir``.
+
+        This lets ``phenotype-batch`` reuse the file_ids already uploaded by
+        ``describe-batch`` even when the original directory tree is gone.
+        """
+        with self._lock:
+            items = list(self._manifest.items())
+
+        grouped: Dict[str, List[str]] = {}
+        for path_str in (k for k, _ in items):
+            line_id = Path(path_str).parent.name
+            grouped.setdefault(line_id, []).append(path_str)
+
+        manifest = dict(items)
+        result: Dict[str, Dict[str, str]] = {}
+        for line_id in sorted(grouped):
+            paths = sorted(grouped[line_id], key=lambda p: Path(p).name)
+            result[line_id] = {Path(p).name: manifest[p] for p in paths}
+        return result
+
     @property
     def manifest_path(self) -> Path:
         return self._manifest_path

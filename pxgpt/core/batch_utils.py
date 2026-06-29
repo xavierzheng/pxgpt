@@ -59,6 +59,23 @@ def extract_text_content(content_blocks) -> str:
     )
 
 
+def describe_batch_error(error_response) -> str:
+    """Return ``"<type>: <message>"`` for a failed batch request.
+
+    A failed result exposes ``result.result.error`` as a ``BetaErrorResponse``
+    whose own ``type`` is always the literal ``"error"`` and which has **no**
+    ``message``; the actual API error (``invalid_request_error``, etc.) and its
+    human-readable text live on the nested ``.error`` object.  This helper
+    digs into that nested object, falling back gracefully if the shape differs.
+    """
+    inner = getattr(error_response, "error", None) or error_response
+    etype = getattr(inner, "type", None) or getattr(error_response, "type", None) or "unknown"
+    emsg = getattr(inner, "message", None)
+    if emsg is None:
+        emsg = str(inner)
+    return f"{etype}: {emsg}"
+
+
 def strip_code_fence(text: str) -> str:
     """Remove a leading ```json ... ``` or ``` ... ``` wrapper if present."""
     text = text.strip()
@@ -118,9 +135,9 @@ def write_describe_results(
             totals["cache_creation"] += getattr(u, "cache_creation_input_tokens", 0)
             totals["cache_read"] += getattr(u, "cache_read_input_tokens", 0)
         else:
-            err = result.result.error
-            raw[cid] = f"[ERROR {err.type}: {err.message}]"
-            print(f"  WARNING: {cid} failed — {err.type}: {err.message}")
+            detail = describe_batch_error(result.result.error)
+            raw[cid] = f"[ERROR {detail}]"
+            print(f"  WARNING: {cid} failed — {detail}")
 
     # Build output in original line order
     sections = []
@@ -177,14 +194,97 @@ def write_phenotype_results(
                 print(f"  WARNING: {cid} — JSON parse failed; raw text saved to {dest}")
                 errored += 1
         else:
-            err = result.result.error
+            detail = describe_batch_error(result.result.error)
             dest = out / f"{cid}.err.txt"
             with open(dest, "w", encoding="utf-8") as f:
-                f.write(f"[ERROR {err.type}]: {err.message}\n")
-            print(f"  WARNING: {cid} failed — {err.type}: {err.message}")
+                f.write(f"[ERROR {detail}]\n")
+            print(f"  WARNING: {cid} failed — {detail}")
             errored += 1
 
     print(f"  Wrote {written} JSON files; {errored} errors")
+    return totals
+
+
+def write_phenotype_sharded_results(
+    client,
+    batch_id: str,
+    line_ids: List[str],
+    master_index,
+    output_dir: str,
+) -> Dict[str, int]:
+    """Retrieve a SHARDED phenotype batch, merge shards, write one JSON per plant.
+
+    Results have ``custom_id = "<line_id>__<shard_id>"``.  Per plant the shard
+    objects are merged into one record keyed by the master organ structure,
+    quantitative strings are parsed to numbers, and any missing trait is
+    reported.  ``master_index`` is ``(group_order, group_traits, trait_meta)``
+    from :mod:`pxgpt.core.sharding`.
+
+    Returns token-usage totals.
+    """
+    from .sharding import split_custom_id, merge_plant_record
+
+    group_order, group_traits, trait_meta = master_index
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    totals = {"input": 0, "output": 0, "cache_creation": 0, "cache_read": 0}
+
+    per_line: Dict[str, List[Any]] = {lid: [] for lid in line_ids}
+    shard_errors: Dict[str, List[str]] = {}
+
+    for result in client.beta.messages.batches.results(batch_id):
+        cid = result.custom_id
+        line_id, shard_id = split_custom_id(cid)
+        if result.result.type == "succeeded":
+            msg = result.result.message
+            text = strip_code_fence(extract_text_content(msg.content))
+            u = msg.usage
+            totals["input"] += getattr(u, "input_tokens", 0)
+            totals["output"] += getattr(u, "output_tokens", 0)
+            totals["cache_creation"] += getattr(u, "cache_creation_input_tokens", 0)
+            totals["cache_read"] += getattr(u, "cache_read_input_tokens", 0)
+            try:
+                per_line.setdefault(line_id, []).append(json.loads(text))
+            except json.JSONDecodeError:
+                shard_errors.setdefault(line_id, []).append(f"{shard_id}: JSON parse failed")
+                print(f"  WARNING: {cid} — JSON parse failed")
+        else:
+            detail = describe_batch_error(result.result.error)
+            shard_errors.setdefault(line_id, []).append(f"{shard_id}: {detail}")
+            print(f"  WARNING: {cid} failed — {detail}")
+
+    written = 0
+    plants_with_gaps = 0
+    total_gaps = 0
+    for lid in line_ids:
+        record, missing = merge_plant_record(
+            per_line.get(lid, []), group_order, group_traits, trait_meta
+        )
+        dest = out / f"{lid}.json"
+        with open(dest, "w", encoding="utf-8") as f:
+            json.dump(record, f, indent=2)
+            f.write("\n")
+        written += 1
+
+        errs = shard_errors.get(lid, [])
+        if missing or errs:
+            plants_with_gaps += 1
+            total_gaps += len(missing)
+            report = {
+                "line_id": lid,
+                "missing_traits": [{"group": g, "trait": t} for g, t in missing],
+                "shard_errors": errs,
+            }
+            with open(out / f"{lid}.gaps.json", "w", encoding="utf-8") as f:
+                json.dump(report, f, indent=2)
+                f.write("\n")
+            print(f"  {lid}: {len(missing)} missing trait(s)"
+                  + (f", {len(errs)} shard error(s)" if errs else ""))
+
+    print(f"\n  Wrote {written} merged JSON files; "
+          f"{plants_with_gaps} plant(s) with gaps ({total_gaps} missing traits total)")
+    if total_gaps or plants_with_gaps:
+        print("  (see *.gaps.json next to the affected records)")
     return totals
 
 

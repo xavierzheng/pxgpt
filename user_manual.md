@@ -166,17 +166,18 @@ pxgpt normalize-schema --schema prompts/phenotype_schema.json
 
 ### Stage 3 — Batch structured phenotyping
 
-Submit all plant lines for structured extraction. The same manifest from Stage 1 is reused, so no images are re-uploaded:
+Submit all plant lines for structured extraction. The same manifest from Stage 1 is reused, so no images are re-uploaded. With the Files API (default), `--input-dir` is **optional**: omit it and the plant lines plus their `file_id`s are reconstructed straight from `--manifest`, so the image tree need not even be present on disk:
 
 ```bash
 pxgpt phenotype-batch \
-  --input-dir ./images \
   --schema prompts/phenotype_schema.json \
   --output phenotypes/ \
   --system-prompt prompts/phenotyping_system_schema.txt \
   --prompt prompts/extract_traits.txt \
   --manifest file_manifest.json
 ```
+
+Pass `--input-dir ./images` as well if you want Stage 3 to also pick up (and upload) any images added since Stage 1. `--input-dir` **is required** with `--no-files-api`, because inline base64 mode must read the image bytes from disk.
 
 **API features used:**
 - `output_config.format = {"type": "json_schema", "schema": …}` — native structured output; the schema grammar is compiled once and cached across all requests in the batch
@@ -189,6 +190,58 @@ pxgpt fetch-results --checkpoint checkpoint_<batch_id>.json
 ```
 
 **Output**: one `{line_id}.json` file per plant line in the `--output` directory. If JSON parsing fails for a line, a `{line_id}.err.txt` file is written instead for manual inspection.
+
+---
+
+### Stage 3 (sharded) — for schemas too large to compile
+
+Structured outputs compile your JSON schema into a constrained-decoding grammar, and there is an **internal limit on the compiled grammar size**. A large master schema (many traits, enums and nested organ groups) trips it, and *every* request fails with:
+
+```
+invalid_request_error: The compiled grammar is too large, which would cause
+performance issues. Simplify your tool schemas or reduce the number of strict tools.
+```
+
+This is not a bug and not the published 24-optional-parameter / 16-union limit — it's the internal grammar-size ceiling. The fix is to **shard** the schema by organ group so each request carries a small, compilable schema, then **merge** the per-shard results back into one record per plant.
+
+**Step 1 — generate the shard set from your master schema:**
+
+```bash
+pxgpt shard-schema --master master_schema.json --shard-budget 40
+# Writes <master dir>/shards/:
+#   shard_NN.schema.json   one small structured-output schema per shard
+#   shard_NN.prompt.md     the organ-specific prompt text for that shard
+#   shards_system.md       the shared invariant preamble (cached system block)
+#   shards_manifest.json   shard list + trait inventory (drives the merge)
+```
+
+The master schema is the Stage 2 format (`trait_groups → traits` with `scale_type`/`values`/`unit`). Groups are bin-packed up to `--shard-budget` (a grammar-cost proxy; default 40). Lower the budget if a shard is still too large — a group that alone exceeds the budget is automatically sub-sharded across its traits. Quantitative `value`s are emitted as strings (parsed back to numbers at merge time), never `anyOf`, since union types inflate the grammar.
+
+**Step 2 — run Stage 3 in sharded mode:**
+
+```bash
+pxgpt phenotype-batch \
+  --shard-dir master_schema_generation/shards \
+  --output phenotypes/ \
+  --manifest file_manifest.json
+#   --dispatch batch (default) | sequential
+```
+
+In sharded mode `--schema`, `--system-prompt` and `--prompt` are **optional** — the per-shard schemas and the shared system preamble come from the shard set (pass `--system-prompt` only to override the preamble). `--master-schema` overrides the master path recorded in the manifest (used to validate the merged record).
+
+- **Pre-flight compile check**: each distinct shard schema is test-compiled with a tiny live request before the run. If one still trips the limit, pxGPT **auto-reshards** at a smaller budget (re-running the generator in-process so schema, prompt and manifest stay in sync) and re-checks.
+- **Prompt caching**: the system prompt + the plant's images form a byte-identical, cached prefix shared across that plant's shards (`cache_control` on the last image block); only the small per-shard prompt and schema are re-sent. The first shard of a plant pays the image cost; the rest hit the cache. Cache-creation vs cache-read tokens are logged so you can confirm caching empirically.
+- **Dispatch**: `batch` (default) submits one Message Batch for all *(plant × shard)* requests — cheapest, but the 5-minute prompt cache may expire before async execution. `sequential` runs each plant's shards as near-synchronous calls, which reliably keeps the image prefix in the cache window. Make the call once and compare the logged cache-read rate.
+
+**Step 3 — retrieve + merge:**
+
+```bash
+pxgpt fetch-results --checkpoint checkpoint_<batch_id>.json
+```
+
+For a sharded run, `fetch-results` demultiplexes the `custom_id = "<line_id>__<shard_id>"` results, merges each plant's shards into one record keyed by the master organ structure, parses quantitative strings to numbers, and validates coverage against the master schema.
+
+**Output**: one merged `{line_id}.json` per plant. If any trait is missing or a shard errored, a `{line_id}.gaps.json` is written alongside it listing the missing traits and shard errors.
 
 ---
 
@@ -257,17 +310,21 @@ Stage 3 batch structured phenotyping.
 
 ```
 pxgpt phenotype-batch \
-  --input-dir PATH \
-  --schema FILE \
   --output DIR \
-  --system-prompt FILE \
-  --prompt FILE \
+  --schema FILE \        # required in single-schema mode; ignored with --shard-dir
+  --system-prompt FILE \ # required in single-schema mode; optional override with --shard-dir
+  --prompt FILE \        # required in single-schema mode; ignored with --shard-dir
+  [--input-dir PATH]     # optional with the Files API: lines + file_ids are
+                         # reconstructed from --manifest. Required with --no-files-api.
   [--manifest FILE]      # default: file_manifest.json (ignored with --no-files-api)
   [--no-files-api]       # embed images inline as base64 instead of uploading
+  [--shard-dir DIR]      # SHARDED mode: per-shard schemas+prompts from shard-schema
+  [--master-schema FILE] # sharded: master used to validate the merged record
+  [--dispatch {batch,sequential}]   # sharded dispatch strategy (default: batch)
   [--wait]
 ```
 
-Output directory: one `{line_id}.json` per plant line; `{line_id}.err.txt` for parse failures.
+Output directory: one `{line_id}.json` per plant line; `{line_id}.err.txt` for parse failures (single-schema mode) or `{line_id}.gaps.json` for missing traits (sharded mode). See **Stage 3 (sharded)** above for when and how to use `--shard-dir`.
 
 ---
 
@@ -416,6 +473,25 @@ Changes applied:
 - Adds `required: []` to every object that has a `properties` dict but no `required` array
 - Strips `"format"` keyword (e.g. `"format": "date"`) — not supported by the API
 - Strips the root `$schema` meta-key
+
+---
+
+### `pxgpt shard-schema`
+
+Split a master phenotype schema into compilable Stage 3 shards (used when the full schema trips the structured-outputs grammar-size limit). See **Stage 3 (sharded)** for the full workflow.
+
+```
+pxgpt shard-schema \
+  --master FILE \           # master schema (Stage 2 format: trait_groups -> traits)
+  [--shard-dir DIR] \       # default: <master dir>/shards
+  [--shard-budget N] \      # grammar-cost budget per shard (default: 40)
+  [--combined] \            # also write combined stage3_schema.json + stage3_prompt.md
+  [--combined-dir DIR]      # default: parent of --shard-dir
+```
+
+Writes per shard `shard_NN.schema.json` + `shard_NN.prompt.md`, the shared `shards_system.md`, and `shards_manifest.json`. Whole organ groups are bin-packed up to `--shard-budget`; a group exceeding it alone is sub-sharded across its traits. The resulting shard directory is consumed by `pxgpt phenotype-batch --shard-dir`.
+
+> The standalone `build_stage3.py` in the analysis tree is a thin wrapper over this command (same output), kept for the existing local workflow.
 
 ---
 
@@ -665,6 +741,8 @@ Always pass `--manifest file_manifest.json` to both `describe-batch` and `phenot
 ### Running Stage 3 without Stage 1
 
 If you already have a manifest from a previous run (or built it with `describe-batch`), `phenotype-batch` will reuse all cached `file_id`s. Only genuinely new images are uploaded.
+
+In fact you can drop `--input-dir` entirely: with the Files API, `phenotype-batch` reconstructs every plant line and its `file_id`s from `--manifest` alone, so Stage 3 runs without the original image tree on disk. Provide `--input-dir` only when you want to upload images added since Stage 1, or when running with `--no-files-api` (which must read image bytes from disk).
 
 ### Cost optimization
 

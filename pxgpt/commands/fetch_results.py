@@ -16,8 +16,33 @@ from ..core.config import Config
 from ..core.batch_utils import (
     write_describe_results,
     write_phenotype_results,
+    write_phenotype_sharded_results,
     print_token_summary,
 )
+from ..core import sharding
+
+
+def _sharded_master_index(checkpoint):
+    """Rebuild the (group_order, group_traits, trait_meta) index for a sharded run.
+
+    Prefer the master schema recorded in the checkpoint; fall back to the shard
+    manifest's trait inventory.  Returns ``None`` (after printing) if neither is
+    available.
+    """
+    master_schema = checkpoint.get("master_schema")
+    if master_schema and Path(master_schema).exists():
+        return sharding.load_master_index(master_schema)
+
+    shard_dir = checkpoint.get("shard_dir")
+    if shard_dir and (Path(shard_dir) / sharding.MANIFEST_NAME).exists():
+        manifest, _ = sharding.load_shard_set(shard_dir)
+        print("  Note: master schema not found; using the shard manifest's trait "
+              "inventory for merge/validation.")
+        return sharding.master_index_from_manifest(manifest)
+
+    print("Error: cannot locate the master schema or shard manifest recorded in "
+          "the checkpoint; needed to merge sharded results.")
+    return None
 
 
 def _fetch_anthropic(config, checkpoint, output):
@@ -51,6 +76,14 @@ def _fetch_anthropic(config, checkpoint, output):
     elif stage == "phenotype":
         totals = write_phenotype_results(client, batch_id, line_ids, output)
         print(f"Phenotype JSON files written to: {output}/")
+    elif stage == "phenotype_sharded":
+        master_index = _sharded_master_index(checkpoint)
+        if master_index is None:
+            return 1
+        totals = write_phenotype_sharded_results(
+            client, batch_id, line_ids, master_index, output
+        )
+        print(f"Merged phenotype JSON files written to: {output}/")
     else:
         print(f"Error: unknown stage in checkpoint: {stage!r}")
         return 1
