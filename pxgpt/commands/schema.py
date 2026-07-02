@@ -14,6 +14,7 @@ from ..core.config import Config
 from ..core.image_utils import create_multi_image_message
 from ..core.file_utils import read_file_safely, write_file_safely
 from ..core.schema_utils import load_normalized
+from ..core.batch_utils import temperature_guard_status
 from ..providers.anthropic_provider import AnthropicProvider
 from ..providers.litellm_provider import LiteLLMProvider
 
@@ -64,10 +65,9 @@ def schema_command(args):
             if effort == "off":
                 effort = ""
             output_config = config.build_output_config(effort, schema=schema_dict)
-            thinking_on = bool(output_config.get("effort"))
             print(f"Structured output: native (output_config.format)")
             print(f"Thinking effort:   {output_config.get('effort', 'off')}")
-            print(f"Temperature sent:  {'no (thinking active)' if thinking_on else 'yes'}")
+            print(f"Temperature:       {temperature_guard_status(config.anthropic_model, effort)}")
 
             response = provider.send_request_with_retry(
                 messages=messages,
@@ -131,7 +131,8 @@ def setup_schema_parser(subparsers):
         choices=["off", "low", "medium", "high", "xhigh", "max"],
         default=None,
         help="Anthropic adaptive thinking effort (overrides STAGE3_EFFORT). "
-             "default = off = none = no reasoning + temperature is sent; "
-             "a level enables reasoning. Ignored for non-anthropic providers.",
+             "default = off = none = no reasoning; whether a custom temperature "
+             "is sent when off depends on the model tier; a level enables "
+             "reasoning. Ignored for non-anthropic providers.",
     )
     parser.set_defaults(func=schema_command)

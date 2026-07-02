@@ -14,8 +14,32 @@ from typing import Any, Dict, List, Optional
 
 
 # ---------------------------------------------------------------------------
-# Temperature guard
+# Temperature / thinking guard
 # ---------------------------------------------------------------------------
+
+# Model tiers where the API rejects a non-default temperature/top_p/top_k
+# unconditionally (not just while thinking is active) and where omitting
+# `thinking` now defaults to adaptive thinking ON instead of off. Sonnet 4.6
+# and earlier tiers keep the original rule: a custom temperature is fine as
+# long as thinking is off, and omitting `thinking` means thinking is off.
+_STRICT_TEMPERATURE_GUARD_PREFIXES = (
+    "claude-sonnet-5",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-fable-5",
+    "claude-mythos-5",
+)
+
+
+def model_uses_strict_temperature_guard(model: str) -> bool:
+    """True for model tiers that reject a non-default temperature unconditionally.
+
+    These tiers (Claude Sonnet 5, Opus 4.7/4.8, Fable 5, Mythos 5) also default
+    to adaptive thinking ON when ``thinking`` is omitted, unlike Sonnet 4.6 and
+    earlier where omitting it means thinking is off.
+    """
+    return model.startswith(_STRICT_TEMPERATURE_GUARD_PREFIXES)
+
 
 def build_request_params(
     model: str,
@@ -27,8 +51,13 @@ def build_request_params(
 ) -> Dict[str, Any]:
     """Return a ``MessageCreateParamsNonStreaming``-compatible dict.
 
-    The API rejects a custom temperature when thinking is active
-    (``output_config.effort`` is set), so we only include it when safe.
+    Temperature guard: the API rejects a custom temperature while thinking is
+    active, on every model tier. On the strict-guard tiers (see
+    ``model_uses_strict_temperature_guard``) it rejects a custom temperature
+    unconditionally, even with thinking off — and those same tiers default to
+    adaptive thinking ON when ``thinking`` is omitted. So on those tiers, when
+    effort is off, we send an explicit ``thinking: {"type": "disabled"}`` to
+    preserve the "no reasoning" behavior and omit temperature entirely.
     """
     params: Dict[str, Any] = {
         "model": model,
@@ -38,11 +67,31 @@ def build_request_params(
     }
     if output_config:
         params["output_config"] = output_config
-    # Only send temperature when thinking is off
+
     thinking_active = bool(output_config and output_config.get("effort"))
+    strict_guard = model_uses_strict_temperature_guard(model)
+
     if not thinking_active:
-        params["temperature"] = temperature
+        if strict_guard:
+            params["thinking"] = {"type": "disabled"}
+        else:
+            params["temperature"] = temperature
+
     return params
+
+
+def temperature_guard_status(model: str, effort: str) -> str:
+    """Human-readable summary of what ``build_request_params`` will do.
+
+    For status/log messages in the CLI commands — keeps them in sync with the
+    actual guard logic above instead of assuming a fixed model tier.
+    """
+    if effort:
+        return "temperature omitted (thinking active)"
+    if model_uses_strict_temperature_guard(model):
+        return ("temperature omitted; thinking explicitly disabled "
+                "(model rejects a non-default temperature even with thinking off)")
+    return "temperature sent (thinking off)"
 
 
 # ---------------------------------------------------------------------------

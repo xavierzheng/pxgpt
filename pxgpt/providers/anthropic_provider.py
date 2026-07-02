@@ -4,11 +4,11 @@ For batch operations (Stage 1 / Stage 3) the calling commands use the
 Anthropic client directly; this provider covers the ``analyze`` and ``schema``
 CLI commands.
 
-Temperature guard
------------------
-When ``output_config.effort`` is set the API forces the default temperature
-and rejects a custom value with a 400 error.  ``_build_kwargs`` enforces the
-rule centrally so it cannot be violated by any code path.
+Temperature / thinking guard
+-----------------------------
+``_build_kwargs`` delegates to ``batch_utils.build_request_params`` so the
+sync and batch code paths apply identical, model-aware rules — see that
+function's docstring for the guard logic per model tier.
 """
 
 from typing import Any, Dict, List, Optional
@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 from anthropic import Anthropic, RateLimitError, APIConnectionError, APIStatusError
 
 from .base import BaseProvider, APIResponse, TokenUsage
+from ..core.batch_utils import build_request_params
 
 
 class AnthropicProvider(BaseProvider):
@@ -96,24 +97,17 @@ class AnthropicProvider(BaseProvider):
     ) -> Dict[str, Any]:
         """Assemble keyword arguments for ``messages.create``.
 
-        The temperature guard is enforced here: when thinking is active
-        (``output_config.effort`` is set) temperature is omitted so the API
-        uses its default.
+        Temperature/thinking guard is applied by ``build_request_params``
+        (see module docstring).
         """
-        kwargs: Dict[str, Any] = {
-            "model": self.model_name,
-            "max_tokens": self.config.max_tokens,
-            "system": self._build_system(system_prompt, schema_text),
-            "messages": messages,
-        }
-        if output_config:
-            kwargs["output_config"] = output_config
-
-        thinking_active = bool(output_config and output_config.get("effort"))
-        if not thinking_active:
-            kwargs["temperature"] = self.config.temperature
-
-        return kwargs
+        return build_request_params(
+            model=self.model_name,
+            max_tokens=self.config.max_tokens,
+            system=self._build_system(system_prompt, schema_text),
+            messages=messages,
+            temperature=self.config.temperature,
+            output_config=output_config,
+        )
 
     @staticmethod
     def _extract_text(content_blocks) -> str:

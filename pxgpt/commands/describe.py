@@ -22,9 +22,11 @@ Workflow
 6. Print the batch ID and exit (fire-and-forget default).
    With ``--wait``: poll until complete and write grouped output immediately.
 
-Stage 1 uses NO thinking by default (so temperature is sent).  Set
-``DESCRIBE_EFFORT`` (or pass ``--effort``) to enable Anthropic adaptive
-thinking; when effort is set, the temperature guard omits temperature.
+Stage 1 uses NO thinking by default.  Set ``DESCRIBE_EFFORT`` (or pass
+``--effort``) to enable Anthropic adaptive thinking; when effort is set, the
+temperature guard omits temperature.  Whether a custom temperature is sent
+when effort is off depends on the model tier — see
+``batch_utils.build_request_params``.
 """
 
 import json
@@ -43,6 +45,7 @@ from ..core.batch_utils import (
     poll_batch,
     write_describe_results,
     print_token_summary,
+    temperature_guard_status,
 )
 
 
@@ -55,13 +58,12 @@ def describe_batch_command(args):
     client = Anthropic(api_key=config.anthropic_api_key, max_retries=0)
 
     # Resolve thinking effort: --effort overrides DESCRIBE_EFFORT; "off" disables.
-    # Default off → no reasoning and temperature is sent (the original behavior).
     effort = config.describe_effort if args.effort is None else args.effort
     if effort == "off":
         effort = ""
     describe_output_config = config.build_output_config(effort)  # {} when off
-    print(f"Thinking effort: {effort or 'off'}"
-          f"{' (temperature omitted while thinking)' if effort else ' (temperature sent)'}")
+    print(f"Thinking effort: {effort or 'off'} "
+          f"({temperature_guard_status(config.anthropic_model, effort)})")
 
     try:
         system_prompt = read_file_safely(args.system_prompt, "system prompt")
@@ -258,8 +260,9 @@ def setup_describe_parser(subparsers):
         choices=["off", "low", "medium", "high", "xhigh", "max"],
         default=None,
         help="Anthropic adaptive thinking effort (overrides DESCRIBE_EFFORT). "
-             "default = off = none = no reasoning + temperature is sent; "
-             "a level enables reasoning (temperature then omitted).",
+             "default = off = none = no reasoning; a level enables reasoning "
+             "(temperature is then omitted; whether it's sent when off depends "
+             "on the model tier).",
     )
     parser.add_argument(
         "--wait", action="store_true",

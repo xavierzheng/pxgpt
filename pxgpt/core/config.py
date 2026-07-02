@@ -43,7 +43,7 @@ class Config:
     vllm_api_key: str = "EMPTY"
 
     # Model names
-    anthropic_model: str = "claude-sonnet-4-6"
+    anthropic_model: str = "claude-sonnet-5"
     openai_model: str = "gpt-5-2025-08-07"
     google_model: str = "gemini-2.5-pro"
     ollama_model: str = "gemma3:12b"
@@ -53,11 +53,12 @@ class Config:
     # Sync API settings
     max_retries: int = 3
     timeout: int = 300
-    # Temperature is only sent when thinking is off (Stage 1 / analyze / schema).
-    # When output_config.effort is set, the API forces the default temperature and
-    # rejects custom values; the temperature guard in anthropic_provider enforces this.
+    # Temperature is only sent when thinking is off, and only on model tiers
+    # that allow a custom temperature while thinking is off (Sonnet 4.6 and
+    # earlier). Newer tiers (Sonnet 5, Opus 4.7/4.8, Fable 5) reject a custom
+    # temperature unconditionally — see batch_utils.build_request_params.
     temperature: float = 0.5
-    max_tokens: int = 16384  # sync API; claude-sonnet-4-6 supports up to 64 k
+    max_tokens: int = 16384  # sync API; current models support up to 128 k with streaming
 
     # Batch-specific token budgets
     stage1_max_tokens: int = 16384   # Stage 1 descriptions (raise to 300 k if needed)
@@ -138,7 +139,7 @@ class Config:
             vllm_base_url=os.getenv("VLLM_BASE_URL", "http://localhost:8000/v1"),
             lmstudio_api_key=os.getenv("LMSTUDIO_API_KEY", "lm-studio"),
             vllm_api_key=os.getenv("VLLM_API_KEY", "EMPTY"),
-            anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
+            anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5"),
             openai_model=os.getenv("OPENAI_MODEL", "gpt-5-2025-08-07"),
             google_model=os.getenv("GOOGLE_MODEL", "gemini-2.5-pro"),
             ollama_model=os.getenv("OLLAMA_MODEL", "gemma3:12b"),

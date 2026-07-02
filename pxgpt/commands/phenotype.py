@@ -30,7 +30,10 @@ Workflow
 5. Save checkpoint and exit (fire-and-forget default).
    With ``--wait``: poll and write one JSON file per plant line/cultivar immediately.
 
-Stage 3 uses ``output_config.effort`` → temperature is NOT sent.
+When ``output_config.effort`` is set, temperature is NOT sent (thinking is
+active on every model tier). When effort is off, whether a custom temperature
+is sent instead depends on the model tier — see
+``batch_utils.build_request_params``.
 """
 
 import json
@@ -53,6 +56,7 @@ from ..core.batch_utils import (
     print_token_summary,
     extract_text_content,
     strip_code_fence,
+    temperature_guard_status,
 )
 from ..core import sharding
 
@@ -100,6 +104,8 @@ def phenotype_batch_command(args):
         output_config = config.stage3_output_config(schema=schema)
         print(f"output_config.effort: {output_config.get('effort', '(none)')}")
         print(f"output_config.format: json_schema (schema loaded from {args.schema})")
+        print(f"Temperature:          "
+              f"{temperature_guard_status(config.anthropic_model, output_config.get('effort', ''))}")
 
     use_files_api = config.use_files_api and not args.no_files_api
     line_image_blocks: Dict[str, List[Dict]] = {}
@@ -208,7 +214,7 @@ def phenotype_batch_command(args):
         content = image_blocks + [{"type": "text", "text": user_prompt}]
         messages = [{"role": "user", "content": content}]
 
-        # Stage 3: effort is set → temperature guard omits temperature
+        # Temperature/thinking guard applied inside build_request_params.
         params = build_request_params(
             model=config.anthropic_model,
             max_tokens=config.stage3_max_tokens,
@@ -294,6 +300,8 @@ def _run_sharded(args, config, client, line_image_blocks, use_files_api):
     master_path = sharding.resolve_master_path(manifest, shard_dir, args.master_schema)
     print(f"\n--- Sharded mode: {len(shards)} shard(s) from {shard_dir} ---")
     print(f"output_config.effort: {config.stage3_effort or '(none)'}")
+    print(f"Temperature:          "
+          f"{temperature_guard_status(config.anthropic_model, config.stage3_effort)}")
     print(f"system prompt: {'--system-prompt override' if args.system_prompt else manifest.get('system_file')}")
 
     # Pre-flight: confirm each shard schema compiles; auto-reshard on failure.
