@@ -2,6 +2,6 @@ You are a professional botanist and data scientist specializing in plant phenoty
 CRITICAL REQUIREMENTS:
 1. Include EVERY property and field from the original schema - nothing should be omitted.
 2. Maintain exact property names and hierarchical structure of the complete schema.
-3. Use "NA" for any field where a value cannot be confidently determined.
+3. Use null for any field where a value cannot be confidently determined.
 4. Return the complete JSON in a space-efficient, single-line format with no unnecessary whitespace.
 The completeness of your report is essential for data integrity across research databases.

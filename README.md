@@ -9,6 +9,7 @@
 - **Adaptive thinking** (Stage 3): native `output_config.effort` on claude-sonnet-4-6; temperature guard enforced automatically
 - **Native structured output** (Stage 3): schema passed directly as `output_config.format`; no regex or tag parsing
 - **Schema normalizer**: one command adds `additionalProperties: false` and `required` arrays to every object in your schema
+- **JSON-to-table flattening**: one command turns the per-plant Stage 3 JSON output into a wide, typed CSV + feather table (ordinal traits reconstructed from level code to label, as an ordered factor in R)
 - **Multiple providers**: Anthropic, OpenAI, Google, Ollama, LM Studio, vLLM
 - **Prompt caching**: automatic for Anthropic (reduces costs on repeated system prompts)
 - **Robust error handling**: exponential backoff, per-request failure isolation, crash-safe manifest
@@ -172,6 +173,28 @@ compile check verifies each shard and auto-reshards at a smaller budget if one
 still trips the limit. The system prompt + images form a cached prefix shared
 across a plant's shards; only the small per-shard prompt + schema are re-sent.
 
+#### Downstream analysis: flatten results into a table
+
+The per-plant `{line_id}.json` files aren't analysis-ready as-is (ordinal
+traits store an integer level code, not a label; quantitative traits carry no
+unit). Flatten the whole result directory into one row-per-plant table:
+
+```bash
+pxgpt json-to-table \
+  --result-dir phenotypes/ \
+  --master-schema master_schema.json \
+  --out-prefix analysis/stage3_table
+# Writes analysis/stage3_table.csv and analysis/stage3_table.feather
+```
+
+Nominal traits stay plain strings, quantitative traits become numeric
+`<trait>_<unit>` columns, and ordinal traits are reconstructed into their
+schema label — a plain string in the CSV, an **ordered** `pandas.Categorical`
+in the feather file so `arrow::read_feather()` reads them as ordered factors
+in R. Missing traits and `not_assessable` become real NA everywhere. See the
+**Downstream analysis** section of the [User Manual](user_manual.md) for the
+full column-typing rules.
+
 ### Single-sample commands (for testing / small runs)
 
 ```bash
@@ -206,6 +229,7 @@ pxgpt schema \
 | `pxgpt extract-report` | Extract `<report>` from `<think>`/`<report>` output (single or grouped); back-compat for non-native reasoning |
 | `pxgpt normalize-schema` | Add `additionalProperties: false` + `required` to all objects in a schema |
 | `pxgpt shard-schema` | Split a master schema into compilable Stage 3 shards (+ per-shard prompts) for `phenotype-batch --shard-dir` |
+| `pxgpt json-to-table` | Flatten Stage 3 per-plant JSON results into a wide, typed CSV + feather table |
 | `pxgpt analyze` | Single-folder text description (sync, all providers) |
 | `pxgpt schema` | Single-folder structured JSON (sync, all providers) |
 
@@ -241,6 +265,7 @@ pxgpt/
 │   ├── schema_utils.py    # JSON schema normalizer
 │   ├── shard_builder.py   # Stage 3 shard generation from a master schema
 │   ├── sharding.py        # Stage 3 shard loading, compile-check, merge/validate
+│   ├── json2table.py      # Flatten per-plant Stage 3 JSON into a wide table
 │   ├── image_utils.py     # Base64 + file_id content builders
 │   └── file_utils.py      # File I/O helpers
 ├── providers/
@@ -256,6 +281,7 @@ pxgpt/
 │   ├── extract_report.py  # extract-report (<think>/<report> back-compat)
 │   ├── normalize_schema.py
 │   ├── shard_schema.py     # shard-schema (build Stage 3 shards from a master)
+│   ├── json2table.py       # json-to-table (flatten Stage 3 JSON -> CSV/feather)
 │   ├── analyze.py
 │   └── schema.py
 └── main.py

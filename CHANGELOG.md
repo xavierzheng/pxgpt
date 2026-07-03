@@ -3,6 +3,23 @@
 ## Unreleased
 
 ### New features
+- **`json-to-table` command**: flattens Stage 3 per-plant
+  `Result_Stage3/<cultivar_id>.json` files into one row-per-plant, analysis-ready
+  table (`pxgpt/core/json2table.py`). Trait metadata (`scale_type`/`unit`/ordinal
+  level labels) is read from the master schema (authoritative), falling back to
+  the shard schemas for any trait master doesn't cover (logged as a warning).
+  Nominal traits stay plain strings in both outputs (never a category/factor);
+  quantitative traits become numeric `<trait>_<unit>` columns (unit sanitized,
+  e.g. `m²` → `m2`); ordinal traits are reconstructed from their integer level
+  code into the schema label — a plain string in the CSV, an **ordered**
+  `pandas.Categorical` over the full schema-defined level set in the feather
+  file, so R's `arrow::read_feather()` reads them as ordered factors. Missing
+  traits and the `not_assessable` sentinel become real NA in every column
+  (never a spurious category level). The column set is the union of every
+  trait seen across all files, in a deterministic order (master schema order,
+  then shard-fallback traits, then any unknown traits). Writes both
+  `<prefix>.csv` and `<prefix>.feather` (Arrow IPC v2). Adds `pandas` and
+  `pyarrow` to `requirements.txt`.
 - **Stage 3 schema sharding (fixes "compiled grammar is too large").** The full
   Stage 3 structured-output schema (13 organ groups / 46 traits) exceeds the
   Anthropic structured-outputs internal grammar-size limit and every request

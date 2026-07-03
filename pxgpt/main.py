@@ -18,6 +18,7 @@ from .commands.cleanup_files import setup_cleanup_files_parser
 from .commands.extract_report import setup_extract_report_parser
 from .commands.normalize_schema import setup_normalize_schema_parser
 from .commands.shard_schema import setup_shard_schema_parser
+from .commands.json2table import setup_json2table_parser
 
 
 def load_env_file():
@@ -62,6 +63,7 @@ def main():
     setup_extract_report_parser(subparsers)
     setup_normalize_schema_parser(subparsers)
     setup_shard_schema_parser(subparsers)
+    setup_json2table_parser(subparsers)
 
     if len(sys.argv) == 1:
         parser.print_help()

@@ -139,6 +139,9 @@ pxgpt describe-batch ... --wait
 
 This stage is intentionally kept manual. Open a conversational LLM session (Claude.ai with extended thinking recommended or claude code) and paste the contents of `descriptions.txt`.
 
+* If use claude code, I highly suggest to install the skill superpowers:dispatching-parallel-agents to fan out subagent to perform this task.
+* superpowers: https://github.com/obra/Superpowers
+
 **Prompt template:**
 
 ```
@@ -305,33 +308,47 @@ For a sharded run, `fetch-results` demultiplexes the `custom_id = "<line_id>__<s
 
 ### Downstream analysis
 
-**Load all JSON files into a single DataFrame (Python):**
+Each per-plant JSON is `{group: {trait: {rationale, value}}}`, and `value` is
+**not** analysis-ready as-is: ordinal traits store the integer level *code*
+(not the label), quantitative traits carry no unit in the column, and a naive
+`json_normalize` bakes in the `rationale`/`value` nesting and the `not_assessable`
+sentinel as a literal string rather than a real NA.
 
+**Recommended: `pxgpt json-to-table`** — flattens the whole result directory into
+a wide, typed, analysis-ready table in one command, using the master (+ shard)
+schema to reconstruct ordinal labels, unit-suffix quantitative columns, and
+encode missing/`not_assessable` values as real NA:
+
+```bash
+pxgpt json-to-table \
+  --result-dir phenotypes/ \
+  --master-schema master_schema.json \
+  [--shard-dir master_schema_generation/shards] \  # fallback for traits absent from master
+  --out-prefix analysis/stage3_table
+# Writes analysis/stage3_table.csv and analysis/stage3_table.feather
+```
+
+- One row per plant line/cultivar; `cultivar_id` (the filename stem) is the first column.
+- **nominal** → column = trait name; value = plain string (character in both outputs — never a factor/category).
+- **quantitative** → column = `<trait>_<unit>` (e.g. `plant_height_cm`; unit sanitized — `m²` → `m2`); numeric.
+- **ordinal** → column = trait name; the integer level code is reconstructed into its schema label (e.g. `1` → `"mild"`). In the CSV this is a plain label string; in the feather file it's an **ordered** `pandas.Categorical` over the full schema-defined level set, so R's `arrow::read_feather()` reads it as an ordered factor.
+- Missing traits and the `not_assessable` sentinel become real NA in every column type; for ordinal columns, NA is never added as a spurious category level.
+- The column set is the union of every trait seen across all files, in a deterministic order (master schema order, then any shard-only fallback traits, then unknown traits — each logged as a warning).
+
+See `pxgpt/core/json2table.py` for the flattening logic if you need to call it as a library from a notebook instead of the CLI.
+
+**Reading the outputs downstream (Python):**
 ```python
-import json
 import pandas as pd
-from pathlib import Path
-
-records = []
-for f in sorted(Path("phenotypes/").glob("*.json")):
-    data = json.loads(f.read_text())
-    data["_line_id"] = f.stem
-    records.append(pd.json_normalize(data))
-
-df = pd.concat(records, ignore_index=True)
+df = pd.read_csv("analysis/stage3_table.csv")            # ordinal cols are plain label strings
+df = pd.read_feather("analysis/stage3_table.feather")     # ordinal cols are ordered pd.Categorical
 ```
 
 **R:**
 ```r
-library(jsonlite)
-library(dplyr)
-
-files <- list.files("phenotypes/", pattern = "\\.json$", full.names = TRUE)
-df <- bind_rows(lapply(files, function(f) {
-  d <- fromJSON(f, flatten = TRUE)
-  d$line_id <- tools::file_path_sans_ext(basename(f))
-  d
-}))
+library(arrow)
+df <- read_feather("analysis/stage3_table.feather")
+# ordinal columns come back as ordered factors; nominal columns as character
 ```
 
 ---
@@ -552,6 +569,22 @@ pxgpt shard-schema \
 Writes per shard `shard_NN.schema.json` + `shard_NN.prompt.md`, the shared `shards_system.md`, and `shards_manifest.json`. Whole organ groups are bin-packed up to `--shard-budget`; a group exceeding it alone is sub-sharded across its traits. The resulting shard directory is consumed by `pxgpt phenotype-batch --shard-dir`.
 
 > The standalone `build_stage3.py` in the analysis tree is a thin wrapper over this command (same output), kept for the existing local workflow.
+
+---
+
+### `pxgpt json-to-table`
+
+Flatten Stage 3 per-cultivar JSON results into a single wide, analysis-ready table. See **Downstream analysis** for the full column-typing rules.
+
+```
+pxgpt json-to-table \
+  --result-dir DIR \        # Stage 3 output: one <cultivar_id>.json per plant
+  --master-schema FILE \    # master schema (authoritative trait metadata)
+  [--shard-dir DIR] \       # fallback trait metadata for traits absent from master
+  --out-prefix PREFIX       # writes <prefix>.csv and <prefix>.feather
+```
+
+Writes `<prefix>.csv` (ordinal traits as label strings) and `<prefix>.feather` (Arrow IPC v2; identical except ordinal traits are ordered `pandas.Categorical`, so R's `arrow::read_feather()` reads them as ordered factors). Nominal columns are plain strings in both — never a category/factor. Any trait found in results but not in the master or shard schemas is logged as a warning and included as a best-effort string column.
 
 ---
 

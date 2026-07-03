@@ -2,3 +2,5 @@ anthropic>=0.105.2
 litellm>=1.50.0
 pathlib>=1.0.1
 Pillow>=10.0.0
+pandas>=2.0.0
+pyarrow>=14.0.0
