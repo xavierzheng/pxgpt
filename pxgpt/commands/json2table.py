@@ -1,5 +1,6 @@
 """Flatten Stage 3 per-cultivar phenotype JSON results into a wide table."""
 
+import json
 import os
 
 from ..core import json2table as core
@@ -15,11 +16,24 @@ def json2table_command(args):
     if args.shard_dir and not os.path.isdir(args.shard_dir):
         print(f"Error: shard directory not found: {args.shard_dir}")
         return 1
+    rename_map = None
+    if args.rename_map:
+        if not os.path.exists(args.rename_map):
+            print(f"Error: rename map not found: {args.rename_map}")
+            return 1
+        with open(args.rename_map, encoding="utf-8") as f:
+            rename_map = json.load(f)
 
     print(f"--- Flattening {args.result_dir} -> {args.out_prefix}.{{csv,feather}} ---")
-    csv_df, feather_df, warnings = core.build_table(
-        args.result_dir, args.master_schema, shard_dir=args.shard_dir,
-    )
+    try:
+        csv_df, feather_df, warnings = core.build_table(
+            args.result_dir, args.master_schema, shard_dir=args.shard_dir,
+            on_collision=args.on_collision, rename_map=rename_map,
+        )
+    except (core.ColumnCollisionError, core.DuplicateColumnError) as e:
+        print(str(e))
+        return 1
+
     for w in warnings:
         print(f"  WARNING: {w}")
 
@@ -64,5 +78,22 @@ def setup_json2table_parser(subparsers):
     parser.add_argument(
         "--out-prefix", required=True,
         help="Output path prefix; writes <prefix>.csv and <prefix>.feather.",
+    )
+    parser.add_argument(
+        "--on-collision", choices=["error", "prefix_collided", "prefix_all"],
+        default="error",
+        help="How to resolve two traits computing to the same output column "
+             "name (e.g. the same leaf key under two organ groups). 'error' "
+             "(default) stops and prints a --rename-map fill-in template; "
+             "'prefix_collided' auto-prefixes only the clashing columns with "
+             "the minimal path prefix needed; 'prefix_all' uses every "
+             "column's full path (a safe, ugly debug escape hatch).",
+    )
+    parser.add_argument(
+        "--rename-map", default=None,
+        help="Path to a JSON file mapping dotted source path (e.g. "
+             "'leaf.length') -> desired column name, used verbatim (no unit "
+             "re-appended). Applied before --on-collision; see the template "
+             "printed by the default 'error' mode.",
     )
     parser.set_defaults(func=json2table_command)

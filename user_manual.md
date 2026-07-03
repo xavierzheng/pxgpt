@@ -163,6 +163,7 @@ Output only the JSON, no prose preamble.
 ## TRAIT NAMING (ontology-style, canonical)
 - Use canonical, reusable, ontology-style names (e.g. leaf_blade_shape, leaf_margin_type, flower_color_hue, petiole_length). Lowercase snake_case, organ_attribute pattern.
 - The name must be reusable across cultivars and species — never encode one cultivar's specific value into the trait name.
+- GLOBALLY UNIQUE across the whole schema: no two traits may share the same trait_name, even under different groups. Rationale: the downstream pipeline flattens this schema into a table using trait_name as the column name, so any repeated name would collide and silently overwrite data. The organ_attribute pattern above already guarantees this when applied in full (leaf_blade_length vs petiole_length never clash); the failure mode to avoid is a bare attribute name ("length", "width", "color", "shape") recurring under several organs. Always keep an organ prefix specific enough that the name self-disambiguates.
 
 ## TRAIT CLASSIFICATION — assign each trait a "scale_type":
 - "nominal": discrete categories with NO inherent order (e.g. leaf shape, color hue).
@@ -334,6 +335,69 @@ pxgpt json-to-table \
 - **ordinal** → column = trait name; the integer level code is reconstructed into its schema label (e.g. `1` → `"mild"`). In the CSV this is a plain label string; in the feather file it's an **ordered** `pandas.Categorical` over the full schema-defined level set, so R's `arrow::read_feather()` reads it as an ordered factor.
 - Missing traits and the `not_assessable` sentinel become real NA in every column type; for ordinal columns, NA is never added as a spurious category level.
 - The column set is the union of every trait seen across all files, in a deterministic order (master schema order, then any shard-only fallback traits, then unknown traits — each logged as a warning).
+
+**Column name collisions.** A column name is normally just the trait's leaf
+key (plus `_<unit>` for quantitative traits). If the master schema ever
+assesses the *same* leaf key under two different organ groups (e.g. `length`
+under both `leaf` and `petal`), both would compute the same final name —
+by default `json-to-table` refuses to silently let one overwrite the other:
+
+```
+$ pxgpt json-to-table --result-dir phenotypes/ --master-schema master_schema.json --out-prefix analysis/stage3_table
+Column name collision(s). Unresolved:
+ 'length_cm' <- leaf.length (quantitative, unit=cm), petal.length (quantitative, unit=cm)
+
+Fill in this rename map (path -> column name) and re-run with --rename-map:
+ {
+ "leaf.length": "",
+ "petal.length": ""
+ }
+```
+
+No files are written when this happens. Fix it one of two ways:
+
+- Fill in the printed template and re-run with `--rename-map` (worked example below).
+- Or skip hand-naming and pass `--on-collision prefix_collided` to auto-prefix *only* the clashing columns with the minimal group-path prefix needed to disambiguate (`leaf_length_cm`, `petal_length_cm`); every other column keeps its short name. `--on-collision prefix_all` is a blunter escape hatch that prefixes *every* column with its full path, colliding or not.
+
+**Example: resolving a collision with `--rename-map`.** Take the printed
+template from the error above, save it as a file, fill in the column names
+you want for each clashing *path* (the map is keyed by the dotted
+`group.trait` path, not the colliding name itself — that's what makes the
+two `length` traits distinguishable):
+
+```bash
+cat > rename_map.json <<'JSON'
+{
+  "leaf.length": "leaf_length_cm",
+  "petal.length": "petal_length_cm"
+}
+JSON
+
+pxgpt json-to-table \
+  --result-dir phenotypes/ \
+  --master-schema master_schema.json \
+  --out-prefix analysis/stage3_table \
+  --rename-map rename_map.json
+```
+
+```
+--- Flattening phenotypes/ -> analysis/stage3_table.{csv,feather} ---
+  Rows: 42   Columns: 4
+  Wrote analysis/stage3_table.csv
+  Wrote analysis/stage3_table.feather
+```
+
+The resulting table has `leaf_length_cm` and `petal_length_cm` as separate
+columns; `flower.color`, which never collided, keeps its short name `color`
+untouched. A value you supply in `--rename-map` is used **verbatim** — for a
+quantitative trait, include your own unit suffix (`_cm`, `_mm`, ...); pxGPT
+does not re-append one. `--rename-map` entries take priority over
+`--on-collision`, so you can rename just the columns you care about and let
+`--on-collision prefix_collided` handle any others left clashing (pxGPT
+still refuses to write files if the map itself introduces a new duplicate,
+e.g. mapping two different paths to the same name).
+
+Traits with the same leaf key but genuinely different units (e.g. `stem.length` in cm vs `hair.length` in mm) are never flagged — they already compute to distinct final names. Whichever mode you use, a final uniqueness check always runs before any file is written, so a bad `--rename-map` that itself introduces a duplicate is caught too.
 
 See `pxgpt/core/json2table.py` for the flattening logic if you need to call it as a library from a notebook instead of the CLI.
 
@@ -581,10 +645,14 @@ pxgpt json-to-table \
   --result-dir DIR \        # Stage 3 output: one <cultivar_id>.json per plant
   --master-schema FILE \    # master schema (authoritative trait metadata)
   [--shard-dir DIR] \       # fallback trait metadata for traits absent from master
-  --out-prefix PREFIX       # writes <prefix>.csv and <prefix>.feather
+  --out-prefix PREFIX \     # writes <prefix>.csv and <prefix>.feather
+  [--on-collision {error,prefix_collided,prefix_all}] \  # default: error
+  [--rename-map FILE]       # JSON: {"group.trait": "desired_column_name", ...}
 ```
 
 Writes `<prefix>.csv` (ordinal traits as label strings) and `<prefix>.feather` (Arrow IPC v2; identical except ordinal traits are ordered `pandas.Categorical`, so R's `arrow::read_feather()` reads them as ordered factors). Nominal columns are plain strings in both — never a category/factor. Any trait found in results but not in the master or shard schemas is logged as a warning and included as a best-effort string column.
+
+`--on-collision` controls what happens when two traits compute the same final column name (see **Column name collisions** above): `error` (default) writes no files and prints a `--rename-map` fill-in template; `prefix_collided` auto-prefixes only the clashing columns with the minimal group-path prefix needed; `prefix_all` prefixes every column with its full path regardless of collisions. `--rename-map` is applied first and takes a JSON file keyed by dotted source path (`group.trait`, not the possibly-colliding column name), values used verbatim with no unit re-appended. A global uniqueness check runs last regardless of mode — it raises rather than ever letting one column silently overwrite another.
 
 ---
 

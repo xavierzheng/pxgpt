@@ -191,9 +191,15 @@ Nominal traits stay plain strings, quantitative traits become numeric
 `<trait>_<unit>` columns, and ordinal traits are reconstructed into their
 schema label — a plain string in the CSV, an **ordered** `pandas.Categorical`
 in the feather file so `arrow::read_feather()` reads them as ordered factors
-in R. Missing traits and `not_assessable` become real NA everywhere. See the
+in R. Missing traits and `not_assessable` become real NA everywhere.
+
+If two traits ever compute the same column name (e.g. the same leaf key
+assessed under two organ groups), `json-to-table` refuses to silently drop
+one — it writes no files and prints a `--rename-map` fill-in template by
+default. Pass `--on-collision prefix_collided` to auto-disambiguate just the
+clashing columns instead, or `--rename-map FILE` to hand-pick names. See the
 **Downstream analysis** section of the [User Manual](user_manual.md) for the
-full column-typing rules.
+full column-typing rules and a worked collision-resolution example.
 
 ### Single-sample commands (for testing / small runs)
 
@@ -229,7 +235,7 @@ pxgpt schema \
 | `pxgpt extract-report` | Extract `<report>` from `<think>`/`<report>` output (single or grouped); back-compat for non-native reasoning |
 | `pxgpt normalize-schema` | Add `additionalProperties: false` + `required` to all objects in a schema |
 | `pxgpt shard-schema` | Split a master schema into compilable Stage 3 shards (+ per-shard prompts) for `phenotype-batch --shard-dir` |
-| `pxgpt json-to-table` | Flatten Stage 3 per-plant JSON results into a wide, typed CSV + feather table |
+| `pxgpt json-to-table` | Flatten Stage 3 per-plant JSON results into a wide, typed CSV + feather table (with column-name collision detection/resolution) |
 | `pxgpt analyze` | Single-folder text description (sync, all providers) |
 | `pxgpt schema` | Single-folder structured JSON (sync, all providers) |
 

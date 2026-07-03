@@ -20,6 +20,25 @@
   then shard-fallback traits, then any unknown traits). Writes both
   `<prefix>.csv` and `<prefix>.feather` (Arrow IPC v2). Adds `pandas` and
   `pyarrow` to `requirements.txt`.
+- **`json-to-table` column-name collision handling.** A column name is just
+  the trait's leaf key (plus `_<unit>`), which silently overwrote data if the
+  master schema ever assessed the same leaf key under two organ groups (e.g.
+  `length` under both `leaf` and `petal`). Each trait's full dotted source
+  path (`group.trait`, or deeper) is now tracked so collisions on the *final*
+  name (post unit-suffix) can be detected and resolved instead of one column
+  silently clobbering the other. New `--on-collision {error,prefix_collided,
+  prefix_all}` (default `error`): `error` writes no files and prints a
+  ready-to-fill `--rename-map` template listing every clash; `prefix_collided`
+  auto-prefixes only the clashing columns with the minimal group-path prefix
+  needed to disambiguate (auto-deepening past one level if still ambiguous);
+  `prefix_all` prefixes every column with its full path regardless of
+  collisions. New `--rename-map FILE` (JSON, keyed by dotted path, applied
+  before `--on-collision`) lets the user hand-pick names for specific clashing
+  columns verbatim (no unit re-appended). Traits sharing a leaf key but with
+  different units (e.g. `stem.length` cm vs `hair.length` mm) are correctly
+  treated as distinct and never flagged. A final global-uniqueness check
+  always runs regardless of mode, so a `--rename-map` that itself introduces a
+  duplicate is caught rather than reaching the CSV/feather output.
 - **Stage 3 schema sharding (fixes "compiled grammar is too large").** The full
   Stage 3 structured-output schema (13 organ groups / 46 traits) exceeds the
   Anthropic structured-outputs internal grammar-size limit and every request
