@@ -7,7 +7,7 @@ with open("requirements.txt") as f:
 
 setup(
     name="pxgpt",
-    version="0.1.0",
+    version="0.3.0",
     description="Plant analysis tool with multiple LLM provider support",
     author="PXGPT Team", 
     packages=find_packages(),
