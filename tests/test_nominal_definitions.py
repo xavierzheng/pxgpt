@@ -67,3 +67,26 @@ def test_migrate_master_reports_unresolved():
     vals = new["trait_groups"]["g"]["traits"][0]["values"]
     assert {"value": "x", "definition": "defx"} in vals
     assert "g/t/y" in unresolved
+
+
+def test_extract_defs_keeps_internal_periods_and_trims_trailing_sentence():
+    from tools import migrate_nominal_definitions as mig
+    note = ("Overall silhouette. compact_rosette = flat/tight rosette; "
+            "open_spreading = long petioles splaying outward. Score the dominant form.")
+    got = mig.extract_defs(note, ["compact_rosette", "open_spreading"])
+    assert got["compact_rosette"] == "flat/tight rosette"
+    assert got["open_spreading"] == "long petioles splaying outward"
+
+def test_extract_defs_preserves_abbreviations_and_decimals():
+    from tools import migrate_nominal_definitions as mig
+    note = "toothed = has teeth (e.g. serrate) along margin; tall = grows 5.5 cm."
+    got = mig.extract_defs(note, ["toothed", "tall"])
+    assert got["toothed"] == "has teeth (e.g. serrate) along margin"
+    assert got["tall"] == "grows 5.5 cm"
+
+def test_extract_defs_word_boundary_no_suffix_bleed():
+    from tools import migrate_nominal_definitions as mig
+    note = "semi_erect = leaning; erect = fully upright."
+    got = mig.extract_defs(note, ["erect", "semi_erect"])
+    assert got["erect"] == "fully upright"
+    assert got["semi_erect"] == "leaning"

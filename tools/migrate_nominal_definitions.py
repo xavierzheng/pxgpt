@@ -11,17 +11,36 @@ import sys
 from collections import OrderedDict
 
 
+# A sentence-ending period: one followed by whitespace + a capital letter, or at
+# end of string. Deliberately NOT triggered by "e.g."/"i.e." (period + lowercase)
+# or decimals like "5.5" (period between digits), so those stay inside a definition.
+_CLAUSE_END = re.compile(r"\.(?=\s+[A-Z])|\.\s*$")
+
+
 def extract_defs(design_note, categories):
     """Best-effort ``{category: definition}`` from a free-text design_note.
 
-    Matches ``<category> = <definition>`` clauses terminated by ``;`` or ``.``.
-    Categories with no match are simply absent from the result.
+    For each category, finds ``<category> = <definition>`` (category anchored on
+    word boundaries so a suffix category like ``erect`` does not match inside
+    ``semi_erect``), then trims the definition at the first ``;`` or
+    sentence-ending period. Internal periods (abbreviations, decimals) are kept.
+    Categories with no match are absent from the result.
     """
     defs = {}
+    note = design_note or ""
     for cat in categories:
-        m = re.search(re.escape(cat) + r"\s*=\s*([^;.]+)", design_note or "")
-        if m:
-            defs[cat] = m.group(1).strip()
+        m = re.search(r"\b" + re.escape(cat) + r"\b\s*=\s*(.+)", note)
+        if not m:
+            continue
+        tail = m.group(1)
+        cut = len(tail)
+        semi = tail.find(";")
+        if semi != -1:
+            cut = min(cut, semi)
+        mb = _CLAUSE_END.search(tail)
+        if mb:
+            cut = min(cut, mb.start())
+        defs[cat] = tail[:cut].strip().rstrip(".").strip()
     return defs
 
 
