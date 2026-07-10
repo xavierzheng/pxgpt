@@ -44,3 +44,26 @@ def test_group_section_bare_nominal_uses_oneline_form():
           "values": ["a", "b"]}
     out = sb.group_section("g", "", [tr])
     assert "Allowed categories: `a`, `b`, `not_assessable`." in out
+
+
+def test_extract_defs_parses_semicolon_clauses():
+    from tools import migrate_nominal_definitions as mig
+    note = ("Overall silhouette. compact_rosette = flat/tight rosette; "
+            "upright_erect = leaves held vertically; "
+            "open_spreading = long petioles splaying outward. Score the dominant form.")
+    got = mig.extract_defs(note, ["compact_rosette", "upright_erect", "open_spreading"])
+    assert got["compact_rosette"] == "flat/tight rosette"
+    assert got["upright_erect"] == "leaves held vertically"
+    assert got["open_spreading"] == "long petioles splaying outward"
+
+
+def test_migrate_master_reports_unresolved():
+    from tools import migrate_nominal_definitions as mig
+    master = {"trait_groups": {"g": {"description": "", "traits": [
+        {"trait_name": "t", "scale_type": "nominal",
+         "design_note": "x = defx",
+         "values": ["x", "y"]}]}}}
+    new, unresolved = mig.migrate_master(master)
+    vals = new["trait_groups"]["g"]["traits"][0]["values"]
+    assert {"value": "x", "definition": "defx"} in vals
+    assert "g/t/y" in unresolved
