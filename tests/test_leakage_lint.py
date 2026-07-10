@@ -37,3 +37,15 @@ def test_generate_shards_reports_leakage_and_strict_fails(tmp_path=None):
     # strict: leakage becomes a problem
     s2 = sb.generate_shards(mp, os.path.join(d, "s2"), budget=40, strict_leakage=True)
     assert any("leakage" in p.lower() for p in s2["problems"])
+
+def test_find_leakage_ignores_benign_botanical_text():
+    from pxgpt.core import shard_builder as sb
+    assert sb.find_leakage("petals support the reproductive structures") == []
+    assert sb.find_leakage("stem lacks trichome support structures") == []
+    assert sb.find_leakage("flowers arranged in a common inflorescence type") == []
+
+def test_find_leakage_still_catches_support_counts_and_cultivars():
+    from pxgpt.core import shard_builder as sb
+    assert "support 262" in sb.find_leakage("retained at support 262 in the set")
+    assert sb.find_leakage("support count 30")
+    assert sb.find_leakage("differs between cultivars")  # cultivar/cultivars

@@ -34,15 +34,19 @@ NA = "not_assessable"
 DEFAULT_SHARD_BUDGET = 40
 
 # Population/frequency phrasing that must never reach phenotyper-facing text.
-# Deliberately conservative: matches dataset-frequency words, not botanical
-# adjectives like "typical".
+# Deliberately conservative: matches dataset-frequency wording, not benign
+# botanical adjectives. Bare "support"/"common" are excluded because they occur
+# in ordinary anatomical prose ("petals support...", "a common inflorescence");
+# "support" is matched only when tied to a count.
 POPULATION_LEXICON = re.compile(
-    r"\b("
-    r"near-?universal|overwhelming(?:ly)?|majority|minority|most(?:ly)?|"
-    r"\brare\b|\bcommon\b|uncommon|frequen\w*|prevalen\w*|cultivar|support|"
+    r"("
+    r"\bnear-?universal\b|\boverwhelming(?:ly)?\b|\bmajority\b|\bminority\b|"
+    r"\bmost(?:ly)?\b|\brare\b|\buncommon\b|\bfrequen\w*|\bprevalen\w*|"
+    r"\bcultivars?\b|"
+    r"\bsupport(?:\s+count|\s*[:=]?\s*\d+)|"
     r"\d+\s+of\s+(?:the\s+)?(?:described|cases|specimens|plants)|"
     r"in\s+this\s+(?:material|dataset)|do(?:es)?\s+not\s+occur|not\s+seen"
-    r")\b",
+    r")",
     re.IGNORECASE,
 )
 
