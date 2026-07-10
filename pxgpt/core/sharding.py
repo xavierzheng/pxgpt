@@ -104,6 +104,7 @@ def load_master_index(master_path: str):
     """
     with open(master_path, encoding="utf-8") as f:
         master = json.load(f)
+    master = shard_builder.normalize_master(master)
     group_order: List[str] = []
     group_traits: "OrderedDict[str, List[str]]" = OrderedDict()
     trait_meta: Dict[Tuple[str, str], Dict[str, Any]] = {}

@@ -42,6 +42,52 @@ FORBIDDEN = {
 
 
 # ---------------------------------------------------------------------------
+# Master-schema shape normalization
+# ---------------------------------------------------------------------------
+
+def normalize_master(master: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a master whose groups live in a canonical ``trait_groups`` dict.
+
+    Master schemas reach us in two shapes that carry identical trait objects but
+    differ only in how groups are wrapped:
+
+      * ``trait_groups``: ``{group_name: {"description"?, "traits": [...]}}``
+        (canonical; e.g. the Stage 2 generator / ``master_schema_opus4-8.json``).
+      * ``groups``: ``[{"group": name, "description"?, "traits": [...]}, ...]``
+        (list-of-objects, e.g. LLM+human-synthesized VER_2 ``master_schema.json``).
+
+    Both are accepted so downstream code can rely on a name-keyed
+    ``trait_groups`` OrderedDict.  Idempotent: a master already in canonical
+    shape is returned unchanged.  Raises on an unrecognizable / malformed shape.
+    """
+    if isinstance(master.get("trait_groups"), dict):
+        return master
+    groups = master.get("groups")
+    if not isinstance(groups, list):
+        raise KeyError(
+            "master schema has neither a 'trait_groups' object nor a 'groups' "
+            "list; got top-level keys: %s" % sorted(master.keys())
+        )
+    tg: "OrderedDict[str, Any]" = OrderedDict()
+    for grp in groups:
+        name = grp.get("group") or grp.get("group_name") or grp.get("name")
+        if not name:
+            raise ValueError(
+                "group entry missing a name field ('group'/'group_name'/'name'): %r"
+                % (grp,)
+            )
+        if name in tg:
+            raise ValueError("duplicate group name in master schema: %r" % name)
+        tg[name] = OrderedDict([
+            ("description", grp.get("description", "")),
+            ("traits", grp["traits"]),
+        ])
+    m = dict(master)
+    m["trait_groups"] = tg
+    return m
+
+
+# ---------------------------------------------------------------------------
 # Schema building
 # ---------------------------------------------------------------------------
 
@@ -99,6 +145,7 @@ def build_schema_from_groups(groups, title, description) -> "OrderedDict[str, An
 
 
 def build_schema(master: Dict[str, Any]) -> "OrderedDict[str, Any]":
+    master = normalize_master(master)
     groups = [(g, gobj["traits"]) for g, gobj in master["trait_groups"].items()]
     return build_schema_from_groups(
         groups,
@@ -195,6 +242,7 @@ def shard_body_from_groups(master: Dict[str, Any], groups) -> str:
     The shared preamble (role / rules — Block A) is emitted once as the system
     prompt so it can be cached and is never re-billed per shard.
     """
+    master = normalize_master(master)
     descs = {g: gobj.get("description", "") for g, gobj in master["trait_groups"].items()}
     L = ["## Traits to score\n"]
     L.append("Traits are grouped by plant region. Within each trait, the allowed values "
@@ -207,6 +255,7 @@ def shard_body_from_groups(master: Dict[str, Any], groups) -> str:
 
 def build_prompt(master: Dict[str, Any]) -> str:
     """Combined (non-sharded) prompt = shared preamble + all organ bodies."""
+    master = normalize_master(master)
     groups = [(g, gobj["traits"]) for g, gobj in master["trait_groups"].items()]
     return prompt_preamble() + "\n" + shard_body_from_groups(master, groups)
 
@@ -266,6 +315,7 @@ def pack_shards(master: Dict[str, Any], budget: int):
 
 def build_shards(master: Dict[str, Any], budget: int) -> List[Dict[str, Any]]:
     """Build shard descriptors with schema + prompt + trait inventory."""
+    master = normalize_master(master)
     packed = pack_shards(master, budget)
     descriptors = []
     for i, shard in enumerate(packed):
@@ -360,6 +410,7 @@ def generate_shards(
     """
     with open(master_path, encoding="utf-8") as f:
         master = json.load(f)
+    master = normalize_master(master)
     os.makedirs(shard_dir, exist_ok=True)
 
     all_traits = [

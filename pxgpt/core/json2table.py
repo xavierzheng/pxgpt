@@ -222,7 +222,9 @@ def build_trait_metadata(master_schema_path, shard_schema_paths=None):
 
     with open(master_schema_path, encoding="utf-8") as f:
         master = json.load(f)
-    for group_name, group in master.get("trait_groups", {}).items():
+    from . import shard_builder
+    master = shard_builder.normalize_master(master)
+    for group_name, group in master["trait_groups"].items():
         for trait in group.get("traits", []):
             key = (group_name, trait["trait_name"])
             trait_meta[key] = {
