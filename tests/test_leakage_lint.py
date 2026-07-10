@@ -49,3 +49,9 @@ def test_find_leakage_still_catches_support_counts_and_cultivars():
     assert "support 262" in sb.find_leakage("retained at support 262 in the set")
     assert sb.find_leakage("support count 30")
     assert sb.find_leakage("differs between cultivars")  # cultivar/cultivars
+
+def test_find_leakage_word_boundary_on_trailing_alternatives():
+    from pxgpt.core import shard_builder as sb
+    # 'within this material' must NOT flag (boundary fix), but a real phrase does
+    assert sb.find_leakage("grown within this material for weeks") == []
+    assert sb.find_leakage("brown/rotted roots do not occur in this material")

@@ -45,7 +45,7 @@ POPULATION_LEXICON = re.compile(
     r"\bcultivars?\b|"
     r"\bsupport(?:\s+count|\s*[:=]?\s*\d+)|"
     r"\d+\s+of\s+(?:the\s+)?(?:described|cases|specimens|plants)|"
-    r"in\s+this\s+(?:material|dataset)|do(?:es)?\s+not\s+occur|not\s+seen"
+    r"\bin\s+this\s+(?:material|dataset)|\bdo(?:es)?\s+not\s+occur|\bnot\s+seen"
     r")",
     re.IGNORECASE,
 )
@@ -532,6 +532,8 @@ def generate_shards(
     if extra:
         problems.append("coverage: shard traits not in master: %s" % extra)
 
+    # Lint the per-shard prompt bodies only; the shared system prompt is static,
+    # author-authored text (no master-derived data) and is intentionally not scanned.
     leakage = []
     for s in shards:
         hits = find_leakage(s["_prompt"])
