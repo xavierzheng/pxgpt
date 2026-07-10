@@ -237,8 +237,15 @@ def group_section(gname: str, gdesc: str, traits: List[Dict[str, Any]]) -> str:
         if desc:
             A("%s" % desc)
         if st == "nominal":
-            cats = ", ".join("`%s`" % v for v in tr["values"])
-            A("Allowed categories: %s, `%s`." % (cats, NA))
+            cats = nominal_categories(tr)
+            if any(d for _, d in cats):
+                A("Allowed categories (return the token):")
+                for val, d in cats:
+                    A("- `%s`: %s" % (val, d) if d else "- `%s`" % val)
+                A("- `%s`: trait cannot be judged from any image." % NA)
+            else:
+                joined = ", ".join("`%s`" % v for v, _ in cats)
+                A("Allowed categories: %s, `%s`." % (joined, NA))
         elif st == "ordinal":
             A("Allowed ordinal levels (return the integer):")
             for lvl in tr["values"]:

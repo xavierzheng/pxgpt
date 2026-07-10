@@ -24,3 +24,23 @@ def test_value_schema_enum_is_bare_tokens_for_object_values():
 
 def test_value_schema_enum_bare_strings_unchanged():
     assert sb.value_schema(_nominal(["a", "b"])) == {"enum": ["a", "b", sb.NA]}
+
+
+def test_group_section_renders_per_category_definitions():
+    tr = {"trait_name": "plant_growth_habit", "scale_type": "nominal",
+          "description": "Overall silhouette.",
+          "values": [{"value": "compact_rosette", "definition": "flat/tight rosette"},
+                     {"value": "upright_erect", "definition": "leaves held vertically"}]}
+    out = sb.group_section("whole_plant_architecture", "", [tr])
+    assert "- `compact_rosette`: flat/tight rosette" in out
+    assert "- `upright_erect`: leaves held vertically" in out
+    assert "not_assessable" in out
+    # bare comma-joined form must NOT be used when definitions exist
+    assert "Allowed categories: `compact_rosette`," not in out
+
+
+def test_group_section_bare_nominal_uses_oneline_form():
+    tr = {"trait_name": "t", "scale_type": "nominal", "description": "d",
+          "values": ["a", "b"]}
+    out = sb.group_section("g", "", [tr])
+    assert "Allowed categories: `a`, `b`, `not_assessable`." in out
