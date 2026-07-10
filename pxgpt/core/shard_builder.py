@@ -26,11 +26,35 @@ Grammar-subset safe: no anyOf/union, min/max/length, pattern, $ref, self-ref.
 import os
 import json
 import argparse
+import re
 from collections import Counter, OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
 NA = "not_assessable"
 DEFAULT_SHARD_BUDGET = 40
+
+# Population/frequency phrasing that must never reach phenotyper-facing text.
+# Deliberately conservative: matches dataset-frequency words, not botanical
+# adjectives like "typical".
+POPULATION_LEXICON = re.compile(
+    r"\b("
+    r"near-?universal|overwhelming(?:ly)?|majority|minority|most(?:ly)?|"
+    r"\brare\b|\bcommon\b|uncommon|frequen\w*|prevalen\w*|cultivar|support|"
+    r"\d+\s+of\s+(?:the\s+)?(?:described|cases|specimens|plants)|"
+    r"in\s+this\s+(?:material|dataset)|do(?:es)?\s+not\s+occur|not\s+seen"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def find_leakage(text: str) -> List[str]:
+    """Return sorted unique population/frequency phrases found in *text*.
+
+    Runs over phenotyper-facing prompt text; a non-empty result means dataset
+    frequency information would leak into per-plant scoring (anchoring risk).
+    """
+    return sorted({m.group(0).lower() for m in POPULATION_LEXICON.finditer(text or "")})
+
 
 # Constructs that must never appear in a shard schema (grammar-subset safety).
 FORBIDDEN = {
@@ -424,6 +448,7 @@ def generate_shards(
     budget: int = DEFAULT_SHARD_BUDGET,
     write_combined: bool = False,
     combined_dir: Optional[str] = None,
+    strict_leakage: bool = False,
 ) -> Dict[str, Any]:
     """Generate the shard set (and optionally the combined artifacts).
 
@@ -503,6 +528,16 @@ def generate_shards(
     if extra:
         problems.append("coverage: shard traits not in master: %s" % extra)
 
+    leakage = []
+    for s in shards:
+        hits = find_leakage(s["_prompt"])
+        if hits:
+            leakage.append((s["shard_id"], hits))
+    if strict_leakage:
+        for sid, hits in leakage:
+            problems.append("leakage: %s prompt contains population phrasing: %s"
+                            % (sid, hits))
+
     return {
         "shard_dir": shard_dir,
         "shard_count": len(shards),
@@ -513,6 +548,7 @@ def generate_shards(
         "shards": [{"shard_id": s["shard_id"], "groups": s["groups"],
                     "cost": s["cost"], "trait_count": len(s["traits"])} for s in shards],
         "problems": problems,
+        "leakage": leakage,
     }
 
 
@@ -556,6 +592,11 @@ def print_summary(summary: Dict[str, Any]) -> None:
               "(incl. no anyOf/union); rationale-before-value; both required; "
               "additionalProperties:false: OK")
         print("[2] coverage: every master trait in exactly one shard: OK")
+    if summary.get("leakage"):
+        print("WARNING: population/frequency phrasing in phenotyper-facing prompt "
+              "(will anchor per-plant scoring; move to design_note or rephrase):")
+        for sid, hits in summary["leakage"]:
+            print("   - %s: %s" % (sid, hits))
     print("[3] SUMMARY")
     print("    master traits:", summary["master_trait_count"],
           " groups:", summary["group_count"])

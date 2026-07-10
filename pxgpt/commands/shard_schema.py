@@ -23,6 +23,7 @@ def shard_schema_command(args):
     summary = shard_builder.generate_shards(
         args.master, shard_dir, budget=args.shard_budget,
         write_combined=args.combined, combined_dir=args.combined_dir,
+        strict_leakage=args.strict_leakage,
     )
     shard_builder.print_summary(summary)
     if summary["problems"]:
@@ -66,5 +67,10 @@ def setup_shard_schema_parser(subparsers):
     parser.add_argument(
         "--combined-dir", default=None,
         help="Directory for the combined artifacts (default: parent of --shard-dir).",
+    )
+    parser.add_argument(
+        "--strict-leakage", action="store_true",
+        help="Fail (non-zero exit) if any shard prompt contains population/"
+             "frequency phrasing, instead of only warning.",
     )
     parser.set_defaults(func=shard_schema_command)
