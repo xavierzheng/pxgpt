@@ -91,10 +91,26 @@ def normalize_master(master: Dict[str, Any]) -> Dict[str, Any]:
 # Schema building
 # ---------------------------------------------------------------------------
 
+def nominal_categories(trait: Dict[str, Any]) -> List[Tuple[str, Optional[str]]]:
+    """Return ordered ``(value, definition_or_None)`` pairs for a nominal trait.
+
+    Accepts ``values`` as either the legacy bare-string list (``["cat", ...]``)
+    or a definition-carrying object list (``[{"value", "definition"}, ...]``).
+    Definitions are phenotyper-facing prompt text; they never enter the schema.
+    """
+    out: List[Tuple[str, Optional[str]]] = []
+    for v in trait.get("values") or []:
+        if isinstance(v, dict):
+            out.append((v["value"], v.get("definition")))
+        else:
+            out.append((v, None))
+    return out
+
+
 def value_schema(trait: Dict[str, Any]) -> Dict[str, Any]:
     st = trait["scale_type"]
     if st == "nominal":
-        return {"enum": list(trait["values"]) + [NA]}
+        return {"enum": [val for val, _ in nominal_categories(trait)] + [NA]}
     if st == "ordinal":
         return {"enum": [lvl["level"] for lvl in trait["values"]] + [NA]}
     if st == "quantitative":
