@@ -155,6 +155,32 @@ You are a professional botanist and data scientist. From the provided document (
 OUTPUT: a JSON schema DEFINITION (a template), not a filled-in example for any one plant.
 Output only the JSON, no prose preamble.
 
+## TOP-LEVEL CONTAINER (exact shape — mandatory, do not vary)
+The downstream sharding tool keys groups by NAME, so groups MUST be a JSON OBJECT
+named "trait_groups" (NOT an array, and NOT named "groups"). Emit exactly this
+top-level shape:
+```
+{
+  "schema_name": "<short identifier>",
+  "schema_version": "<version string>",
+  "description": "<one-line description of the schema>",
+  "trait_groups": {
+    "<group_name_snake_case>": {
+      "description": "<what this organ/functional group covers>",
+      "traits": [ <per-trait object>, <per-trait object>, ... ]
+    },
+    "<next_group_name>": { "description": "...", "traits": [ ... ] }
+  }
+}
+```
+- "trait_groups" is an OBJECT whose KEYS are the group names (snake_case). Do NOT
+  emit a list of `{"group": name, "traits": [...]}` objects, and do NOT put the
+  group name inside the group object.
+- Each group value is an object with EXACTLY two keys: "description" (string) and
+  "traits" (array of per-trait objects defined below).
+- Any extra top-level metadata keys you add are ignored downstream, but the
+  "trait_groups" object and its structure above are required verbatim.
+
 ## TRAIT GROUPING (biological coherence — mandatory)
 - Organize traits into top-level groups that each correspond to ONE coherent anatomical structure or functional/developmental unit. Examples of valid groups (use only those the data warrants): whole_plant_architecture, root_system, stem, leaf_blade, leaf_margin, leaf_apex_base, leaf_surface, petiole, venation, inflorescence, flower, fruit, seed, phenology.
 - A trait must sit in the group matching the organ/structure it describes.
@@ -163,7 +189,8 @@ Output only the JSON, no prose preamble.
 ## TRAIT NAMING (ontology-style, canonical)
 - Use canonical, reusable, ontology-style names (e.g. leaf_blade_shape, leaf_margin_type, flower_color_hue, petiole_length). Lowercase snake_case, organ_attribute pattern.
 - The name must be reusable across cultivars and species — never encode one cultivar's specific value into the trait name.
-- GLOBALLY UNIQUE across the whole schema: no two traits may share the same trait_name, even under different groups. Rationale: the downstream pipeline flattens this schema into a table using trait_name as the column name, so any repeated name would collide and silently overwrite data. The organ_attribute pattern above already guarantees this when applied in full (leaf_blade_length vs petiole_length never clash); the failure mode to avoid is a bare attribute name ("length", "width", "color", "shape") recurring under several organs. Always keep an organ prefix specific enough that the name self-disambiguates.
+- GLOBALLY UNIQUE across the whole schema: no two traits may share the same trait_name, even under different groups. Rationale: the downstream pipeline flattens this schema into atable using trait_name as the column name, so any repeated name would collide and silently overwrite data. The organ_attribute pattern above already guarantees this when applied infull (leaf_blade_length vs petiole_length never clash); the failure mode to avoid is a bare attribute name ("length", "width", "color", "shape") recurring under several organs. Always keep an organ prefix specific enough that the name self-disambiguates.
+
 
 ## TRAIT CLASSIFICATION — assign each trait a "scale_type":
 - "nominal": discrete categories with NO inherent order (e.g. leaf shape, color hue).
@@ -193,12 +220,21 @@ Output only the JSON, no prose preamble.
 - "description": what the trait captures
 - "scale_type": "nominal" | "ordinal" | "quantitative"
 - "values":
-    nominal      -> array of canonical category strings (unordered)
+    nominal      -> array of objects, each { "value": canonical category string,
+                    "definition": ONE clause defining that category VISUALLY —
+                    what the scorer literally sees in a photo. No population/
+                    frequency words (see rule below). }
     ordinal      -> ordered array of { "level": int, "label": str, "definition": str }
     quantitative -> null
 - "unit": standardized unit string for quantitative traits; otherwise null
 - "support": integer count of cultivars exhibiting this feature
 - "design_note": brief rationale for the chosen scale_type, categories, and levels; mandatory justification if a nominal trait exceeds 7 categories or an ordinal exceeds 5.
+- The per-category "definition" text (and ordinal level "definition"s) are shown
+  VERBATIM to a downstream multimodal LLM that has NO other context. They must be
+  self-contained visual definitions. They MUST NOT contain population or dataset
+  frequency information — no "most", "rare", "near-universal", "overwhelmingly",
+  "N of cases", cultivar ids, or support counts. Put any such rationale ONLY in
+  "design_note", which is author-only and is never shown to the scorer.
 
 ## COVERAGE
 - Include every trait, even one appearing in a single cultivar. Record its "support".
@@ -209,13 +245,15 @@ Output only the JSON, no prose preamble.
 
 ## FORMAT ANCHOR (illustrative only — derive ALL real content from the document)
 A good leaf color treatment looks like:
-  leaf_color_hue       (nominal, values: [green, purple])
+  leaf_color_hue (nominal), with values:
+    [ { "value": "green",  "definition": "lamina predominantly green" },
+      { "value": "purple", "definition": "lamina predominantly purple/anthocyanic" } ]
   leaf_green_intensity (ordinal, 3 levels: pale / medium / deep, each defined)
 NOT a single nominal trait "leaf_color" with values
-  [light green, medium green, dark green, purplish green, green-purple, ...].
+  [light green, medium green, dark green, purplish green, green-purple, ...],
+and NOT a bare nominal value list like ["green", "purple"] with no definitions.
 
-All the phenotyping reports are combined into [Paste combined phenotype report file path here]. Use this file as your phenotyping reports source.
-
+All the phenotyping reports are combined into [paste your describing output file name here]. Use this file as your phenotyping reports source.
 ```
 
 **Iterate** until the schema covers all observed variation. Save the final schema to a file (e.g. `prompts/phenotype_schema.json`), then normalize it:

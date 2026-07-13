@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### Changed
+- **Stage 1 (`describe-batch`) prompts split by growth stage.** `prompts/describe_plant.txt`
+  is replaced by `prompts/describe_plant_mature.txt` (10×10×6.5 cm rockwool cube) and
+  `prompts/describe_plant_seedling.txt` (2.5 cm cube) — same morphology-description
+  instructions, growth-stage-specific rockwool dimensions. `prompts/phenotyping_system.txt`
+  is renamed `prompts/describe_plant_system.txt` (content unchanged).
+- **Stage 3 system prompt rewritten for native structured output.**
+  `prompts/phenotyping_system_schema.txt` (a legacy "return this JSON schema verbatim"
+  instruction from the pre-structured-output era) is replaced by two purpose-built
+  prompts: `prompts/phenotype_schema_system_template.txt` (per-plant scoring, mature
+  growth stage — rockwool dimensions left as placeholders to fill in) and
+  `prompts/phenotype_schema_system_seedling.txt` (per-*cultivar* scoring across a group
+  of individuals, fixed 2.5 cm seedling cube). Both specify the `rationale`-then-`value`
+  output order, require citing which image(s) support a judgment, and add an explicit
+  absence-vs-`not_assessable` rule (a well-supported "no such structure present" is a
+  valid value, distinct from "cannot be scored from these images").
+- **`generate_master_schema_v2.txt` promoted to `generate_master_schema.txt`** (drops
+  the `_v2` suffix; content otherwise unchanged apart from a generic placeholder for
+  the describe-output file name).
+- Legacy prompt/schema versions (`extract_traits.txt`, `phenotype_schema.json`,
+  `phenotyping_system_schema.txt`) archived under `prompts/old_v0.1.0/` instead of
+  being deleted outright.
+- **`user_manual.md` — master-schema generation prompt hardened**:
+  - Documents the mandatory top-level container shape: `trait_groups` must be a JSON
+    *object* keyed by group name (not an array, not named `groups`), each value
+    `{"description", "traits"}`.
+  - Nominal trait `values` are now an array of `{"value", "definition"}` objects (a
+    purely visual, self-contained definition shown verbatim to the downstream scorer)
+    instead of a bare array of category strings; population/frequency language
+    (`"most"`, `"rare"`, cultivar ids, support counts) is banned from these
+    definitions and must go in `design_note` instead.
+  - Updates the format anchor example accordingly and fixes a couple of typos/spacing.
+
 ### New features
 - **`json-to-table` command**: flattens Stage 3 per-plant
   `Result_Stage3/<cultivar_id>.json` files into one row-per-plant, analysis-ready

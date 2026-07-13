@@ -106,4 +106,4 @@ NOT a single nominal trait "leaf_color" with values
   [light green, medium green, dark green, purplish green, green-purple, ...],
 and NOT a bare nominal value list like ["green", "purple"] with no definitions.
 
-All the phenotyping reports are combined into out_01_describe.txt. Use this file as your phenotyping reports source.
+All the phenotyping reports are combined into <insert your describing result file here>. Use this file as your phenotyping reports source.
