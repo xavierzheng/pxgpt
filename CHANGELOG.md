@@ -36,6 +36,32 @@
   - Updates the format anchor example accordingly and fixes a couple of typos/spacing.
 
 ### New features
+- **`phenotype-batch --dispatch sequential` is now crash-safe, resumable and
+  live-logging.** A sharded sequential run is ~`plants × shards` synchronous
+  calls (hundreds to thousands, many hours); previously every result lived only
+  in RAM until the whole loop finished, so a SLURM wall-time kill / node crash /
+  OOM lost *all* completed work, and stdout stayed empty until exit.
+  - **Incremental persistence**: each shard's parsed JSON is written to
+    `<output>/_partial/<line_id>__<shard_id>.json` the moment it returns, and
+    because requests are plant-contiguous a plant's final merged
+    `<line_id>.json` is written as soon as its last shard is attempted. A
+    `<output>/_partial/progress.jsonl` logs one line per completed call.
+  - **Resume** (`--resume` / `--no-resume`, default on): on startup any shard
+    with a valid partial on disk is skipped rather than re-billed; the run
+    continues where it stopped. The number of skipped calls is reported, and
+    token totals count only the calls actually made this run. A failed or
+    unparseable call writes no partial, so it is retried on the next run.
+  - **Bounded in-run retry**: transient errors (429 / 5xx / Anthropic's 529
+    "Overloaded" / connection blips) are retried up to 3× with exponential
+    backoff before a shard is given up — previously the client's `max_retries=0`
+    meant a single overload blip permanently dropped a shard. A `400` such as
+    "Grammar compilation timed out" is *not* retried in-run (it is a schema-size
+    error, deferred to resume / re-sharding).
+  - **Live stdout**: the CLI now line-buffers stdout (and progress lines flush),
+    so SLURM logs update as the run proceeds without needing `PYTHONUNBUFFERED`.
+  - A clean uninterrupted run produces the same `<line_id>.json` /
+    `<line_id>.gaps.json` files as before (plus the `_partial/` dir alongside).
+    Batch mode and single-schema mode are unchanged.
 - **`json-to-table` command**: flattens Stage 3 per-plant
   `Result_Stage3/<cultivar_id>.json` files into one row-per-plant, analysis-ready
   table (`pxgpt/core/json2table.py`). Trait metadata (`scale_type`/`unit`/ordinal

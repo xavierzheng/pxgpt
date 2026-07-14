@@ -36,12 +36,14 @@ is sent instead depends on the model tier — see
 ``batch_utils.build_request_params``.
 """
 
+import os
 import json
+import time
 import argparse
 from pathlib import Path
 from typing import Dict, List
 
-from anthropic import Anthropic
+from anthropic import Anthropic, APIConnectionError, APITimeoutError
 
 from ..core.config import Config
 from ..core.file_utils import read_file_safely
@@ -377,69 +379,207 @@ def _dispatch_batch(args, config, client, requests, line_ids, shards, shard_dir,
     return 0
 
 
-def _dispatch_sequential(args, config, client, requests, line_ids, master_index,
-                         use_files_api):
-    """Run each plant's shards as near-synchronous calls (reliable image cache)."""
-    betas = ["files-api-2025-04-14"] if use_files_api else []
-    totals = {"input": 0, "output": 0, "cache_creation": 0, "cache_read": 0}
-    per_line = {lid: [] for lid in line_ids}
-    errors = 0
+# HTTP statuses worth a short in-run retry: rate limit + transient server/
+# overload conditions (429, 5xx, and Anthropic's 529 "Overloaded").  A 400 such
+# as "Grammar compilation timed out" is a client-side error and is NOT retried
+# here — it surfaces to the caller, writes no partial, and is retried on the
+# next resume run instead.
+_TRANSIENT_STATUS = {408, 409, 425, 429, 500, 502, 503, 504, 529}
 
-    print(f"\n--- Sequential dispatch: {len(requests)} call(s) ---")
-    for i, req in enumerate(requests, 1):
-        line_id, shard_id = sharding.split_custom_id(req["custom_id"])
-        params = dict(req["params"])
+
+def _is_transient(exc) -> bool:
+    """True if *exc* is a transient API condition worth retrying in-run."""
+    if isinstance(exc, (APIConnectionError, APITimeoutError)):
+        return True
+    return getattr(exc, "status_code", None) in _TRANSIENT_STATUS
+
+
+def _call_with_retry(client, betas, params, i, total, custom_id,
+                     max_attempts=3, base_delay=2.0):
+    """Issue one Messages API call, retrying only transient errors with
+    exponential backoff.  Returns the response, or raises the last exception
+    once retries are exhausted / the error is non-transient."""
+    attempt = 0
+    while True:
+        attempt += 1
         try:
             if betas:
-                resp = client.beta.messages.create(betas=betas, **params)
-            else:
-                resp = client.messages.create(**params)
+                return client.beta.messages.create(betas=betas, **params)
+            return client.messages.create(**params)
         except Exception as e:  # noqa: BLE001
-            print(f"  [{i}/{len(requests)}] {req['custom_id']} ERROR: {e}")
-            errors += 1
-            continue
+            if attempt >= max_attempts or not _is_transient(e):
+                raise
+            delay = base_delay * (2 ** (attempt - 1))
+            code = getattr(e, "status_code", "?")
+            print(f"  [{i}/{total}] {custom_id} transient {code}; "
+                  f"retry {attempt}/{max_attempts - 1} in {delay:.0f}s", flush=True)
+            time.sleep(delay)
 
-        u = resp.usage
-        totals["input"] += getattr(u, "input_tokens", 0)
-        totals["output"] += getattr(u, "output_tokens", 0)
-        totals["cache_creation"] += getattr(u, "cache_creation_input_tokens", 0)
-        totals["cache_read"] += getattr(u, "cache_read_input_tokens", 0)
-        text = strip_code_fence(extract_text_content(resp.content))
-        try:
-            per_line.setdefault(line_id, []).append(json.loads(text))
-        except json.JSONDecodeError:
-            print(f"  [{i}/{len(requests)}] {req['custom_id']} JSON parse failed")
-            errors += 1
-        print(f"  [{i}/{len(requests)}] {req['custom_id']}  "
-              f"cache_read={getattr(u, 'cache_read_input_tokens', 0)} "
-              f"cache_creation={getattr(u, 'cache_creation_input_tokens', 0)}")
 
-    # Merge + write per plant
+def _dispatch_sequential(args, config, client, requests, line_ids, master_index,
+                         use_files_api):
+    """Run each plant's shards as near-synchronous calls (reliable image cache).
+
+    Crash-safe + resumable.  Each successful shard's parsed JSON is written
+    immediately to ``<output>/_partial/<line_id>__<shard_id>.json`` and, because
+    requests are plant-contiguous, a plant's final merged ``<line_id>.json`` is
+    written as soon as its last shard is attempted — so a mid-run kill loses
+    nothing.  On restart (``--resume``, default on) any shard whose partial
+    already exists and parses is skipped rather than re-billed.
+
+    Token totals reflect ONLY the calls made in THIS run; shards skipped from a
+    prior run contribute nothing and are reported as a separate count.  Failed /
+    unparseable calls write no partial, so they are retried on the next resume.
+    A clean uninterrupted run produces the same ``<line_id>.json`` /
+    ``<line_id>.gaps.json`` set as before (plus the ``_partial/`` dir alongside).
+    """
+    betas = ["files-api-2025-04-14"] if use_files_api else []
     group_order, group_traits, trait_meta = master_index
+
     out = Path(args.output)
+    partial_dir = out / "_partial"
     out.mkdir(parents=True, exist_ok=True)
-    written = total_gaps = plants_with_gaps = 0
-    for lid in line_ids:
+    partial_dir.mkdir(parents=True, exist_ok=True)
+    progress_path = partial_dir / "progress.jsonl"
+
+    # Expected shard count per plant (requests are built plant-contiguous).
+    expected: Dict[str, int] = {lid: 0 for lid in line_ids}
+    for req in requests:
+        lid, _ = sharding.split_custom_id(req["custom_id"])
+        expected[lid] = expected.get(lid, 0) + 1
+
+    per_line: Dict[str, List] = {lid: [] for lid in line_ids}
+    attempted: Dict[str, int] = {lid: 0 for lid in line_ids}
+    plant_missing: Dict[str, list] = {}
+    written_plants = set()
+
+    def _partial_path(custom_id):
+        return partial_dir / f"{custom_id}.json"
+
+    def _write_json_atomic(path, obj):
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(obj, f, indent=2)
+            f.write("\n")
+        os.replace(tmp, path)
+
+    def _log_progress(entry):
+        with open(progress_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+
+    def _finalize_plant(lid):
         record, missing = sharding.merge_plant_record(
             per_line.get(lid, []), group_order, group_traits, trait_meta
         )
-        with open(out / f"{lid}.json", "w", encoding="utf-8") as f:
-            json.dump(record, f, indent=2)
-            f.write("\n")
-        written += 1
+        _write_json_atomic(out / f"{lid}.json", record)
+        gaps_path = out / f"{lid}.gaps.json"
         if missing:
-            plants_with_gaps += 1
-            total_gaps += len(missing)
-            with open(out / f"{lid}.gaps.json", "w", encoding="utf-8") as f:
-                json.dump({"line_id": lid,
-                           "missing_traits": [{"group": g, "trait": t} for g, t in missing]},
-                          f, indent=2)
-                f.write("\n")
+            _write_json_atomic(gaps_path, {
+                "line_id": lid,
+                "missing_traits": [{"group": g, "trait": t} for g, t in missing],
+            })
+        elif gaps_path.exists():
+            gaps_path.unlink()  # a prior run's gap was filled this run
+        written_plants.add(lid)
+        plant_missing[lid] = missing
 
-    print(f"\n  Wrote {written} merged JSON files; {errors} call error(s); "
-          f"{plants_with_gaps} plant(s) with gaps ({total_gaps} missing traits)")
+    def _bump_and_maybe_finalize(lid):
+        attempted[lid] = attempted.get(lid, 0) + 1
+        if attempted[lid] >= expected.get(lid, 0) and lid not in written_plants:
+            _finalize_plant(lid)
+
+    # ---- Resume scan: adopt valid existing partials, skip those calls ----
+    resume = getattr(args, "resume", True)
+    done = set()
+    if resume:
+        for req in requests:
+            cid = req["custom_id"]
+            p = _partial_path(cid)
+            if not p.exists():
+                continue
+            try:
+                obj = json.loads(p.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue  # corrupt/partial write -> re-run this shard
+            lid, _ = sharding.split_custom_id(cid)
+            per_line.setdefault(lid, []).append(obj)
+            done.add(cid)
+    if done:
+        print(f"\n--- Resume: {len(done)} of {len(requests)} shard(s) already "
+              f"on disk; skipping those calls ---", flush=True)
+
+    print(f"\n--- Sequential dispatch: {len(requests)} call(s) "
+          f"({len(done)} skip, {len(requests) - len(done)} to run) ---", flush=True)
+
+    totals = {"input": 0, "output": 0, "cache_creation": 0, "cache_read": 0}
+    errors = 0
+    made = 0
+    for i, req in enumerate(requests, 1):
+        cid = req["custom_id"]
+        line_id, shard_id = sharding.split_custom_id(cid)
+
+        if cid in done:
+            _bump_and_maybe_finalize(line_id)
+            continue
+
+        params = dict(req["params"])
+        try:
+            resp = _call_with_retry(client, betas, params, i, len(requests), cid)
+        except Exception as e:  # noqa: BLE001
+            print(f"  [{i}/{len(requests)}] {cid} ERROR: {e}", flush=True)
+            _log_progress({"i": i, "custom_id": cid, "status": "error",
+                           "detail": str(e)})
+            errors += 1
+            _bump_and_maybe_finalize(line_id)
+            continue
+
+        made += 1
+        u = resp.usage
+        cr = getattr(u, "cache_read_input_tokens", 0)
+        cc = getattr(u, "cache_creation_input_tokens", 0)
+        totals["input"] += getattr(u, "input_tokens", 0)
+        totals["output"] += getattr(u, "output_tokens", 0)
+        totals["cache_creation"] += cc
+        totals["cache_read"] += cr
+
+        text = strip_code_fence(extract_text_content(resp.content))
+        try:
+            obj = json.loads(text)
+        except json.JSONDecodeError:
+            print(f"  [{i}/{len(requests)}] {cid} JSON parse failed", flush=True)
+            _log_progress({"i": i, "custom_id": cid, "status": "parse_error",
+                           "cache_read": cr, "cache_creation": cc})
+            errors += 1
+            _bump_and_maybe_finalize(line_id)
+            continue
+
+        # Persist the shard immediately (crash safety), then record in memory.
+        _write_json_atomic(_partial_path(cid), obj)
+        per_line.setdefault(line_id, []).append(obj)
+        _log_progress({"i": i, "custom_id": cid, "status": "ok",
+                       "cache_read": cr, "cache_creation": cc})
+        print(f"  [{i}/{len(requests)}] {cid}  "
+              f"cache_read={cr} cache_creation={cc}", flush=True)
+        _bump_and_maybe_finalize(line_id)
+
+    # Safety net: finalize any plant not yet written (e.g. zero requests).
+    for lid in line_ids:
+        if lid not in written_plants:
+            _finalize_plant(lid)
+
+    written = len(written_plants)
+    plants_with_gaps = sum(1 for m in plant_missing.values() if m)
+    total_gaps = sum(len(m) for m in plant_missing.values())
+
+    print(f"\n  Wrote {written} merged JSON files; {errors} call error(s) this run; "
+          f"{len(done)} shard(s) skipped; "
+          f"{plants_with_gaps} plant(s) with gaps ({total_gaps} missing traits)",
+          flush=True)
     print_token_summary(totals)
-    print(f"\nMerged phenotype JSON files written to: {args.output}/")
+    if done:
+        print(f"  (token totals cover the {made} call(s) made this run only; "
+              f"{len(done)} shard(s) reused from prior partials)", flush=True)
+    print(f"\nMerged phenotype JSON files written to: {args.output}/", flush=True)
     return 0
 
 
@@ -499,6 +639,12 @@ def setup_phenotype_parser(subparsers):
         help="Sharded dispatch strategy: 'batch' (default; one Message Batch for "
              "all plant×shard requests) or 'sequential' (each plant's shards run as "
              "near-synchronous calls so the 5-min image cache reliably hits).",
+    )
+    parser.add_argument(
+        "--resume", action=argparse.BooleanOptionalAction, default=True,
+        help="Sequential dispatch only: resume from shards already saved under "
+             "<output>/_partial/ instead of re-running (and re-billing) completed "
+             "calls (default: --resume). Use --no-resume to force a fresh run.",
     )
     parser.add_argument(
         "--manifest", default="file_manifest.json",

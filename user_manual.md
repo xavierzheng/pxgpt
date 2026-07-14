@@ -33,7 +33,7 @@ Stages 1 and 3 reference the **same uploaded images**: each image is uploaded on
 - **Scale**: process hundreds of lines / ~10 000 images in a single Batch API submission
 - **Cost**: images uploaded once; prompt caching on repeated system prompts; 50–90 % cache savings typical
 - **Accuracy**: adaptive thinking (`output_config.effort`) on Stage 3 improves structured extraction quality
-- **Reliability**: fire-and-forget batches with checkpoint files; per-request failure isolation; crash-safe manifest
+- **Reliability**: fire-and-forget batches with checkpoint files; per-request failure isolation; crash-safe manifest; **crash-safe, resumable sequential dispatch** for Stage 3 sharded runs (partials on disk, skip-completed resume, in-run transient retry)
 
 ---
 
@@ -332,6 +332,12 @@ In sharded mode `--schema`, `--system-prompt` and `--prompt` are **optional** �
 - **Pre-flight compile check**: each distinct shard schema is test-compiled with a tiny live request before the run. If one still trips the limit, pxGPT **auto-reshards** at a smaller budget (re-running the generator in-process so schema, prompt and manifest stay in sync) and re-checks.
 - **Prompt caching**: the system prompt + the plant's images form a byte-identical, cached prefix shared across that plant's shards (`cache_control` on the last image block); only the small per-shard prompt and schema are re-sent. The first shard of a plant pays the image cost; the rest hit the cache. Cache-creation vs cache-read tokens are logged so you can confirm caching empirically.
 - **Dispatch**: `batch` (default) submits one Message Batch for all *(plant × shard)* requests — cheapest, but the 5-minute prompt cache may expire before async execution. `sequential` runs each plant's shards as near-synchronous calls, which reliably keeps the image prefix in the cache window. Make the call once and compare the logged cache-read rate. For the functional difference between the two transports and a cost-crossover model (which mode is actually cheaper depends on your shard count and batch's real cache-hit rate), see [`dispatch_batch_vs_sequential.md`](dispatch_batch_vs_sequential.md).
+- **Sequential dispatch is crash-safe and resumable.** A real sequential run is `plants × shards` synchronous calls (easily thousands, many hours), so a SLURM wall-time kill, node crash or OOM must not throw the work away:
+  - Each shard's parsed JSON is written to `<output>/_partial/<line_id>__<shard_id>.json` the instant it returns, and — because requests are plant-contiguous — a plant's final merged `<line_id>.json` is written as soon as its last shard is attempted. `<output>/_partial/progress.jsonl` records one line per completed call. The `_partial/` directory is left in place after a successful run (inspect or delete it yourself).
+  - **Resume is automatic** (`--resume`, default on): re-run the *same* command and any shard whose partial already exists and parses is skipped — you are **not re-billed** for completed calls — while failed/unparseable shards (which wrote no partial) are retried. The run logs how many calls it skipped, and the closing token summary counts only the calls made in *this* run. Pass `--no-resume` to force a clean run that ignores existing partials.
+  - **Transient errors are retried in-run**: `429` / `5xx` / Anthropic's `529` "Overloaded" / connection blips get up to 3 attempts with exponential backoff before a shard is dropped. A `400` such as *"Grammar compilation timed out"* is a schema-size error and is **not** retried in-run — reduce `--shard-budget` and re-shard, or rely on resume.
+  - **Live logging**: progress lines appear in the SLURM/stdout log as the run proceeds (stdout is line-buffered by the CLI; no `PYTHONUNBUFFERED` needed).
+  - A clean, uninterrupted sequential run produces exactly the same `<line_id>.json` / `<line_id>.gaps.json` files as before — only the `_partial/` directory is new.
 
 **Step 3 — retrieve + merge:**
 
@@ -498,12 +504,16 @@ pxgpt phenotype-batch \
   [--shard-dir DIR]      # SHARDED mode: per-shard schemas+prompts from shard-schema
   [--master-schema FILE] # sharded: master used to validate the merged record
   [--dispatch {batch,sequential}]   # sharded dispatch strategy (default: batch)
+  [--resume | --no-resume]          # sequential dispatch: resume from <output>/_partial/
+                                    # instead of re-running completed calls (default: --resume)
   [--wait]
 ```
 
 Output directory: one `{line_id}.json` per plant line; `{line_id}.err.txt` for parse failures (single-schema mode) or `{line_id}.gaps.json` for missing traits (sharded mode). See **Stage 3 (sharded)** above for when and how to use `--shard-dir`.
 
 `--dispatch batch` (default) is a single async Message Batch at 50% off standard pricing but with unreliable cross-shard prompt caching; `--dispatch sequential` runs full-price synchronous calls that reliably hit the cache. Which is cheaper depends on your shard count and batch's actual cache-hit rate — see [`dispatch_batch_vs_sequential.md`](dispatch_batch_vs_sequential.md) for the functional difference and a cost-crossover model.
+
+`--dispatch sequential` is **crash-safe and resumable**: shards are written to `<output>/_partial/` as they complete, so re-running the same command after a kill/crash skips completed calls (no re-billing) and retries only what's missing (`--no-resume` forces a fresh run). Transient overloads are retried in-run and progress prints live. See **Stage 3 (sharded)** above for details. `--resume` has no effect in `batch` dispatch (batch runs are resumed via `fetch-results` and the checkpoint file instead).
 
 ---
 

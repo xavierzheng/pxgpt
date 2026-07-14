@@ -36,6 +36,11 @@ def load_env_file():
 def main():
     load_env_file()
 
+    # Live stdout under SLURM: force line-buffering so progress lines appear as
+    # long-running commands proceed, without depending on PYTHONUNBUFFERED.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
+
     parser = argparse.ArgumentParser(
         prog="pxgpt",
         description="Plant analysis tool — multi-provider LLM with Files + Batch API support",

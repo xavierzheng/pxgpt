@@ -13,6 +13,7 @@
 - **Multiple providers**: Anthropic, OpenAI, Google, Ollama, LM Studio, vLLM
 - **Prompt caching**: automatic for Anthropic (reduces costs on repeated system prompts)
 - **Robust error handling**: exponential backoff, per-request failure isolation, crash-safe manifest
+- **Crash-safe sequential dispatch** (Stage 3 sharded): `--dispatch sequential` persists each shard to disk as it returns and **resumes** after a kill/crash — skipping already-completed calls (no re-billing) and retrying transient overloads in-run
 - **Example master schema**: see [Example_master_schema.tsv](Example_master_schema.tsv) for the flattened field reference
 
 ## Pipeline overview
@@ -161,7 +162,8 @@ pxgpt phenotype-batch \
   --shard-dir path/to/shards \
   --output phenotypes/ \
   --manifest file_manifest.json
-#    --dispatch batch (default) | sequential   (sequential = reliable 5-min image cache)
+#    --dispatch batch (default) | sequential   (sequential = reliable 5-min image cache;
+#                                                crash-safe + resumable, see below)
 
 # 3. Fetch + merge: one {line_id}.json per plant, {line_id}.gaps.json for any gaps
 pxgpt fetch-results --checkpoint checkpoint_<batch_id>.json
@@ -172,6 +174,13 @@ schemas and the shared system preamble come from the shard set). A pre-flight li
 compile check verifies each shard and auto-reshards at a smaller budget if one
 still trips the limit. The system prompt + images form a cached prefix shared
 across a plant's shards; only the small per-shard prompt + schema are re-sent.
+
+`--dispatch sequential` is **crash-safe and resumable**: each shard is written to
+`<output>/_partial/` as it returns, so a SLURM kill / crash loses nothing. Just
+re-run the same command — completed `(plant, shard)` calls are skipped (not
+re-billed) and only the missing ones run (`--no-resume` forces a fresh run).
+Transient overloads (429 / 5xx / 529) are retried in-run with backoff, and
+progress prints live to the SLURM log.
 
 #### Downstream analysis: flatten results into a table
 
