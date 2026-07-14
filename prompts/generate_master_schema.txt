@@ -9,9 +9,7 @@ OUTPUT: a JSON schema DEFINITION (a template), not a filled-in example for any o
 Output only the JSON, no prose preamble.
 
 ## TOP-LEVEL CONTAINER (exact shape — mandatory, do not vary)
-The downstream sharding tool keys groups by NAME, so groups MUST be a JSON OBJECT
-named "trait_groups" (NOT an array, and NOT named "groups"). Emit exactly this
-top-level shape:
+The downstream sharding tool keys groups by NAME, so groups MUST be a JSON OBJECT named "trait_groups" (NOT an array, and NOT named "groups"). Emit exactly this top-level shape:
 ```
 {
   "schema_name": "<short identifier>",
@@ -26,13 +24,9 @@ top-level shape:
   }
 }
 ```
-- "trait_groups" is an OBJECT whose KEYS are the group names (snake_case). Do NOT
-  emit a list of `{"group": name, "traits": [...]}` objects, and do NOT put the
-  group name inside the group object.
-- Each group value is an object with EXACTLY two keys: "description" (string) and
-  "traits" (array of per-trait objects defined below).
-- Any extra top-level metadata keys you add are ignored downstream, but the
-  "trait_groups" object and its structure above are required verbatim.
+- "trait_groups" is an OBJECT whose KEYS are the group names (snake_case). Do NOT emit a list of `{"group": name, "traits": [...]}` objects, and do NOT put the group name inside the group object.
+- Each group value is an object with EXACTLY two keys: "description" (string) and "traits" (array of per-trait objects defined below).
+- Any extra top-level metadata keys you add are ignored downstream, but the "trait_groups" object and its structure above are required verbatim.
 
 ## TRAIT GROUPING (biological coherence — mandatory)
 - Organize traits into top-level groups that each correspond to ONE coherent anatomical structure or functional/developmental unit. Examples of valid groups (use only those the data warrants): whole_plant_architecture, root_system, stem, leaf_blade, leaf_margin, leaf_apex_base, leaf_surface, petiole, venation, inflorescence, flower, fruit, seed, phenology.
@@ -59,7 +53,7 @@ top-level shape:
 ## COLOR HANDLING (decompose — do not let color explode)
 - NEVER create composite color categories (e.g. "light-purplish-green"). Composites are the main cause of enum explosion.
 - Decompose any color trait into separate sub-traits, each small:
-    *_hue       -> nominal, a BASIC canonical palette only (e.g. white, yellow, orange, red, pink, purple, blue, green, brown). Map shades onto the nearest               basic hue; do not enumerate shade words.
+    *_hue       -> nominal, a BASIC canonical palette only (e.g. white, yellow, orange, red, pink, purple, blue, green, brown). Map shades onto the nearest basic hue; do not enumerate shade words.
     *_intensity -> ordinal, <=5 levels (this version uses LLM perception, no instrument).
     *_coverage  -> ordinal area-proportion bands, <=5 levels, only if the document describes how much area the color occupies.
 
@@ -82,12 +76,7 @@ top-level shape:
 - "unit": standardized unit string for quantitative traits; otherwise null
 - "support": integer count of cultivars exhibiting this feature
 - "design_note": brief rationale for the chosen scale_type, categories, and levels; mandatory justification if a nominal trait exceeds 7 categories or an ordinal exceeds 5.
-- The per-category "definition" text (and ordinal level "definition"s) are shown
-  VERBATIM to a downstream multimodal LLM that has NO other context. They must be
-  self-contained visual definitions. They MUST NOT contain population or dataset
-  frequency information — no "most", "rare", "near-universal", "overwhelmingly",
-  "N of cases", cultivar ids, or support counts. Put any such rationale ONLY in
-  "design_note", which is author-only and is never shown to the scorer.
+- The per-category "definition" text (and ordinal level "definition"s) are shown VERBATIM to a downstream multimodal LLM that has NO other context. They must be self-contained visual definitions. They MUST NOT contain population or dataset frequency information — no "most", "rare", "near-universal", "overwhelmingly", "N of cases", cultivar ids, or support counts. Put any such rationale ONLY in "design_note", which is author-only and is never shown to the scorer.
 
 ## COVERAGE
 - Include every trait, even one appearing in a single cultivar. Record its "support".
