@@ -203,8 +203,11 @@ progress prints live to the SLURM log.
 the Batch API — `--resume` can't touch a batch, and re-fetching reproduces the same
 `{line_id}.gaps.json`. Since `fetch-results` now persists every succeeded shard to
 `<output>/_partial/`, you recover by running step 4 above: `--dispatch sequential`
-to the same `--output` re-issues only the still-missing shards. See the full worked
-example (with a sample `gaps.json` and expected output) in
+to the same `--output` re-issues only the still-missing shards. **Match the
+original run's settings exactly** — copy `--system-prompt`, `STAGE3_EFFORT` and
+`ANTHROPIC_MODEL` from that batch's `step_04_phenotyping.sh` (omitting a
+`--system-prompt` override silently falls back to a different prompt). See the full
+worked example (with a sample `gaps.json` and expected output) in
 [`user_manual.md`](user_manual.md) → *Stage 3 (sharded) → Step 4*, and
 [`dispatch_batch_vs_sequential.md`](dispatch_batch_vs_sequential.md).
 

@@ -427,6 +427,24 @@ Step 4b prints how many calls it skipped vs. ran, and ends with a gap count:
 Each recovered shard is written into `_partial/`, its plant is re-merged, and the
 plant's `*.gaps.json` is **deleted** once its traits are filled.
 
+> **⚠ Match the original run's request settings exactly.** The recovered shards
+> must be produced under the *same* conditions as the other shards, or your dataset
+> becomes internally inconsistent. Copy the settings from the batch's original
+> `step_04_phenotyping.sh` (and its environment), not from a different pipeline's:
+> - **`--system-prompt`**: if the original passed a `--system-prompt` override, pass
+>   the *same* file. Omitting it silently falls back to the shard set's
+>   `shards_system.md`, which is usually different content.
+> - **`STAGE3_EFFORT` / `ANTHROPIC_MODEL`**: match them. If you are unsure whether the
+>   original ran with reasoning on, check a succeeded request in the batch — a
+>   `thinking` content block (or notably larger `output_tokens`) means effort was on;
+>   only `text` blocks means effort was off. A run with no `.env` and no exported
+>   `STAGE3_EFFORT` used the default (**off**).
+>
+> The run banner echoes what it will use — verify `system prompt: ...` and
+> `output_config.effort: ...` before letting it issue calls. If you already recovered
+> with the wrong settings, delete just those `_partial/<line_id>__<shard_id>.json`
+> files and re-run with the correct ones (resume re-issues only the deleted shards).
+
 #### Confirm it worked
 
 ```bash
