@@ -157,13 +157,13 @@ organ group so each call carries a small, compilable schema, then merge:
 pxgpt shard-schema --master master_schema.json --shard-budget 40
 #    -> shard_NN.schema.json, shard_NN.prompt.md, shards_system.md, shards_manifest.json
 
-# 2. Run Stage 3 in sharded mode (one small schema per shard, cached image prefix)
+# 2. Run Stage 3 in sharded mode (one small schema per shard; images are ordinary input)
 pxgpt phenotype-batch \
   --shard-dir path/to/shards \
   --output phenotypes/ \
   --manifest file_manifest.json
-#    --dispatch batch (default) | sequential   (sequential = reliable 5-min image cache;
-#                                                crash-safe + resumable, see below)
+#    --dispatch batch (default) | sequential   (sequential = crash-safe + resumable;
+#                                                see below)
 
 # 3. Fetch + merge: one {line_id}.json per plant, {line_id}.gaps.json for any gaps
 pxgpt fetch-results --checkpoint checkpoint_<batch_id>.json
@@ -172,8 +172,8 @@ pxgpt fetch-results --checkpoint checkpoint_<batch_id>.json
 In sharded mode `--schema`/`--system-prompt`/`--prompt` are optional (the per-shard
 schemas and the shared system preamble come from the shard set). A pre-flight live
 compile check verifies each shard and auto-reshards at a smaller budget if one
-still trips the limit. The system prompt + images form a cached prefix shared
-across a plant's shards; only the small per-shard prompt + schema are re-sent.
+still trips the limit. Only the shared system block is marked for prompt caching.
+Images remain ordinary input and stay before the per-shard text prompt.
 
 `--dispatch sequential` is **crash-safe and resumable**: each shard is written to
 `<output>/_partial/` as it returns, so a SLURM kill / crash loses nothing. Just

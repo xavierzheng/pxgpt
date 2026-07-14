@@ -117,17 +117,16 @@
     this module (single source of truth), and the auto-reshard runs it
     **in-process** (no subprocess).
   - `phenotype-batch` gains a **sharded mode** (`--shard-dir`): builds one
-    request per *(plant × shard)* with a byte-identical, **cached** system+image
-    prefix (`cache_control` on the last image block) and only the small per-shard
-    prompt + schema as the uncached suffix, so a plant's first shard pays the
-    image cost and the rest hit the cache. `--dispatch {batch,sequential}`
-    (default `batch`) selects one Message Batch for everything vs. near-synchronous
-    per-plant calls (reliable 5-min image cache). A **pre-flight live compile
-    check** verifies each shard schema compiles and **auto-reshards** at a smaller
-    budget (re-running `build_stage3.py`) if one still trips the limit. In sharded
-    mode `--schema`/`--system-prompt`/`--prompt` are optional (taken from the
-    shard set). `--master-schema` overrides the manifest's master path used for
-    merge validation.
+    request per *(plant × shard)* with a cached shared system block. Images remain
+    ordinary input and stay before the per-shard text prompt, avoiding repeated
+    image cache writes when each shard changes the Structured Outputs schema.
+    `--dispatch {batch,sequential}` (default `batch`) selects one Message Batch
+    for everything vs. near-synchronous per-plant calls. A **pre-flight live
+    compile check** verifies each shard schema compiles and **auto-reshards** at a
+    smaller budget (re-running `build_stage3.py`) if one still trips the limit. In
+    sharded mode `--schema`/`--system-prompt`/`--prompt` are optional (taken from
+    the shard set). `--master-schema` overrides the manifest's master path used
+    for merge validation.
   - `fetch-results` handles the new `phenotype_sharded` checkpoint stage:
     demultiplexes `custom_id = "<line>__<shard>"`, merges, parses quantitative
     strings → numbers, validates coverage against the master schema, and writes

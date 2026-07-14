@@ -10,7 +10,7 @@ grammar-cost budget, and writes one ``{schema, prompt}`` pair per shard plus a
   - load a shard set (schemas + prompts + trait inventory),
   - live compile-check each distinct shard schema and auto-reshard (re-run the
     generator at a smaller budget) if one still trips the limit,
-  - build per-(plant × shard) requests sharing a cached system+image prefix,
+  - build per-(plant × shard) requests with a cached system prefix and uncached images,
   - parse + merge the per-shard ``{rationale, value}`` objects back into one
     per-plant record and validate coverage against the master schema.
 """
@@ -217,22 +217,8 @@ def ensure_compilable(
 
 
 # ---------------------------------------------------------------------------
-# Request building (shared cached system+image prefix; per-shard suffix)
+# Request building (cached system; uncached images followed by per-shard prompt)
 # ---------------------------------------------------------------------------
-
-def _images_with_cache_breakpoint(image_blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Copy *image_blocks*, marking the last one as an ephemeral cache breakpoint.
-
-    Everything up to and including this block (system prompt + all images) is
-    cached, so subsequent shards of the same plant reuse the image prefix.
-    """
-    if not image_blocks:
-        return image_blocks
-    out = list(image_blocks[:-1])
-    last = dict(image_blocks[-1])
-    last["cache_control"] = {"type": "ephemeral"}
-    out.append(last)
-    return out
 
 
 def shard_custom_id(line_id: str, shard_id: str) -> str:
@@ -253,10 +239,11 @@ def build_sharded_requests(
 ) -> List[Dict[str, Any]]:
     """Build one batch request per (plant × shard).
 
-    The system prompt + image blocks form a byte-identical, cached prefix across
-    all shards of a plant; only the per-shard prompt text and ``output_config.format``
-    schema differ (and the schema is a separate param, not part of the cached
-    message prefix).
+    Only the shared system block has a cache breakpoint. Image blocks remain
+    ordinary input and stay before the per-shard text prompt, following
+    Anthropic's recommended image-then-text layout. Each shard still changes
+    ``output_config.format``, so same-format system prefixes may be reused across
+    plants without repeatedly cache-writing the much larger image input.
     """
     system_blocks = [{
         "type": "text",
@@ -266,9 +253,8 @@ def build_sharded_requests(
 
     requests: List[Dict[str, Any]] = []
     for line_id, image_blocks in line_image_blocks.items():
-        cached_images = _images_with_cache_breakpoint(image_blocks)
         for s in shards:
-            content = cached_images + [{"type": "text", "text": s["prompt"]}]
+            content = image_blocks + [{"type": "text", "text": s["prompt"]}]
             output_config = config.stage3_output_config(schema=s["schema"])
             params = build_request_params(
                 model=config.anthropic_model,

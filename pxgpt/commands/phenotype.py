@@ -285,7 +285,7 @@ def _resolve_master_index(manifest, shard_dir, master_override):
 
 
 def _run_sharded(args, config, client, line_image_blocks, use_files_api):
-    """Dispatch per (plant × shard) with a cached system+image prefix, then merge."""
+    """Dispatch per (plant × shard) with a cached system prefix, then merge."""
     shard_dir = args.shard_dir
     try:
         manifest, shards = sharding.load_shard_set(shard_dir)
@@ -418,7 +418,7 @@ def _call_with_retry(client, betas, params, i, total, custom_id,
 
 def _dispatch_sequential(args, config, client, requests, line_ids, master_index,
                          use_files_api):
-    """Run each plant's shards as near-synchronous calls (reliable image cache).
+    """Run each plant's shards as near-synchronous, resumable calls.
 
     Crash-safe + resumable.  Each successful shard's parsed JSON is written
     immediately to ``<output>/_partial/<line_id>__<shard_id>.json`` and, because
@@ -625,8 +625,9 @@ def setup_phenotype_parser(subparsers):
         "--shard-dir", default=None,
         help="Enable SHARDED mode: directory of per-shard {schema, prompt} pairs "
              "+ shards_manifest.json produced by build_stage3.py. Each plant is "
-             "scored with one small schema per shard (sharing a cached system+image "
-             "prefix) and the shard outputs are merged into one record per plant.",
+             "scored with one small schema per shard (cached system prefix; images "
+             "are ordinary input) and the shard outputs are merged into one record "
+             "per plant.",
     )
     parser.add_argument(
         "--master-schema", default=None,
@@ -638,7 +639,7 @@ def setup_phenotype_parser(subparsers):
         "--dispatch", choices=("batch", "sequential"), default="batch",
         help="Sharded dispatch strategy: 'batch' (default; one Message Batch for "
              "all plant×shard requests) or 'sequential' (each plant's shards run as "
-             "near-synchronous calls so the 5-min image cache reliably hits).",
+             "near-synchronous calls with incremental persistence and resume).",
     )
     parser.add_argument(
         "--resume", action=argparse.BooleanOptionalAction, default=True,
