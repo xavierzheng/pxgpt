@@ -7,7 +7,9 @@ sent. It does not change how Anthropic Structured Outputs affect prompt caching.
 ## Bottom line
 
 - `batch` sends one asynchronous Message Batch. It has the Batch API discount
-  and higher throughput.
+  and higher throughput. Its `fetch-results` now persists each succeeded shard
+  to `<output>/_partial/`, so a batch that leaves gaps can be recovered with a
+  short sequential resume to the same `--output` (see "Recovering failed shards").
 - `sequential` sends one synchronous call at a time, with all shards for one
   plant kept together. It has no batch discount, but it provides incremental
   output writes, resume, bounded retry and live progress.
@@ -105,6 +107,41 @@ It provides:
 Batch requests may run concurrently or far apart in time, so system/format cache
 hits are best-effort. Structured Outputs cache invalidation still applies when
 the shard schema changes. Images are ordinary input regardless of scheduling.
+
+`fetch-results` writes each succeeded shard to `<output>/_partial/` — the **same**
+store the sequential resume reads — and merges the union of prior partials plus
+this batch. Re-running `fetch-results` is therefore idempotent, and this shared
+store is what makes batch gaps recoverable (below).
+
+## Recovering failed shards from a batch (`overloaded_error`, etc.)
+
+A batch request that errors — e.g. a transient
+`overloaded_error: File storage is temporarily unavailable` — is **terminal
+inside that batch**. The Batch API cannot re-run one request, so re-fetching the
+same batch returns the same error and regenerates the same `<line_id>.gaps.json`.
+`--resume` does not apply to a batch: there is nothing in the batch to resume.
+
+Recover the failed shards with the sequential path, which re-issues real API
+calls and retries transient errors in-run. Two steps, to the **same `--output`**:
+
+```bash
+# 1. FREE: re-download the batch so every succeeded shard lands in _partial/.
+#    (Needed only for batches fetched before partial persistence existed; new
+#    runs already populate _partial/ on the first fetch.)
+pxgpt fetch-results --checkpoint checkpoint_<batch_id>.json
+
+# 2. Re-issue ONLY the still-missing shards (resume skips everything in _partial/).
+pxgpt phenotype-batch \
+    --shard-dir <shard_dir> --manifest <file_manifest.json> \
+    --master-schema <master_schema.json> --output <same output dir> \
+    --dispatch sequential
+```
+
+Step 2 rebuilds all *(plant × shard)* requests, skips the ones already in
+`_partial/`, and calls only the failed shards (bounded transient retry). Each
+recovered shard is written to `_partial/` and its plant is re-merged; a
+`*.gaps.json` whose traits are now filled is deleted. Use the **same** model and
+`STAGE3_EFFORT` as the original run so the recovered shards match the rest.
 
 ## Reading token usage
 

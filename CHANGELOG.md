@@ -35,6 +35,25 @@
     definitions and must go in `design_note` instead.
   - Updates the format anchor example accordingly and fixes a couple of typos/spacing.
 
+### Fixed
+- **`phenotype-batch --dispatch batch` gaps are now recoverable.** A batch
+  request that errored (typically a transient
+  `overloaded_error: File storage is temporarily unavailable`) is terminal inside
+  the Batch API, and the old `fetch-results` overwrote `<line_id>.json` from
+  scratch on every fetch without persisting per-shard results — so a momentary
+  Files-API blip became a permanent gap that `--resume` (sequential-only) could
+  not touch. `write_phenotype_sharded_results` now shares the sequential
+  dispatch's `<output>/_partial/<line_id>__<shard_id>.json` store: it adopts
+  partials already on disk, persists each freshly-succeeded shard, merges the
+  **union** of prior partials + this batch, and only writes `<line_id>.gaps.json`
+  for traits still missing (removing a stale gaps file once filled). This makes
+  `fetch-results` idempotent and lets a batch's failed shards be recovered with a
+  short `--dispatch sequential` resume to the same `--output` — re-issuing only
+  the missing shards with in-run transient retry. See
+  `dispatch_batch_vs_sequential.md` → "Recovering failed shards from a batch".
+  (Shared atomic writer `batch_utils.write_json_atomic`; the sequential path's
+  private copy was removed.)
+
 ### New features
 - **`phenotype-batch --dispatch sequential` is now crash-safe, resumable and
   live-logging.** A sharded sequential run is ~`plants × shards` synchronous

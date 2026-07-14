@@ -36,7 +36,6 @@ is sent instead depends on the model tier — see
 ``batch_utils.build_request_params``.
 """
 
-import os
 import json
 import time
 import argparse
@@ -55,6 +54,7 @@ from ..core.batch_utils import (
     poll_batch,
     write_phenotype_results,
     write_phenotype_sharded_results,
+    write_json_atomic,
     print_token_summary,
     extract_text_content,
     strip_code_fence,
@@ -456,13 +456,6 @@ def _dispatch_sequential(args, config, client, requests, line_ids, master_index,
     def _partial_path(custom_id):
         return partial_dir / f"{custom_id}.json"
 
-    def _write_json_atomic(path, obj):
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(obj, f, indent=2)
-            f.write("\n")
-        os.replace(tmp, path)
-
     def _log_progress(entry):
         with open(progress_path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry) + "\n")
@@ -471,10 +464,10 @@ def _dispatch_sequential(args, config, client, requests, line_ids, master_index,
         record, missing = sharding.merge_plant_record(
             per_line.get(lid, []), group_order, group_traits, trait_meta
         )
-        _write_json_atomic(out / f"{lid}.json", record)
+        write_json_atomic(out / f"{lid}.json", record)
         gaps_path = out / f"{lid}.gaps.json"
         if missing:
-            _write_json_atomic(gaps_path, {
+            write_json_atomic(gaps_path, {
                 "line_id": lid,
                 "missing_traits": [{"group": g, "trait": t} for g, t in missing],
             })
@@ -554,7 +547,7 @@ def _dispatch_sequential(args, config, client, requests, line_ids, master_index,
             continue
 
         # Persist the shard immediately (crash safety), then record in memory.
-        _write_json_atomic(_partial_path(cid), obj)
+        write_json_atomic(_partial_path(cid), obj)
         per_line.setdefault(line_id, []).append(obj)
         _log_progress({"i": i, "custom_id": cid, "status": "ok",
                        "cache_read": cr, "cache_creation": cc})

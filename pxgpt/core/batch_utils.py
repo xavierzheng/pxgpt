@@ -7,10 +7,24 @@ Both Stage 1 (describe-batch) and Stage 3 (phenotype-batch) use these to:
   - Write describe / phenotype results from a completed batch.
 """
 
+import os
 import json
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+
+def write_json_atomic(path: Path, obj: Any) -> None:
+    """Write *obj* as pretty JSON to *path* via a temp file + atomic rename.
+
+    Shared by the batch and sequential dispatch paths so a crash mid-write can
+    never leave a half-written ``<lid>.json`` / partial behind.
+    """
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(obj, f, indent=2)
+        f.write("\n")
+    os.replace(tmp, path)
 
 
 # ---------------------------------------------------------------------------
@@ -269,17 +283,48 @@ def write_phenotype_sharded_results(
     reported.  ``master_index`` is ``(group_order, group_traits, trait_meta)``
     from :mod:`pxgpt.core.sharding`.
 
-    Returns token-usage totals.
+    Partial-aware + cumulative.  This shares the sequential dispatch's
+    ``<output>/_partial/<line_id>__<shard_id>.json`` store so a batch that left
+    gaps (e.g. a shard hit a transient ``overloaded_error``) can be recovered:
+
+      * per-shard partials already on disk are adopted before merging,
+      * each freshly-succeeded shard is persisted as a partial, and
+      * the merge uses the UNION of prior partials + this batch.
+
+    So re-running ``fetch-results`` is idempotent, and a follow-up
+    ``phenotype-batch --dispatch sequential`` (whose resume reads the same
+    ``_partial/`` dir) re-issues only the still-missing shards.  A trait is only
+    reported in ``<lid>.gaps.json`` if it is missing *after* the union; a stale
+    gaps file whose traits are now filled is removed.
+
+    Returns token-usage totals for the calls made in THIS batch (adopted
+    partials contribute nothing to the totals — they were billed earlier).
     """
     from .sharding import split_custom_id, merge_plant_record
 
     group_order, group_traits, trait_meta = master_index
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
+    partial_dir = out / "_partial"
+    partial_dir.mkdir(parents=True, exist_ok=True)
     totals = {"input": 0, "output": 0, "cache_creation": 0, "cache_read": 0}
 
-    per_line: Dict[str, List[Any]] = {lid: [] for lid in line_ids}
+    # Per plant, keep one object per shard so a re-fetch overrides cleanly and
+    # a shard is never merged twice.  Adopt existing partials first.
+    shards_by_line: Dict[str, Dict[str, Any]] = {lid: {} for lid in line_ids}
     shard_errors: Dict[str, List[str]] = {}
+
+    adopted = 0
+    for p in sorted(partial_dir.glob("*.json")):
+        try:
+            obj = json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue  # corrupt/half-written partial -> ignore, may be re-run
+        lid, sid = split_custom_id(p.stem)
+        shards_by_line.setdefault(lid, {})[sid] = obj
+        adopted += 1
+    if adopted:
+        print(f"  Adopted {adopted} shard partial(s) from {partial_dir}")
 
     for result in client.beta.messages.batches.results(batch_id):
         cid = result.custom_id
@@ -293,10 +338,14 @@ def write_phenotype_sharded_results(
             totals["cache_creation"] += getattr(u, "cache_creation_input_tokens", 0)
             totals["cache_read"] += getattr(u, "cache_read_input_tokens", 0)
             try:
-                per_line.setdefault(line_id, []).append(json.loads(text))
+                obj = json.loads(text)
             except json.JSONDecodeError:
                 shard_errors.setdefault(line_id, []).append(f"{shard_id}: JSON parse failed")
                 print(f"  WARNING: {cid} — JSON parse failed")
+                continue
+            # Persist immediately (crash safety + feeds a later sequential resume).
+            write_json_atomic(partial_dir / f"{cid}.json", obj)
+            shards_by_line.setdefault(line_id, {})[shard_id] = obj
         else:
             detail = describe_batch_error(result.result.error)
             shard_errors.setdefault(line_id, []).append(f"{shard_id}: {detail}")
@@ -307,16 +356,18 @@ def write_phenotype_sharded_results(
     total_gaps = 0
     for lid in line_ids:
         record, missing = merge_plant_record(
-            per_line.get(lid, []), group_order, group_traits, trait_meta
+            list(shards_by_line.get(lid, {}).values()),
+            group_order, group_traits, trait_meta,
         )
-        dest = out / f"{lid}.json"
-        with open(dest, "w", encoding="utf-8") as f:
-            json.dump(record, f, indent=2)
-            f.write("\n")
+        write_json_atomic(out / f"{lid}.json", record)
         written += 1
 
-        errs = shard_errors.get(lid, [])
-        if missing or errs:
+        gaps_path = out / f"{lid}.gaps.json"
+        # Only surface shard errors for shards that produced nothing this run
+        # AND left the plant with missing traits — a shard error covered by an
+        # adopted partial is no longer a gap.
+        errs = shard_errors.get(lid, []) if missing else []
+        if missing:
             plants_with_gaps += 1
             total_gaps += len(missing)
             report = {
@@ -324,16 +375,17 @@ def write_phenotype_sharded_results(
                 "missing_traits": [{"group": g, "trait": t} for g, t in missing],
                 "shard_errors": errs,
             }
-            with open(out / f"{lid}.gaps.json", "w", encoding="utf-8") as f:
-                json.dump(report, f, indent=2)
-                f.write("\n")
+            write_json_atomic(gaps_path, report)
             print(f"  {lid}: {len(missing)} missing trait(s)"
                   + (f", {len(errs)} shard error(s)" if errs else ""))
+        elif gaps_path.exists():
+            gaps_path.unlink()  # a prior run's gap is now filled
 
     print(f"\n  Wrote {written} merged JSON files; "
           f"{plants_with_gaps} plant(s) with gaps ({total_gaps} missing traits total)")
     if total_gaps or plants_with_gaps:
-        print("  (see *.gaps.json next to the affected records)")
+        print("  (see *.gaps.json next to the affected records; recover them with "
+              "`phenotype-batch --dispatch sequential` to the same --output)")
     return totals
 
 

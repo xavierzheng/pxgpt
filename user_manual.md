@@ -345,9 +345,101 @@ In sharded mode `--schema`, `--system-prompt` and `--prompt` are **optional** �
 pxgpt fetch-results --checkpoint checkpoint_<batch_id>.json
 ```
 
-For a sharded run, `fetch-results` demultiplexes the `custom_id = "<line_id>__<shard_id>"` results, merges each plant's shards into one record keyed by the master organ structure, parses quantitative strings to numbers, and validates coverage against the master schema.
+For a sharded run, `fetch-results` demultiplexes the `custom_id = "<line_id>__<shard_id>"` results, merges each plant's shards into one record keyed by the master organ structure, parses quantitative strings to numbers, and validates coverage against the master schema. Each succeeded shard is also written to `<output>/_partial/<line_id>__<shard_id>.json` (the same store the sequential resume reads), and the merge uses the union of any partials already there plus this batch — so re-running `fetch-results` is idempotent.
 
 **Output**: one merged `{line_id}.json` per plant. If any trait is missing or a shard errored, a `{line_id}.gaps.json` is written alongside it listing the missing traits and shard errors.
+
+**Step 4 (only if the batch left gaps) — recover the failed shards.**
+
+#### What a gap looks like
+
+After Step 3 you may see `*.gaps.json` files next to some records:
+
+```
+Result_Stage3/
+├── s0004.json          ← merged record (missing one shard's traits)
+├── s0004.gaps.json     ← ← the gap report
+├── s0097.json
+├── s0097.gaps.json
+└── ...
+```
+
+Open one — the `shard_errors` field names exactly which shard(s) failed and why:
+
+```json
+{
+  "line_id": "s0097",
+  "missing_traits": [
+    { "group": "stem",      "trait": "stem_elongation" },
+    { "group": "phenology", "trait": "plant_developmental_stage" }
+  ],
+  "shard_errors": [
+    "shard_09: overloaded_error: File storage is temporarily unavailable. Please retry.",
+    "shard_02: overloaded_error: File storage is temporarily unavailable. Please retry."
+  ]
+}
+```
+
+That `overloaded_error` is a **transient** Files-API blip. In `batch` dispatch the
+Batch API cannot re-run one request, so the shard is stuck errored: re-fetching the
+same batch just reproduces the identical `*.gaps.json`, and `--resume` has no effect
+on a batch. To fill the gaps you must issue *new* API calls for the failed shards —
+which is what `--dispatch sequential` does (it retries transient errors in-run).
+
+#### The two commands
+
+You need the same shard set, image manifest and master schema the batch used — they
+are all recorded in the `checkpoint_<batch_id>.json` from Step 2/3. Run **both**
+commands from the directory that holds `Result_Stage3` (so the relative paths and
+`.env` resolve), and re-use the **same** `--output` both times.
+
+```bash
+# 4a. FREE — re-download the completed batch so every SUCCEEDED shard is saved
+#     into Result_Stage3/_partial/. (Needed only for batches fetched before this
+#     partial-persistence behavior existed; a fresh Step-3 fetch already did this.)
+pxgpt fetch-results --checkpoint checkpoint_msgbatch_01N37xDTe4Tz8GkWUVSCmFrY.json
+
+# 4b. Re-issue ONLY the still-missing shards. Resume skips everything already in
+#     _partial/, so this bills just the handful of failed shards, not the whole set.
+#     Set the SAME model/effort the original batch used so recovered shards match.
+export ANTHROPIC_MODEL=claude-sonnet-5 STAGE3_EFFORT=medium
+pxgpt phenotype-batch \
+    --shard-dir shard_master_schema \
+    --manifest  file_manifest.json \
+    --master-schema master_schema_v2.json \
+    --output    Result_Stage3 \
+    --dispatch  sequential
+```
+
+Step 4b prints how many calls it skipped vs. ran, and ends with a gap count:
+
+```
+--- Resume: 1410 of 1420 shard(s) already on disk; skipping those calls ---
+--- Sequential dispatch: 1420 call(s) (1410 skip, 10 to run) ---
+  [34/1420] s0004__shard_04  cache_read=0 cache_creation=1285
+  ...
+  [1153/1420] s0150__shard_03 cache_read=0 cache_creation=2216
+
+  Wrote 142 merged JSON files; 0 call error(s) this run; 1410 shard(s) skipped;
+  0 plant(s) with gaps (0 missing traits)
+```
+
+Each recovered shard is written into `_partial/`, its plant is re-merged, and the
+plant's `*.gaps.json` is **deleted** once its traits are filled.
+
+#### Confirm it worked
+
+```bash
+ls Result_Stage3/*.gaps.json 2>/dev/null | wc -l   # expect 0
+```
+
+If a shard is still failing (e.g. a genuine schema error, not a transient overload),
+its `*.gaps.json` remains with the reason in `shard_errors` — fix that cause (for
+grammar-size errors, lower `--shard-budget` and re-shard) and re-run Step 4b.
+
+> **Note — future batches recover in one step.** From now on, the Step-3
+> `fetch-results` already writes every succeeded shard into `_partial/`, so you can
+> skip Step 4a and just run Step 4b to fill any gaps.
 
 ---
 
@@ -513,7 +605,7 @@ Output directory: one `{line_id}.json` per plant line; `{line_id}.err.txt` for p
 
 `--dispatch batch` (default) is a single async Message Batch at 50% off standard pricing but with unreliable cross-shard prompt caching; `--dispatch sequential` runs full-price synchronous calls that reliably hit the cache. Which is cheaper depends on your shard count and batch's actual cache-hit rate — see [`dispatch_batch_vs_sequential.md`](dispatch_batch_vs_sequential.md) for the functional difference and a cost-crossover model.
 
-`--dispatch sequential` is **crash-safe and resumable**: shards are written to `<output>/_partial/` as they complete, so re-running the same command after a kill/crash skips completed calls (no re-billing) and retries only what's missing (`--no-resume` forces a fresh run). Transient overloads are retried in-run and progress prints live. See **Stage 3 (sharded)** above for details. `--resume` has no effect in `batch` dispatch (batch runs are resumed via `fetch-results` and the checkpoint file instead).
+`--dispatch sequential` is **crash-safe and resumable**: shards are written to `<output>/_partial/` as they complete, so re-running the same command after a kill/crash skips completed calls (no re-billing) and retries only what's missing (`--no-resume` forces a fresh run). Transient overloads are retried in-run and progress prints live. See **Stage 3 (sharded)** above for details. `--resume` has no effect in `batch` dispatch (a batch is retrieved via `fetch-results` + the checkpoint). If a batch *errors* some shards (e.g. a transient `overloaded_error`), those requests are terminal inside the Batch API; recover them by running `--dispatch sequential` to the same `--output` — `fetch-results` leaves the succeeded shards in `<output>/_partial/`, so the sequential resume re-issues only the failed shards. See **Stage 3 (sharded) → Step 4** above.
 
 ---
 

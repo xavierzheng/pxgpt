@@ -14,6 +14,7 @@
 - **Prompt caching**: automatic for Anthropic (reduces costs on repeated system prompts)
 - **Robust error handling**: exponential backoff, per-request failure isolation, crash-safe manifest
 - **Crash-safe sequential dispatch** (Stage 3 sharded): `--dispatch sequential` persists each shard to disk as it returns and **resumes** after a kill/crash — skipping already-completed calls (no re-billing) and retrying transient overloads in-run
+- **Recoverable batch gaps** (Stage 3 sharded): `fetch-results` saves every succeeded shard to `<output>/_partial/`, so a batch that errored some shards (e.g. a transient `overloaded_error`) is fixed by a short `--dispatch sequential` resume that re-issues **only** the failed shards
 - **Example master schema**: see [Example_master_schema.tsv](Example_master_schema.tsv) for the flattened field reference
 
 ## Pipeline overview
@@ -167,6 +168,21 @@ pxgpt phenotype-batch \
 
 # 3. Fetch + merge: one {line_id}.json per plant, {line_id}.gaps.json for any gaps
 pxgpt fetch-results --checkpoint checkpoint_<batch_id>.json
+
+# 4. (ONLY if step 3 left {line_id}.gaps.json files) recover the failed shards.
+#    A batch request that errored (e.g. a transient "overloaded_error") is stuck
+#    inside the Batch API; re-fetching just reproduces the same gap. fetch-results
+#    saves every SUCCEEDED shard to <output>/_partial/, so a short sequential
+#    resume to the SAME --output re-issues only the failed shards (with in-run
+#    retry) and clears the gaps. Match the original run's model/effort.
+export ANTHROPIC_MODEL=claude-sonnet-5 STAGE3_EFFORT=medium
+pxgpt phenotype-batch \
+  --shard-dir path/to/shards \
+  --manifest file_manifest.json \
+  --master-schema master_schema.json \
+  --output phenotypes/ \
+  --dispatch sequential
+#    -> "1410 skip, 10 to run ... 0 plant(s) with gaps"; gaps.json deleted once filled
 ```
 
 In sharded mode `--schema`/`--system-prompt`/`--prompt` are optional (the per-shard
@@ -181,6 +197,16 @@ re-run the same command — completed `(plant, shard)` calls are skipped (not
 re-billed) and only the missing ones run (`--no-resume` forces a fresh run).
 Transient overloads (429 / 5xx / 529) are retried in-run with backoff, and
 progress prints live to the SLURM log.
+
+**Recovering `batch` gaps.** A batch request that errors (typically a transient
+`overloaded_error: File storage is temporarily unavailable`) is terminal inside
+the Batch API — `--resume` can't touch a batch, and re-fetching reproduces the same
+`{line_id}.gaps.json`. Since `fetch-results` now persists every succeeded shard to
+`<output>/_partial/`, you recover by running step 4 above: `--dispatch sequential`
+to the same `--output` re-issues only the still-missing shards. See the full worked
+example (with a sample `gaps.json` and expected output) in
+[`user_manual.md`](user_manual.md) → *Stage 3 (sharded) → Step 4*, and
+[`dispatch_batch_vs_sequential.md`](dispatch_batch_vs_sequential.md).
 
 #### Downstream analysis: flatten results into a table
 
