@@ -24,7 +24,7 @@ flags actually work.
 | `MODEL_REVISION` | `20df0542b1a86ce19f495ac2eca2c7c12bce82f9` |
 | Weights on disk | 16.9 GB (single `model.safetensors`) |
 | `MAX_MODEL_LEN` | 65536 |
-| `MAX_NUM_SEQS` | 2 |
+| `MAX_NUM_SEQS` | 16 (see Concurrency) |
 | `GPU_MEM_UTIL` | 0.80 |
 | **Thinking** | **off** (`enable_thinking: false` per request) |
 | **Visual token budget** | **1120 tokens/image** (`--mm-processor-kwargs '{"max_soft_tokens": 1120}'`) |
@@ -385,6 +385,72 @@ ordering alone. `build_sharded_requests()` already emits plant-major
 (`for line_id ... for s in shards`), and `--dispatch sequential` preserves that
 order; a future vLLM Stage 3 path must keep it.
 
+## Concurrency
+
+`MAX_NUM_SEQS` was raised from 2 to 16. It is **free**: the KV cache is
+preallocated from `gpu-memory-utilization`, not from the sequence count —
+5 074 332 tokens at 16 against 5 081 419 at 2. At ~37 k tokens per request even
+16 concurrent requests need only ~600 k tokens, so the memory ceiling that
+Decision (b) and the failure-modes section warn about is untouched.
+
+### Concurrency on an already-cached prefix
+
+`s0019` warmed with `shard_01`, then shards 2-9 replayed at increasing client
+concurrency against that same cached prefix. Two repeats each, no averaging:
+
+| conc | wall (rep 1 / rep 2) | completion tok | aggregate tok/s | speedup |
+|---|---|---|---|---|
+| 1 | 74.8 s / 74.9 s | 2799 / 2988 | 37.4 / 39.9 | 1.0x |
+| 2 | 42.1 s / 43.2 s | 2803 / 2957 | 66.7 / 68.4 | 1.75x |
+| 4 | 27.0 s / 29.7 s | 2788 / 2809 | 103.3 / 94.7 | 2.6x |
+| 8 | **21.4 s / 21.9 s** | 2912 / 2922 | **136.0 / 133.5** | **3.4x** |
+
+Scaling is sub-linear but strong. Individual requests get slower (`shard_02`
+14.9 s at conc 1 to 21.4 s at conc 8) — the usual batching trade — but wall clock
+for the set falls 3.4x, which is what a 2400-request run cares about.
+
+### Whole-plant patterns, measured cold
+
+Four dispatch patterns on **cold** 25-26 photo plants, fresh container each time
+(prefix cache verified empty at 0 queries / 0 hits before starting):
+
+| pattern | plant | per-plant wall | prefix hit | 2400 requests | vs serial |
+|---|---|---|---|---|---|
+| **A** all 9 serial | `s0044` (26 ph) | 161.6 s | 86.9 % | 12.0 h | 1.0x |
+| **C** all 9 concurrent from cold | `s0011` (26 ph) | **402.1 s** | **9.5 %** | 29.8 h | **0.40x** |
+| **B** cold `shard_01`, then 2-9 @conc 8 | `s0035` (26 ph) | 101.6 s | 97.8 % | 7.5 h | 1.59x |
+| **D** 2 plants, colds overlapped, warm @conc 16 | `s0022`+`s0013` (25 ph) | **83.6 s** | — | **6.2 h** | **1.93x** |
+
+Per-request latencies:
+
+```
+A  77.1  18.8 9.4 12.8 7.6 9.4 10.7 5.8 10.0      (cold first, then warm)
+C  397.8 400.1 386.6 402.0 386.0 387.7 390.7 385.0 395.6
+B  cold 72.5 | 29.2 18.2 24.7 13.3 23.2 18.6 13.0 21.6
+```
+
+Pattern A independently reproduces the earlier per-shard measurement — 161.6 s on
+`s0044` against 162.2 s on `s0019` — so the 12.0 h serial baseline is confirmed on
+a second plant.
+
+**Pattern C is the trap.** Firing all 9 shards of a cold plant at once collapses
+the prefix-cache hit rate to **9.5 %**: none of them finds the prefix because none
+has finished writing it, so all nine independently prefill the same ~31 k tokens
+and re-run the vision encoder over the same 26 images nine times, while competing
+for the GPU. It is **2.5x slower than plain serial** and would turn a 12 h run
+into 30 h. The shared prefix must be established by **one** request before the
+rest are released.
+
+**Pattern D is the best measured.** Overlapping two plants' cold prefills, then
+running both warm sets at conc 16, reaches 83.6 s per plant — 1.93x better than
+serial — because one plant's cold prefill overlaps the other's decode. Only two
+plants in flight were tested; deeper pipelining was not measured and may help
+further.
+
+**Recommendation for a vLLM Stage 3 path:** per plant, send `shard_01` alone,
+wait for it, then release shards 2-9 at concurrency 8; overlap the next plant's
+cold prefill with the current plant's warm set. Never fan out a cold plant.
+
 ## Deviations from the ticket's flag list
 
 The "deliberately not added" list was honoured in full: no `--kv-cache-dtype`,
@@ -418,6 +484,19 @@ Four unavoidable departures:
   not raise this casually — the unified pool is shared with the OS and page
   cache, and raising it is the reported route to a hard lock needing a power
   cycle. If you must, go up by 0.05 and re-run acceptance E each time.
+- **Fanning out a cold plant's shards destroys the prefix cache.** All 9 shards
+  issued concurrently before any of them has written the shared prefix gives a
+  9.5 % hit rate and 402.1 s per plant — 2.5x slower than serial (Pattern C
+  above). Serialize the first shard, then parallelize the rest.
+
+- **A killed client does not stop in-flight work, and the cache remembers.**
+  While measuring this, a test run was cut off by a harness timeout; the Python
+  process died but vLLM had already processed its requests, so the next run found
+  those plants' prefixes cached and reported a 100 % hit rate and a 9.3 s "cold"
+  prefill. Any cold measurement must start from a restarted container with
+  `vllm:prefix_cache_queries_total` verified at 0, on plants that container has
+  never served.
+
 - **`mm_processor_kwargs` per request fragments the prefix cache.** Sending
   `mm_processor_kwargs: {"max_soft_tokens": 1120}` on a request puts its
   multimodal inputs in a *different* cache namespace from an otherwise identical

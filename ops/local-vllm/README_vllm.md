@@ -135,7 +135,7 @@ written by `pull.sh` or by you.
 | `SERVED_MODEL_NAME` | `gemma4-26b-a4b-nvfp4` — what clients pass as `model` |
 | `MEDIA_ROOT` | Absolute photo root. Mounted read-only at the **same path** inside the container. |
 | `MAX_MODEL_LEN` | 65536 |
-| `MAX_NUM_SEQS` | 2 |
+| `MAX_NUM_SEQS` | 16 — free (KV cache is sized by `GPU_MEM_UTIL`, not by sequence count) |
 | `GPU_MEM_UTIL` | 0.80 — see the warning below |
 | `ENABLE_THINKING` | `false` (pinned decision) |
 | `IMAGE_TOKEN_BUDGET` | `1120` (pinned decision) |
@@ -197,7 +197,8 @@ is 32 photos, and even 49 would fit.
 | prompt tokens, 32-photo line | 10 245 | **37 349** |
 | cold request, total | 24.4 s | **72.7 s** |
 | prefix-cached request, total | 12.2 s | **14.6 s** |
-| 2400-request run | 9.0 h (modelled) | **12.0 h (measured)** |
+| 2400-request run, serial | 9.0 h (modelled) | **12.0 h (measured)** |
+| 2400-request run, best dispatch | — | **6.2 h (measured)** |
 
 The 4x token increase does **not** cost 4x wall-clock. Cold prefill does get much
 worse (7.4x: the vision tower processes 10 080 patches per image instead of
@@ -293,6 +294,40 @@ See [../../user_manual.md](../../user_manual.md) for the full command reference.
 
 ---
 
+## Concurrency: how to dispatch
+
+`MAX_NUM_SEQS=16` costs nothing — the KV cache is preallocated from
+`GPU_MEM_UTIL`, not from the sequence count (5 074 332 tokens at 16 vs 5 081 419
+at 2). But **how** you dispatch a plant's 9 shards matters more than the setting,
+and the obvious approach is the worst one. Measured on cold 25-26 photo plants:
+
+| pattern | per-plant | 2400 requests |
+|---|---|---|
+| all 9 serial | 161.6 s | 12.0 h |
+| **all 9 concurrent from cold** | **402.1 s** | **29.8 h** |
+| cold `shard_01` alone, then 2-9 at conc 8 | 101.6 s | 7.5 h |
+| **+ overlap the next plant's cold prefill** | **83.6 s** | **6.2 h** |
+
+> **Never fan out a cold plant.** Releasing all 9 shards at once drops the
+> prefix-cache hit rate to **9.5 %** — none of them finds the shared prefix
+> because none has finished writing it, so all nine re-prefill the same ~31 k
+> tokens and re-run the vision encoder over the same images nine times. That is
+> **2.5x slower than plain serial**.
+
+The rule, for any client driving this server:
+
+1. Send `shard_01` **alone** and wait for it — this writes the shared
+   system+images prefix.
+2. Release shards 2-9 at **concurrency 8**. They hit ~98 % of the prefix and the
+   set finishes 3.4x faster than serial (74.8 s → 21.4 s measured on a warm
+   prefix; aggregate decode 37 → 136 tok/s).
+3. Overlap the *next* plant's cold `shard_01` with the current plant's warm set.
+   Two plants in flight measured 83.6 s per plant; deeper pipelining is untested.
+
+Individual requests do get slower under concurrency (`shard_02`: 14.9 s at conc 1,
+21.4 s at conc 8). That is the expected batching trade — throughput is what a
+2400-request run cares about.
+
 ## Verifying and benchmarking
 
 `smoke.py` runs the acceptance suite against **real** shard schemas, photos and
@@ -328,8 +363,11 @@ short-prompt/long-output dataset:
 
 Reference figures at the pinned budget of **1120** (32 photos, thinking off,
 fresh container): **37 349** prompt tokens, **40.8 tok/s** decode, **14.6 s** with
-a warm prefix cache, **72.7 s** cold. Sending a plant's full 9-shard set measures
-**162.2 s per plant**, i.e. **~12.0 h** for 2400 requests.
+a warm prefix cache, **72.7 s** cold. Sending a plant's full 9-shard set serially
+measures **162.2 s per plant**, i.e. **~12.0 h** for 2400 requests — falling to
+**~6.2 h** with the dispatch pattern in
+[Concurrency](#concurrency-how-to-dispatch) below. `bench.sh` itself is serial by
+design, so its numbers are the conservative baseline.
 
 > Ordering matters as much as the budget: 9 shards per plant share one image
 > prefix, so dispatching **plant-major** keeps 8 of 9 requests on the cache. Going
