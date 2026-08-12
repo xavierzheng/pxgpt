@@ -29,6 +29,8 @@
 
 **For complete workflows, advanced usage, and troubleshooting see the [User Manual](user_manual.md).**
 
+**To self-host a local model** see [Hosting Gemma 4 on vLLM](ops/local-vllm/README_vllm.md) (operating guide) and [ops/local-vllm/RUNBOOK.md](ops/local-vllm/RUNBOOK.md) (the measurements behind it).
+
 ---
 
 ## Installation
@@ -97,6 +99,8 @@ VLLM_API_KEY=EMPTY                  # match --api-key if the server sets one
 Then, e.g.: `pxgpt analyze --provider vllm ...` or `pxgpt schema --provider lmstudio ...`.
 
 > Batch stages (`describe-batch*`, `phenotype-batch*`) are Anthropic/OpenAI-only; the local providers apply to the sync `analyze` and `schema` commands.
+
+**Self-hosting a local model?** See [ops/local-vllm/README_vllm.md](ops/local-vllm/README_vllm.md) for a tested, reproducible vLLM deployment of Gemma 4 26B A4B (NVFP4) on a DGX Spark — including the vLLM version constraint that decides whether the checkpoint loads at all.
 
 ---
 
@@ -289,7 +293,7 @@ Run `pxgpt <command> --help` for full argument details.
 | **OpenAI** | — | ✅ | ✅ | Batch API stages + Files API (`vision`); sync via the OpenAI SDK |
 | **Ollama** | — | — | ✅ | Local; OpenAI-compatible (`OLLAMA_BASE_URL` + `/v1`); use a vision model |
 | **LM Studio** | — | — | ✅ | OpenAI-compatible (`LMSTUDIO_*`); use a vision model |
-| **vLLM** | — | — | ✅ | OpenAI-compatible (`VLLM_*`, model required); use a vision model |
+| **vLLM** | — | — | ✅ | OpenAI-compatible (`VLLM_*`, model required); use a vision model — [hosting guide](ops/local-vllm/README_vllm.md) |
 
 For `analyze` / `schema`, structured output on non-Anthropic providers is delivered by appending the schema to the system prompt — make the prompt request JSON-only output (the bundled `prompts/extract_traits.txt` does this).
 

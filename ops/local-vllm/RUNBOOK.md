@@ -11,6 +11,10 @@ flags actually work.
   121 GiB unified memory, Docker 29.1.3
 - **Date measured**: 2026-08-12
 
+> This file is the **evidence**. To actually run the server, follow
+> [README_vllm.md](README_vllm.md) — it carries the quick start, the `.env`
+> reference, request examples and troubleshooting, and cites the numbers below.
+
 ## Pinned configuration
 
 | Setting | Value |

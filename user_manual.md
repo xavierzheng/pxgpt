@@ -967,19 +967,19 @@ VLLM_MODEL=gemma4:12b            # REQUIRED: the served model name
 VLLM_API_KEY=EMPTY                # match the server's --api-key if set
 ```
 
-How each is routed through LiteLLM: `ollama/<model>` @ `OLLAMA_BASE_URL`; `openai/<model>` @ `LMSTUDIO_BASE_URL` / `VLLM_BASE_URL` (both expose an OpenAI-compatible API). `api_base`/`api_key` are passed per request, so several providers can be configured at once without clashing. Unsupported parameters are dropped automatically per backend (`drop_params`).
+How each is routed: all three speak the OpenAI wire protocol, so pxGPT sends them through one `openai.OpenAI` client with the appropriate `base_url` (`OpenAICompatProvider`). Model names are sent verbatim — there are no route prefixes. `base_url`/`api_key` are per client, so several providers can be configured at once without clashing. Ollama's `/v1` suffix is appended automatically if `OLLAMA_BASE_URL` omits it. A parameter a backend rejects now raises an error rather than being silently dropped.
 
 For `schema` on these providers, the JSON schema is appended to the system prompt (Anthropic-style native structured output is not used). Make the user prompt request **JSON-only** output — the bundled `prompts/extract_traits.txt` already does this.
 
-- Ollama: ensure `ollama serve` is running and the model is pulled (`ollama pull gemma3:12b`).
+- Ollama: ensure `ollama serve` is running and the model is pulled (`ollama pull gemma4:26b`).
 - vLLM: start with e.g. `vllm serve google/gemma-4-12b-it --port 8000`; set `VLLM_MODEL` to the same served name.
 
-### Google Gemini
-
-```bash
-GOOGLE_API_KEY=your_key_here
-GOOGLE_MODEL=gemini-2.5-pro
-```
+> **Self-hosting Gemma 4 26B A4B (NVFP4) on a DGX Spark?** Use the tested,
+> reproducible deployment in **[ops/local-vllm/README_vllm.md](ops/local-vllm/README_vllm.md)**
+> — scripted start/stop, a pinned image digest and model revision, an acceptance
+> suite that runs against your real shard schemas, and the vLLM **version
+> constraint** that decides whether the checkpoint loads at all. The supporting
+> measurements are in [ops/local-vllm/RUNBOOK.md](ops/local-vllm/RUNBOOK.md).
 
 ---
 
