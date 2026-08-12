@@ -1,6 +1,6 @@
 # pxGPT - Plant Analysis Tool
 
-**pxGPT** (Phenotype eXplorer GPT) is a command-line tool for large-scale plant phenotyping using multiple LLM providers (Anthropic Claude, OpenAI, Google, Ollama, LM Studio, vLLM).
+**pxGPT** (Phenotype eXplorer GPT) is a command-line tool for large-scale plant phenotyping using multiple LLM providers (Anthropic Claude, OpenAI, Ollama, LM Studio, vLLM).
 
 ## Features
 
@@ -10,7 +10,7 @@
 - **Native structured output** (Stage 3): schema passed directly as `output_config.format`; no regex or tag parsing
 - **Schema normalizer**: one command adds `additionalProperties: false` and `required` arrays to every object in your schema
 - **JSON-to-table flattening**: one command turns the per-plant Stage 3 JSON output into a wide, typed CSV + feather table (ordinal traits reconstructed from level code to label, as an ordered factor in R)
-- **Multiple providers**: Anthropic, OpenAI, Google, Ollama, LM Studio, vLLM
+- **Multiple providers**: Anthropic, OpenAI, Ollama, LM Studio, vLLM
 - **Prompt caching**: automatic for Anthropic (reduces costs on repeated system prompts)
 - **Robust error handling**: exponential backoff, per-request failure isolation, crash-safe manifest
 - **Crash-safe sequential dispatch** (Stage 3 sharded): `--dispatch sequential` persists each shard to disk as it returns and **resumes** after a kill/crash — skipping already-completed calls (no re-billing) and retrying transient overloads in-run
@@ -286,11 +286,10 @@ Run `pxgpt <command> --help` for full argument details.
 | Provider | Caching | Batch API | analyze / schema | Notes |
 |----------|---------|-----------|------------------|-------|
 | **Anthropic** (default) | ✅ | ✅ | ✅ | Native thinking, structured output, Files API |
-| **OpenAI** | — | ✅ | ✅ | Batch API stages + Files API (`vision`); sync via LiteLLM |
-| **Ollama** | — | — | ✅ | Local; `ollama/` route; use a vision model |
+| **OpenAI** | — | ✅ | ✅ | Batch API stages + Files API (`vision`); sync via the OpenAI SDK |
+| **Ollama** | — | — | ✅ | Local; OpenAI-compatible (`OLLAMA_BASE_URL` + `/v1`); use a vision model |
 | **LM Studio** | — | — | ✅ | OpenAI-compatible (`LMSTUDIO_*`); use a vision model |
 | **vLLM** | — | — | ✅ | OpenAI-compatible (`VLLM_*`, model required); use a vision model |
-| **Google Gemini** | — | — | ✅ | Via LiteLLM (`gemini/` route) |
 
 For `analyze` / `schema`, structured output on non-Anthropic providers is delivered by appending the schema to the system prompt — make the prompt request JSON-only output (the bundled `prompts/extract_traits.txt` does this).
 
@@ -314,7 +313,7 @@ pxgpt/
 │   └── file_utils.py      # File I/O helpers
 ├── providers/
 │   ├── anthropic_provider.py
-│   ├── litellm_provider.py
+│   ├── openai_compat_provider.py
 │   └── base.py
 ├── commands/
 │   ├── describe.py        # describe-batch (Anthropic)
