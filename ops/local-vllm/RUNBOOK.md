@@ -230,7 +230,7 @@ benchmarked on a fresh container; see the Benchmark section for the raw runs.
 | cold request, total | 24.4 s | **72.7 s** |
 | prefix-cached request, total | 12.2 s | **14.6 s** |
 | decode throughput | 44.2 tok/s | **40.8 tok/s** |
-| realistic 2400-request projection | 9.0 h | **14.0 h** |
+| 2400-request run, measured per-shard | 9.0 h* | **12.0 h** |
 
 The shape of the cost is the interesting part, and it is *not* the 4x that the
 token count suggests:
@@ -242,14 +242,18 @@ token count suggests:
   against 10 080 at 1120. Much of that 58 s is the encoder, not LLM prefill.
 - **Cached requests barely move — 12.2 s to 14.6 s.** Once the image prefix is
   cached, decode dominates, and decode only slows ~8 %.
-- **So the end-to-end cost rises ~56 %, not 4x**, because pxGPT sends 9 shard
+- **So the end-to-end cost rises ~33 %, not 4x**, because pxGPT sends 9 shard
   requests per plant off one shared image prefix: only the first pays the cold
-  prefill, the other eight are cache hits.
+  prefill, the other eight are cache hits. Verified directly by sending all 9
+  shards of one plant and reading `/metrics` per request — see "Per-shard
+  measurement of the real workload". (*the 9.0 h at 280 is the modelled figure;
+  only 1120 was measured shard-by-shard.)
 
 An earlier note in this file extrapolated "~80-85 s per full-line request" from
 the 280 → 560 step. That number is about right *for a cold request* (measured
 72.7 s at 26 photos, 84.8 s at 32) but it is the wrong figure to plan with, since
-8 of every 9 requests are cache hits. The projection is **14.0 h**, not days.
+8 of every 9 requests are cache hits. The measured figure is **12.0 h**, not
+days.
 
 **This value is now pinned and must not drift** — it sets the visual information
 available to the model, so changing it invalidates comparisons against the
@@ -316,7 +320,47 @@ cold-prefill probe (s0044, 26 photos, unseen): prompt=8673 ttft=7.83s total=24.4
 | completion tokens | **588** | 530 |
 | cold-prefill probe (`s0044`, 26 photos) | TTFT **58.17 s**, total **72.7 s** | TTFT 7.83 s, total 24.4 s |
 
-### 2400-request projection
+### Per-shard measurement of the real workload
+
+The projection below models the run as "1 cold + 8 cached" per plant. That model
+was then **verified directly**: all 9 shards of one plant (`s0019`, 32 photos, the
+largest line in the dataset) sent consecutively on a fresh container, with
+`/metrics` read around each request. No averaging.
+
+| shard | prompt tok | TTFT | total | completion | prefix cache hit | mm cache |
+|---|---|---|---|---|---|---|
+| `shard_01` | 37 259 | **76.20 s** | **86.17 s** | 408 | 0 / 37 259 — **0.0 %** | 0/32 |
+| `shard_02` | 37 349 | 2.04 s | 14.73 s | 517 | 36 448 / 37 349 — 97.6 % | 32/32 |
+| `shard_03` | 37 012 | 0.73 s | 8.09 s | 298 | 36 448 / 37 012 — 98.5 % | 32/32 |
+| `shard_04` | 37 322 | 1.04 s | 12.56 s | 470 | 36 448 / 37 322 — 97.7 % | 32/32 |
+| `shard_05` | 36 904 | 0.63 s | 5.39 s | 195 | 36 448 / 36 904 — 98.8 % | 32/32 |
+| `shard_06` | 37 249 | 0.92 s | 8.79 s | 321 | 36 448 / 37 249 — 97.8 % | 32/32 |
+| `shard_07` | 37 194 | 0.89 s | 9.17 s | 338 | 36 448 / 37 194 — 98.0 % | 32/32 |
+| `shard_08` | 36 729 | 0.47 s | 4.39 s | 161 | 36 448 / 36 729 — 99.2 % | 32/32 |
+| `shard_09` | 37 220 | 0.92 s | 12.92 s | 488 | 36 448 / 37 220 — 97.9 % | 32/32 |
+
+**One plant = 162.2 s** (2.7 min) for all 9 shards.
+
+What the numbers confirm:
+
+- **The cached prefix is 36 448 tokens** — the system block plus all 32 images —
+  reused identically by shards 2-9. The 0.8-2.4 % miss is each shard's own prompt
+  text at the tail, which is exactly the part that should differ.
+- **`mm_cache` goes 0/32 → 32/32.** The vision encoder's output for all 32 images
+  is reused, which is why TTFT collapses from 76.20 s to 0.47-2.04 s. The encoder,
+  not LLM prefill, is the bulk of the cold cost.
+- **Cached shards are decode-bound.** Their latency tracks completion tokens
+  almost exactly (161 tok → 4.39 s, 517 tok → 14.73 s) at ~40 tok/s.
+- The spread across shards 2-9 is 4.39-14.73 s, so quoting a single mean would
+  hide a 3.4x range. Median 8.98 s, mean 9.5 s.
+
+**Measured 2400-request estimate: 267 plants x 162.2 s = 12.0 h**, serial. This
+supersedes the 14.0 h modelled figure below, which was slightly pessimistic
+because it applied `bench.sh`'s 14.6 s median to all eight cached shards; the real
+cached shards average 9.5 s. It is also mildly conservative in the other
+direction, since `s0019` is the largest line and most plants carry 24-30 photos.
+
+### 2400-request projection (modelled)
 
 Prefix caching is on by default (V1), and pxGPT sends 9 shard requests per plant
 that all share the same image prefix — so per plant one request pays a cold

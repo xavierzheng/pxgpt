@@ -197,14 +197,19 @@ is 32 photos, and even 49 would fit.
 | prompt tokens, 32-photo line | 10 245 | **37 349** |
 | cold request, total | 24.4 s | **72.7 s** |
 | prefix-cached request, total | 12.2 s | **14.6 s** |
-| realistic 2400-request run | 9.0 h | **14.0 h** |
+| 2400-request run | 9.0 h (modelled) | **12.0 h (measured)** |
 
 The 4x token increase does **not** cost 4x wall-clock. Cold prefill does get much
 worse (7.4x: the vision tower processes 10 080 patches per image instead of
 2 520), but prefix-cached requests barely move, and pxGPT sends 9 shard requests
-per plant off one shared image prefix — so only 1 in 9 pays the cold prefill. The
-end-to-end cost of choosing 1120 over 280 is about **+56 %**. Full tables in
-[RUNBOOK.md](RUNBOOK.md).
+per plant off one shared image prefix — so only 1 in 9 pays the cold prefill.
+End-to-end cost of 1120 over 280 is about **+33 %**.
+
+Measured directly, all 9 shards of `s0019` (32 photos) back to back on a fresh
+container: `shard_01` cost **86.2 s** at a **0 %** prefix-cache hit, then shards
+2-9 cost **4.4-14.7 s** each at **97.6-99.2 %** hit (36 448 tokens of system +
+images reused; `mm_cache` 32/32). **One plant = 162.2 s**, so 267 plants =
+**12.0 h**. Per-shard table in [RUNBOOK.md](RUNBOOK.md).
 
 ---
 
@@ -323,8 +328,8 @@ short-prompt/long-output dataset:
 
 Reference figures at the pinned budget of **1120** (32 photos, thinking off,
 fresh container): **37 349** prompt tokens, **40.8 tok/s** decode, **14.6 s** with
-a warm prefix cache, **72.7 s** cold, projecting **~14.0 h** for 2400 requests
-(267 plants x [1 cold + 8 cached]).
+a warm prefix cache, **72.7 s** cold. Sending a plant's full 9-shard set measures
+**162.2 s per plant**, i.e. **~12.0 h** for 2400 requests.
 
 > Ordering matters as much as the budget: 9 shards per plant share one image
 > prefix, so dispatching **plant-major** keeps 8 of 9 requests on the cache. Going
