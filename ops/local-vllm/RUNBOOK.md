@@ -220,14 +220,36 @@ rather than latency:
 All budgets tested produce schema-valid JSON, so this is not a validity choice —
 it is a detail-versus-cost choice, resolved in favour of detail.
 
-**Cost of the decision, stated plainly.** Every latency and throughput figure in
-the "Benchmark" section below was measured at **280** and is therefore an
-optimistic lower bound for the pinned configuration. Prompt tokens rise ~3.6x
-(10 245 → ~37 k for a 32-photo line) and this workload is prefill-dominated.
-Extrapolating the 280 → 560 step (20.8 s → 42.1 s), expect roughly **~80-85 s**
-per full-line request at 1120, and re-derive the 2400-request projection from a
-fresh `./down.sh && ./up.sh && ./bench.sh` before committing to a full run.
-The 140/280/560 measurements are left intact below as the evidence they are.
+**Cost of the decision — measured at 1120, not extrapolated.** Both budgets were
+benchmarked on a fresh container; see the Benchmark section for the raw runs.
+
+| metric (32-photo line, `shard_02`, thinking off) | 280 | **1120** |
+|---|---|---|
+| prompt tokens | 10 245 | **37 349** |
+| cold prefill TTFT (26-photo probe) | 7.83 s | **58.17 s** |
+| cold request, total | 24.4 s | **72.7 s** |
+| prefix-cached request, total | 12.2 s | **14.6 s** |
+| decode throughput | 44.2 tok/s | **40.8 tok/s** |
+| realistic 2400-request projection | 9.0 h | **14.0 h** |
+
+The shape of the cost is the interesting part, and it is *not* the 4x that the
+token count suggests:
+
+- **Cold prefill gets much worse — 7.4x.** Effective cold prefill throughput
+  drops from ~1 110 tok/s at 280 to ~528 tok/s at 1120, because the vision tower
+  does far more work per image: patches scale as
+  `max_soft_tokens x pooling_kernel_size^2`, i.e. 2 520 patches per image at 280
+  against 10 080 at 1120. Much of that 58 s is the encoder, not LLM prefill.
+- **Cached requests barely move — 12.2 s to 14.6 s.** Once the image prefix is
+  cached, decode dominates, and decode only slows ~8 %.
+- **So the end-to-end cost rises ~56 %, not 4x**, because pxGPT sends 9 shard
+  requests per plant off one shared image prefix: only the first pays the cold
+  prefill, the other eight are cache hits.
+
+An earlier note in this file extrapolated "~80-85 s per full-line request" from
+the 280 → 560 step. That number is about right *for a cold request* (measured
+72.7 s at 26 photos, 84.8 s at 32) but it is the wrong figure to plan with, since
+8 of every 9 requests are cache hits. The projection is **14.0 h**, not days.
 
 **This value is now pinned and must not drift** — it sets the visual information
 available to the model, so changing it invalidates comparisons against the
@@ -235,18 +257,19 @@ Anthropic and OpenAI backends.
 
 ## Acceptance results
 
-`smoke.py` — all green, exit 0 (111 s):
+`smoke.py` — all green, exit 0. Re-run at the pinned budget of **1120** (182 s);
+the 280 column is the original run, kept for comparison.
 
-| | check | result |
-|---|---|---|
-| A | `/v1/models` `data[0].id` == `gemma4-26b-a4b-nvfp4` | PASS |
-| B | text-only completion non-empty | PASS |
-| C | one real photo via `file:///abs/path.jpg` | PASS, 282 prompt tokens |
-| D1 | thinking off + strict `json_schema` on real shard | PASS, 13.0 s |
-| D2 | thinking on + `gemma4` parser, same schema | PASS, 73.0 s |
-| E | all 32 photos of `s0019` + schema | PASS, 10 245 ≤ 65 536 |
-| F | `up.sh` twice → one container; `down.sh` then `up.sh` → back up | PASS |
-| G | `bench.sh` reports the five numbers | PASS |
+| | check | result @1120 | @280 |
+|---|---|---|---|
+| A | `/v1/models` `data[0].id` == `gemma4-26b-a4b-nvfp4` | PASS | PASS |
+| B | text-only completion non-empty | PASS | PASS |
+| C | one real photo via `file:///abs/path.jpg` | PASS | PASS, 282 prompt tokens |
+| D1 | thinking off + strict `json_schema` on real shard | PASS | PASS, 13.0 s |
+| D2 | thinking on + `gemma4` parser, same schema | PASS, 82.5 s | PASS, 73.0 s |
+| E | all 32 photos of `s0019` + schema | PASS, **37 349** ≤ 65 536, 84.8 s | PASS, 10 245 ≤ 65 536 |
+| F | `up.sh` twice → one container; `down.sh` then `up.sh` → back up | PASS | PASS |
+| G | `bench.sh` reports the five numbers | PASS | PASS |
 
 C deliberately asserts only that the pipeline works (HTTP 200, non-empty
 content), not that the model sees correctly. For the record it did describe the
@@ -257,11 +280,22 @@ for scale").
 
 One real plant line's full photo set + one real shard schema → structured JSON.
 Not `vllm bench serve`: its random dataset is short-prompt/long-output, the
-inverse of this workload. `s0019`, 32 photos, `shard_02`, **budget 280**,
-thinking off, fresh container.
+inverse of this workload. `s0019`, 32 photos, `shard_02`, thinking off, fresh
+container each time.
 
-> Measured before the budget was pinned to 1120. Kept as recorded; see the cost
-> note in Decision (b) and re-run `bench.sh` for figures at 1120.
+At the pinned **budget 1120**:
+
+```
+warm-up (max_tokens=3):  77.8 s   [JIT codegen + cold prefill of 37349 tokens]
+
+run 1: prompt=37349 completion=455 ttft=3.37s total=14.5s decode=40.9 tok/s
+run 2: prompt=37349 completion=619 ttft=0.21s total=15.4s decode=40.8 tok/s
+run 3: prompt=37349 completion=588 ttft=0.21s total=14.6s decode=40.8 tok/s
+
+cold-prefill probe (s0044, 26 photos, unseen): prompt=30695 ttft=58.17s total=72.7s
+```
+
+The original **budget 280** run, for comparison:
 
 ```
 warm-up (max_tokens=3):  11.2 s   [JIT codegen + cold prefill of 10245 tokens]
@@ -269,16 +303,18 @@ warm-up (max_tokens=3):  11.2 s   [JIT codegen + cold prefill of 10245 tokens]
 run 1: prompt=10245 completion=453 ttft=0.92s total=11.1s decode=44.2 tok/s
 run 2: prompt=10245 completion=552 ttft=0.18s total=12.6s decode=44.3 tok/s
 run 3: prompt=10245 completion=530 ttft=0.23s total=12.2s decode=44.2 tok/s
+
+cold-prefill probe (s0044, 26 photos, unseen): prompt=8673 ttft=7.83s total=24.4s
 ```
 
-| metric | median |
-|---|---|
-| prompt tokens (incl. images) | 10 245 |
-| TTFT (prefix-cache hit) | 0.23 s |
-| decode throughput | 44.2 tok/s |
-| total latency | 12.2 s |
-| completion tokens | 530 |
-| cold-prefill probe (`s0044`, 26 photos, unseen) | TTFT **7.83 s**, total **24.4 s** |
+| metric (median of 3) | **@1120 (pinned)** | @280 |
+|---|---|---|
+| prompt tokens (incl. images) | **37 349** | 10 245 |
+| TTFT (prefix-cache hit) | **0.21 s** | 0.23 s |
+| decode throughput | **40.8 tok/s** | 44.2 tok/s |
+| total latency | **14.6 s** | 12.2 s |
+| completion tokens | **588** | 530 |
+| cold-prefill probe (`s0044`, 26 photos) | TTFT **58.17 s**, total **72.7 s** | TTFT 7.83 s, total 24.4 s |
 
 ### 2400-request projection
 
@@ -286,15 +322,24 @@ Prefix caching is on by default (V1), and pxGPT sends 9 shard requests per plant
 that all share the same image prefix — so per plant one request pays a cold
 prefill and eight hit the cache. That mix, not the raw median, is the right basis:
 
-| scenario | estimate |
-|---|---|
-| all-cold upper bound | 16.3 h (24.4 s x 2400) |
-| all-cached lower bound | 8.1 h (12.2 s x 2400) |
-| **realistic (267 plants x [1 cold + 8 cached])** | **9.0 h** |
+| scenario | **@1120 (pinned)** | @280 |
+|---|---|---|
+| all-cold upper bound | 48.5 h (72.7 s x 2400) | 16.3 h (24.4 s x 2400) |
+| all-cached lower bound | 9.7 h (14.6 s x 2400) | 8.1 h (12.2 s x 2400) |
+| **realistic (267 plants x [1 cold + 8 cached])** | **14.0 h** | **9.0 h** |
 
-Serial only; concurrency above 1 was not measured. Cross-checked independently on
-three other lines (`s0016`/`s0017`/`s0014`): cold TTFT median 9.26 s / total
-19.5 s, cached TTFT 0.24 s / total 12.4 s → ~8.8 h, agreeing with the 9.0 h above.
+Serial only; concurrency above 1 was not measured. The 280 figures were
+cross-checked independently on three other lines (`s0016`/`s0017`/`s0014`): cold
+TTFT median 9.26 s / total 19.5 s, cached TTFT 0.24 s / total 12.4 s → ~8.8 h,
+agreeing with the 9.0 h above.
+
+The realistic row assumes all 9 shards of a plant are sent while that plant's
+image prefix is still resident in the KV cache. Dispatching shard-major (all
+plants for shard 1, then all plants for shard 2) would pay the cold prefill
+**every time** and land near the 48.5 h upper bound — a 3.5x difference from
+ordering alone. `build_sharded_requests()` already emits plant-major
+(`for line_id ... for s in shards`), and `--dispatch sequential` preserves that
+order; a future vLLM Stage 3 path must keep it.
 
 ## Deviations from the ticket's flag list
 
@@ -329,6 +374,25 @@ Four unavoidable departures:
   not raise this casually — the unified pool is shared with the OS and page
   cache, and raising it is the reported route to a hard lock needing a power
   cycle. If you must, go up by 0.05 and re-run acceptance E each time.
+- **`mm_processor_kwargs` per request fragments the prefix cache.** Sending
+  `mm_processor_kwargs: {"max_soft_tokens": 1120}` on a request puts its
+  multimodal inputs in a *different* cache namespace from an otherwise identical
+  request that relies on the server-side `--mm-processor-kwargs`, even though the
+  tokenization is byte-identical. Measured on an unseen line (`s0035`,
+  26 photos, 30 695 prompt tokens both ways):
+
+  | request | total |
+  |---|---|
+  | 1. with kwargs, cold | 71.3 s |
+  | 2. with kwargs, repeat | 14.8 s (cache hit) |
+  | 3. **without** kwargs, same images already prefilled twice | 71.6 s (**miss**) |
+  | 4. without kwargs, repeat | 16.5 s (cache hit) |
+
+  So clients must be *consistent*. The budget is pinned server-side, so the rule
+  is: **never send it per request.** `bench.sh` was changed to stop sending it,
+  and `smoke.py` never did. Mixing the two forms costs ~57 s on every request
+  that lands on the wrong side — silently, with no error.
+
 - **Prefix cache lives as long as the container.** A second `bench.sh` against a
   running server measures cache hits, not prefills (its "cold" probe reported
   TTFT 0.20 s and the projection collapsed to a meaningless 8.0 h lower bound).

@@ -57,15 +57,18 @@ messages = [
     {"role": "system", "content": system_prompt},
     {"role": "user", "content": image_parts(photos) + [{"type": "text", "text": shard_prompt}]},
 ]
-extra = {
-    "chat_template_kwargs": {"enable_thinking": THINKING},
-    "mm_processor_kwargs": {"max_soft_tokens": BUDGET},
-}
+# Deliberately does NOT send mm_processor_kwargs: the budget is pinned server-side
+# by up.sh, and sending it per request puts the multimodal inputs in a DIFFERENT
+# prefix-cache namespace even when the tokenization is byte-identical (measured:
+# same 30 695 prompt tokens, but 71.6 s instead of 14.8 s because the cached entry
+# is not reused). Clients must be consistent; relying on the server default is the
+# single source of truth, and is what pxgpt does.
+extra = {"chat_template_kwargs": {"enable_thinking": THINKING}}
 
 print(f"model        : {MODEL}")
 print(f"line         : {line} ({len(photos)} photos)")
 print(f"shard        : {shard_id}")
-print(f"img budget   : {BUDGET} tokens/image")
+print(f"img budget   : {BUDGET} tokens/image (server-side; not sent per request)")
 print(f"thinking     : {THINKING}")
 print(f"runs         : {RUNS}")
 print("")

@@ -188,12 +188,23 @@ ladder. Measured prompt-token cost for one photo:
 Sonnet 5's per-image tokenization, so local and cloud runs stay comparable — which
 matters more here than throughput, because the whole point is comparing backends.
 
-Cost at 1120: a 32-photo plant line is **~37 k** prompt tokens, comfortably inside
-`MAX_MODEL_LEN=65536` (the largest line in the dataset is 32 photos; even 49 would
-fit). Measured full-line latency at the lower budgets was 15.1 s at 140, 20.8 s at
-280 and 42.1 s at 560 — all schema-valid — so **expect 1120 to cost roughly twice
-the 560 figure**, and read any timing in this file that was measured at 280 as a
-lower bound. Full table in [RUNBOOK.md](RUNBOOK.md).
+Cost at 1120, measured (not extrapolated): a 32-photo line is **37 349** prompt
+tokens, comfortably inside `MAX_MODEL_LEN=65536` — the largest line in the dataset
+is 32 photos, and even 49 would fit.
+
+| | 280 | **1120** |
+|---|---|---|
+| prompt tokens, 32-photo line | 10 245 | **37 349** |
+| cold request, total | 24.4 s | **72.7 s** |
+| prefix-cached request, total | 12.2 s | **14.6 s** |
+| realistic 2400-request run | 9.0 h | **14.0 h** |
+
+The 4x token increase does **not** cost 4x wall-clock. Cold prefill does get much
+worse (7.4x: the vision tower processes 10 080 patches per image instead of
+2 520), but prefix-cached requests barely move, and pxGPT sends 9 shard requests
+per plant off one shared image prefix — so only 1 in 9 pays the cold prefill. The
+end-to-end cost of choosing 1120 over 280 is about **+56 %**. Full tables in
+[RUNBOOK.md](RUNBOOK.md).
 
 ---
 
@@ -222,7 +233,7 @@ resp = client.chat.completions.create(
                      "json_schema": {"name": "shard_02", "schema": schema, "strict": True}},
     extra_body={
         "chat_template_kwargs": {"enable_thinking": False},
-        "mm_processor_kwargs": {"max_soft_tokens": 1120},  # per-request override
+        # NOTE: do NOT send mm_processor_kwargs -- see the warning below
     },
 )
 ```
@@ -239,6 +250,13 @@ Four things to get right:
    `model_extra`. Check both names.
 4. **Bound the output and check `finish_reason`.** The grammar constrains shape
    but not length; see Troubleshooting.
+
+> **Never send `mm_processor_kwargs` per request.** The budget is pinned
+> server-side by `up.sh`, and passing it on the request puts the images in a
+> *different* prefix-cache namespace — identical tokenization, but the cached
+> entry is not reused. Measured on the same 26-photo line: 14.8 s when the key
+> matched, 71.6 s when it did not. There is no error, just a silent ~57 s penalty
+> on every mismatched request. Rely on the server default and stay consistent.
 
 ---
 
@@ -303,14 +321,15 @@ short-prompt/long-output dataset:
 ./down.sh && ./up.sh && ./bench.sh     # restart first, see below
 ```
 
-Reference figures **measured at budget 280** (32 photos, thinking off): 10 245
-prompt tokens, **44.2 tok/s** decode, **12.2 s** with a warm prefix cache,
-**24.4 s** cold, projecting **~9.0 h** for 2400 requests.
+Reference figures at the pinned budget of **1120** (32 photos, thinking off,
+fresh container): **37 349** prompt tokens, **40.8 tok/s** decode, **14.6 s** with
+a warm prefix cache, **72.7 s** cold, projecting **~14.0 h** for 2400 requests
+(267 plants x [1 cold + 8 cached]).
 
-> These predate the move to 1120 and are an optimistic lower bound: prompt tokens
-> rise ~3.6x (10 245 → ~37 k) and prefill dominates this workload. Run
-> `./down.sh && ./up.sh && ./bench.sh` to get figures at the pinned budget before
-> planning a full run.
+> Ordering matters as much as the budget: 9 shards per plant share one image
+> prefix, so dispatching **plant-major** keeps 8 of 9 requests on the cache. Going
+> shard-major would pay the cold prefill every time and push the same run toward
+> **48.5 h**.
 
 > **Always restart before benchmarking.** Prefix caching is on by default and its
 > cache lives as long as the container, so a second `bench.sh` against the same
