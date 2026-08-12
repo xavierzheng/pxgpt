@@ -27,7 +27,7 @@ flags actually work.
 | `MAX_NUM_SEQS` | 2 |
 | `GPU_MEM_UTIL` | 0.80 |
 | **Thinking** | **off** (`enable_thinking: false` per request) |
-| **Visual token budget** | **280 tokens/image** (`--mm-processor-kwargs '{"max_soft_tokens": 280}'`) |
+| **Visual token budget** | **1120 tokens/image** (`--mm-processor-kwargs '{"max_soft_tokens": 1120}'`) |
 
 ## Image selection
 
@@ -171,7 +171,7 @@ server. The parser name is exactly `gemma4` (registered in
 > checks both names. An early D2 run looked like a failure purely because only
 > `reasoning_content` was read.
 
-## Decision (b): 280 visual tokens per image
+## Decision (b): 1120 visual tokens per image
 
 The knob is `max_soft_tokens`, **not** `image_seq_length` — from
 `vllm/model_executor/models/gemma4_mm.py::_get_max_soft_tokens`, which reads it
@@ -190,7 +190,9 @@ either top-level or from `images_kwargs`. It works both as a server flag
 
 The checkpoint's own `processor_config.json` sets `image_seq_length` and
 `max_soft_tokens` to **280**, so unset == 280. The ticket's worry about
-25 x 1120 ≈ 28 k tokens does not arise at the default.
+25 x 1120 ≈ 28 k tokens is real at the top of the ladder but affordable: the
+largest line in the dataset is 32 photos, so 32 x 1120 + prompt ≈ **37 k**, still
+inside `MAX_MODEL_LEN=65536`.
 
 Acceptance E on the full 32-photo set for `s0019` + `shard_02`:
 
@@ -200,14 +202,32 @@ Acceptance E on the full 32-photo set for `s0019` + `shard_02`:
 | **280** | **10 245** | **20.8 s** | yes |
 | 560 | 19 557 | 42.1 s | yes |
 
-**Chose 280.** It is the checkpoint default (so it matches how the model was
-calibrated and needs no justification to a reviewer), all three budgets produce
-schema-valid JSON, and 560 doubles latency for no validity gain. 140 is tempting
-on speed but this task reads fine detail — petiole cross-section, colour hue,
-leaf margin — and the card explicitly recommends *higher* budgets for
-fine-grained work, so dropping below the default trades away exactly the signal
-being measured. Worth a dedicated accuracy comparison later; it should not be
-decided on latency alone.
+**Chose 1120**, the top of the ladder, on accuracy and comparability grounds
+rather than latency:
+
+1. The Stage 3 traits are fine-grained — petiole cross-section, colour hue, leaf
+   margin — and the model card explicitly recommends *higher* budgets for
+   fine-detail work (OCR, document parsing, small text) and lower ones only for
+   classification and captioning. This task is the former.
+2. 1120 lands closest to what Anthropic Sonnet 5 spends per image, so the local
+   and cloud backends see comparable visual information. Since the point of this
+   deployment is to compare them, that parity is worth more than throughput.
+   Concretely: the dataset's photos are 1568 x 1043 (already sized to Anthropic's
+   long-edge limit), and Anthropic's `(w x h) / 750` puts them at ~2180 tokens
+   each before its own megapixel downscaling — order 1.5-2 k in practice. 1120 is
+   the nearest rung below that; 560 would be 3-4x off.
+
+All budgets tested produce schema-valid JSON, so this is not a validity choice —
+it is a detail-versus-cost choice, resolved in favour of detail.
+
+**Cost of the decision, stated plainly.** Every latency and throughput figure in
+the "Benchmark" section below was measured at **280** and is therefore an
+optimistic lower bound for the pinned configuration. Prompt tokens rise ~3.6x
+(10 245 → ~37 k for a 32-photo line) and this workload is prefill-dominated.
+Extrapolating the 280 → 560 step (20.8 s → 42.1 s), expect roughly **~80-85 s**
+per full-line request at 1120, and re-derive the 2400-request projection from a
+fresh `./down.sh && ./up.sh && ./bench.sh` before committing to a full run.
+The 140/280/560 measurements are left intact below as the evidence they are.
 
 **This value is now pinned and must not drift** — it sets the visual information
 available to the model, so changing it invalidates comparisons against the
@@ -237,8 +257,11 @@ for scale").
 
 One real plant line's full photo set + one real shard schema → structured JSON.
 Not `vllm bench serve`: its random dataset is short-prompt/long-output, the
-inverse of this workload. `s0019`, 32 photos, `shard_02`, budget 280, thinking
-off, fresh container.
+inverse of this workload. `s0019`, 32 photos, `shard_02`, **budget 280**,
+thinking off, fresh container.
+
+> Measured before the budget was pinned to 1120. Kept as recorded; see the cost
+> note in Decision (b) and re-run `bench.sh` for figures at 1120.
 
 ```
 warm-up (max_tokens=3):  11.2 s   [JIT codegen + cold prefill of 10245 tokens]

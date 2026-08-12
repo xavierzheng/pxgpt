@@ -43,7 +43,7 @@ BASE = f"http://localhost:{os.getenv('PORT', '8000')}/v1"
 MODEL = os.getenv("SERVED_MODEL_NAME", "gemma4-26b-a4b-nvfp4")
 RUNS = int(os.getenv("RUNS", "3"))
 TOTAL = int(os.getenv("TOTAL_REQUESTS", "2400"))
-BUDGET = int(os.getenv("IMAGE_TOKEN_BUDGET", "280"))
+BUDGET = int(os.getenv("IMAGE_TOKEN_BUDGET", "1120"))
 THINKING = os.getenv("ENABLE_THINKING", "false").lower() in ("1", "true", "yes")
 
 client = OpenAI(base_url=BASE, api_key="local", max_retries=0, timeout=3600)

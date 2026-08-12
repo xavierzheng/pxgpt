@@ -138,7 +138,7 @@ written by `pull.sh` or by you.
 | `MAX_NUM_SEQS` | 2 |
 | `GPU_MEM_UTIL` | 0.80 — see the warning below |
 | `ENABLE_THINKING` | `false` (pinned decision) |
-| `IMAGE_TOKEN_BUDGET` | `280` (pinned decision) |
+| `IMAGE_TOKEN_BUDGET` | `1120` (pinned decision) |
 | `SHARD_DIR`, `SYSTEM_PROMPT`, `BENCH_LINE`, `BENCH_COLD_LINE` | Real data used by `smoke.py` / `bench.sh`, **read-only** |
 
 > **Do not raise `GPU_MEM_UTIL` casually.** The unified pool is shared with the OS
@@ -172,20 +172,28 @@ but takes **73–85 s** against **9–13 s** for the same result, and its reason
 text duplicates the `rationale` field the Stage 3 schema already requires. Off is
 the default for good reason.
 
-### 2. Visual token budget: 280 tokens per image
+### 2. Visual token budget: 1120 tokens per image
 
 The knob is **`max_soft_tokens`**, not `image_seq_length`. Supported ladder:
 `70 · 140 · 280 · 560 · 1120`. The checkpoint's own `processor_config.json`
-defaults to 280, so unset == 280. Measured prompt-token cost for one photo:
+defaults to 280, so unset == 280 — this deployment overrides it to the top of the
+ladder. Measured prompt-token cost for one photo:
 
 | `max_soft_tokens` | 70 | 140 | 280 | 560 | 1120 |
 |---|---|---|---|---|---|
 | prompt tokens | 84 | 150 | 284 | 575 | 1131 |
 
-A 32-photo plant line at 280 costs **10 245** prompt tokens — comfortably inside
-`MAX_MODEL_LEN=65536`. 560 doubles latency for no gain in validity; 140 is faster
-but discards the fine detail (petiole cross-section, colour hue, leaf margin)
-that this task measures.
+**Pinned at 1120**, the top of the ladder. The Stage 3 traits are fine-grained
+(petiole cross-section, colour hue, leaf margin), and 1120 sits close to Anthropic
+Sonnet 5's per-image tokenization, so local and cloud runs stay comparable — which
+matters more here than throughput, because the whole point is comparing backends.
+
+Cost at 1120: a 32-photo plant line is **~37 k** prompt tokens, comfortably inside
+`MAX_MODEL_LEN=65536` (the largest line in the dataset is 32 photos; even 49 would
+fit). Measured full-line latency at the lower budgets was 15.1 s at 140, 20.8 s at
+280 and 42.1 s at 560 — all schema-valid — so **expect 1120 to cost roughly twice
+the 560 figure**, and read any timing in this file that was measured at 280 as a
+lower bound. Full table in [RUNBOOK.md](RUNBOOK.md).
 
 ---
 
@@ -214,7 +222,7 @@ resp = client.chat.completions.create(
                      "json_schema": {"name": "shard_02", "schema": schema, "strict": True}},
     extra_body={
         "chat_template_kwargs": {"enable_thinking": False},
-        "mm_processor_kwargs": {"max_soft_tokens": 280},   # per-request override
+        "mm_processor_kwargs": {"max_soft_tokens": 1120},  # per-request override
     },
 )
 ```
@@ -295,9 +303,14 @@ short-prompt/long-output dataset:
 ./down.sh && ./up.sh && ./bench.sh     # restart first, see below
 ```
 
-Reference figures (32 photos, budget 280, thinking off): 10 245 prompt tokens,
-**44.2 tok/s** decode, **12.2 s** with a warm prefix cache, **24.4 s** cold,
-projecting **~9.0 h** for 2400 requests.
+Reference figures **measured at budget 280** (32 photos, thinking off): 10 245
+prompt tokens, **44.2 tok/s** decode, **12.2 s** with a warm prefix cache,
+**24.4 s** cold, projecting **~9.0 h** for 2400 requests.
+
+> These predate the move to 1120 and are an optimistic lower bound: prompt tokens
+> rise ~3.6x (10 245 → ~37 k) and prefill dominates this workload. Run
+> `./down.sh && ./up.sh && ./bench.sh` to get figures at the pinned budget before
+> planning a full run.
 
 > **Always restart before benchmarking.** Prefix caching is on by default and its
 > cache lives as long as the container, so a second `bench.sh` against the same
