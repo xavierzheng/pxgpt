@@ -1,35 +1,32 @@
-"""LiteLLM provider for OpenAI, Google, Ollama and other providers."""
+"""OpenAI-SDK provider for every OpenAI-wire-protocol backend."""
 
 from typing import Dict, Any, List, Optional
-import litellm
-from litellm import RateLimitError, APIConnectionError, APIError
+import openai
+from openai import OpenAI
 
 from .base import BaseProvider, APIResponse, TokenUsage
 
 
-class LiteLLMProvider(BaseProvider):
-    """LiteLLM provider for OpenAI, Ollama, LM Studio, vLLM and Google.
+class OpenAICompatProvider(BaseProvider):
+    """OpenAI SDK provider for OpenAI, Ollama, LM Studio and vLLM.
 
-    Model/route resolution per provider (api_base / api_key are passed per call,
-    not via LiteLLM globals, so multiple providers never clash):
+    All four speak the OpenAI wire protocol, so one ``openai.OpenAI`` client
+    with the right ``base_url`` serves them all.  The model name is sent
+    verbatim -- no route prefixes.
 
-    - openai    : ``<model>``           (optional OPENAI_BASE_URL for proxies)
-    - ollama    : ``ollama/<model>``    @ OLLAMA_BASE_URL
-    - lmstudio  : ``openai/<model>``    @ LMSTUDIO_BASE_URL (OpenAI-compatible)
-    - vllm      : ``openai/<model>``    @ VLLM_BASE_URL    (OpenAI-compatible)
-    - google    : ``gemini/<model>``    (Google AI Studio)
-
-    LM Studio and vLLM both expose an OpenAI-compatible server, so they use the
-    ``openai/`` route with their own base URL and a (usually dummy) api_key.
+    - openai    : ``config.openai_base_url``   (None -> the SDK default)
+    - ollama     : ``config.ollama_base_url`` + ``/v1``
+    - lmstudio  : ``config.lmstudio_base_url`` (already ends in ``/v1``)
+    - vllm      : ``config.vllm_base_url``     (already ends in ``/v1``)
     """
 
     def __init__(self, config, provider: str):
         super().__init__(config)
         self.llm_provider = provider
         self.base_model = config.get_model(provider)
-        self.model = self._resolve_model(provider, self.base_model)
+        self.model = self.base_model
         self.api_base = self._resolve_api_base(provider)
-        self.api_key = config.get_api_key(provider)
+        self.api_key = self._resolve_api_key(provider)
 
         if provider in ("lmstudio", "vllm") and not self.base_model:
             raise ValueError(
@@ -37,27 +34,26 @@ class LiteLLMProvider(BaseProvider):
                 f"{'VLLM_MODEL' if provider == 'vllm' else 'LMSTUDIO_MODEL'}."
             )
 
-    @staticmethod
-    def _resolve_model(provider: str, base_model: str) -> str:
-        if provider == "ollama":
-            return f"ollama/{base_model}"
-        if provider in ("lmstudio", "vllm"):
-            # OpenAI-compatible servers route through the openai handler.
-            return f"openai/{base_model}"
-        if provider == "google":
-            return f"gemini/{base_model}"
-        return base_model  # openai (and anything already prefixed)
-
     def _resolve_api_base(self, provider: str):
         if provider == "openai":
             return self.config.openai_base_url  # may be None (real OpenAI)
         if provider == "ollama":
-            return self.config.ollama_base_url
+            # Ollama's OpenAI-compatible surface lives under /v1, and
+            # OLLAMA_BASE_URL conventionally omits it. Append only when needed so
+            # a user who already wrote /v1 doesn't get /v1/v1.
+            base = (self.config.ollama_base_url or "").rstrip("/")
+            return base if base.endswith("/v1") else f"{base}/v1"
         if provider == "lmstudio":
             return self.config.lmstudio_base_url
         if provider == "vllm":
             return self.config.vllm_base_url
         return None
+
+    def _resolve_api_key(self, provider: str):
+        # The SDK rejects None/"" outright, and Ollama has no key setting.
+        if provider == "ollama":
+            return "ollama"
+        return self.config.get_api_key(provider)
 
     def _is_openai_reasoning_model(self) -> bool:
         m = self.base_model.lower()
@@ -65,26 +61,33 @@ class LiteLLMProvider(BaseProvider):
 
     @property
     def provider_name(self) -> str:
-        return f"litellm-{self.llm_provider}"
+        return f"openai-compat-{self.llm_provider}"
 
     def _create_client(self):
-        """LiteLLM doesn't need explicit client creation"""
-        return None
-    
+        """Build the OpenAI client; retries are BaseProvider's job, not the SDK's."""
+        kwargs = {
+            "api_key": self.api_key,
+            "max_retries": 0,
+            "timeout": self.config.timeout,
+        }
+        if self.api_base:
+            kwargs["base_url"] = self.api_base
+        return OpenAI(**kwargs)
+
     def supports_caching(self) -> bool:
-        """LiteLLM providers don't support prompt caching"""
+        """OpenAI-compatible providers don't support prompt caching"""
         return False
-    
+
     def _build_system_prompt(self, system_prompt: str, schema: Optional[str] = None) -> str:
         """Build combined system prompt since caching isn't supported"""
         if schema:
             return f"{system_prompt}\n\nUse this JSON schema for your response:\n{schema}"
         return system_prompt
-    
-    def _convert_messages_for_litellm(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Convert Anthropic-style messages to LiteLLM format"""
+
+    def _to_openai_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Convert Anthropic-style messages to OpenAI format"""
         converted_messages = []
-        
+
         for message in messages:
             if message["role"] == "user":
                 content = []
@@ -95,7 +98,7 @@ class LiteLLMProvider(BaseProvider):
                             "text": item["text"]
                         })
                     elif item["type"] == "image":
-                        # Convert Anthropic base64 format to LiteLLM format
+                        # Convert Anthropic base64 format to OpenAI format
                         image_data = item["source"]["data"]
                         media_type = item["source"]["media_type"]
                         content.append({
@@ -104,46 +107,38 @@ class LiteLLMProvider(BaseProvider):
                                 "url": f"data:{media_type};base64,{image_data}"
                             }
                         })
-                
+
                 converted_messages.append({
-                    "role": "user", 
+                    "role": "user",
                     "content": content
                 })
-        
+
         return converted_messages
-    
+
     def _send_request(
         self,
         messages: List[Dict[str, Any]],
         system_prompt: str,
         schema: Optional[str] = None,
-        output_config: Optional[Dict[str, Any]] = None,  # not used by LiteLLM
+        output_config: Optional[Dict[str, Any]] = None,  # Anthropic-only
     ) -> APIResponse:
-        """Send request via LiteLLM"""
-        
+        """Send request via the OpenAI SDK"""
+
         # Build combined system prompt (no caching support)
         combined_system = self._build_system_prompt(system_prompt, schema)
-        
-        # Convert messages to LiteLLM format
-        converted_messages = self._convert_messages_for_litellm(messages)
-        
+
+        # Convert messages to OpenAI format
+        converted_messages = self._to_openai_messages(messages)
+
         # Add system message at the beginning
         full_messages = [{"role": "system", "content": combined_system}] + converted_messages
-        
+
         # Prepare request parameters
         params = {
             "model": self.model,
             "messages": full_messages,
             "max_tokens": self.config.max_tokens,
-            "timeout": self.config.timeout,
-            # Drop params a given backend doesn't accept instead of erroring —
-            # keeps one code path working across OpenAI / Ollama / LM Studio / vLLM.
-            "drop_params": True,
         }
-        if self.api_base:
-            params["api_base"] = self.api_base
-        if self.api_key:
-            params["api_key"] = self.api_key
 
         # OpenAI reasoning models (gpt-5 / o-series) only accept the default temperature.
         if self.llm_provider == "openai" and self._is_openai_reasoning_model():
@@ -152,14 +147,14 @@ class LiteLLMProvider(BaseProvider):
             params["temperature"] = self.config.temperature
 
         # Send request
-        response = litellm.completion(**params)
-        
+        response = self.client.chat.completions.create(**params)
+
         # Extract usage information
         usage = TokenUsage(
             input_tokens=getattr(response.usage, 'prompt_tokens', 0),
             output_tokens=getattr(response.usage, 'completion_tokens', 0)
         )
-        
+
         # Print usage stats
         request_id = getattr(response, 'id', 'N/A')
         print(f"## Request ID: {request_id}")
@@ -167,25 +162,22 @@ class LiteLLMProvider(BaseProvider):
         print(f"## Model: {self.model}")
         print(f"## Input tokens: {usage.input_tokens}")
         print(f"## Output tokens: {usage.output_tokens}")
-        
+
         return APIResponse(
             content=response.choices[0].message.content,
             usage=usage,
             request_id=request_id,
             model=self.model
         )
-    
+
     def _is_rate_limit_error(self, error: Exception) -> bool:
         """Check if error is a rate limit error"""
-        return isinstance(error, RateLimitError)
-    
+        return isinstance(error, openai.RateLimitError)
+
     def _is_retryable_error(self, error: Exception) -> bool:
         """Check if error is retryable"""
-        if isinstance(error, APIConnectionError):
+        if isinstance(error, (openai.APIConnectionError, openai.APITimeoutError)):
             return True
-        if isinstance(error, APIError):
-            # Check for retryable status codes in the error message
-            error_str = str(error).lower()
-            retryable_errors = ['502', '503', '504', 'timeout', 'connection']
-            return any(err in error_str for err in retryable_errors)
+        if isinstance(error, openai.APIStatusError):
+            return error.status_code in (500, 502, 503, 504)
         return False

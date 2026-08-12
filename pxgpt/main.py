@@ -46,7 +46,7 @@ def main():
         description="Plant analysis tool — multi-provider LLM with Files + Batch API support",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--version", action="version", version="PXGPT 0.3.0")
+    parser.add_argument("--version", action="version", version="PXGPT 0.4.0")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
 
     subparsers = parser.add_subparsers(

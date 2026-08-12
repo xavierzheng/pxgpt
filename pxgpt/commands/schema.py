@@ -16,17 +16,17 @@ from ..core.file_utils import read_file_safely, write_file_safely
 from ..core.schema_utils import load_normalized
 from ..core.batch_utils import temperature_guard_status
 from ..providers.anthropic_provider import AnthropicProvider
-from ..providers.litellm_provider import LiteLLMProvider
+from ..providers.openai_compat_provider import OpenAICompatProvider
 
 
-LITELLM_PROVIDERS = {"openai", "google", "ollama", "lmstudio", "vllm"}
+OPENAI_COMPAT_PROVIDERS = {"openai", "ollama", "lmstudio", "vllm"}
 
 
 def create_provider(provider_name: str, config: Config):
     if provider_name == "anthropic":
         return AnthropicProvider(config)
-    elif provider_name in LITELLM_PROVIDERS:
-        return LiteLLMProvider(config, provider_name)
+    elif provider_name in OPENAI_COMPAT_PROVIDERS:
+        return OpenAICompatProvider(config, provider_name)
     raise ValueError(f"Unsupported provider: {provider_name}")
 
 
@@ -123,7 +123,7 @@ def setup_schema_parser(subparsers):
     )
     parser.add_argument(
         "--provider",
-        choices=["anthropic", "openai", "google", "ollama", "lmstudio", "vllm"],
+        choices=["anthropic", "openai", "ollama", "lmstudio", "vllm"],
         help="LLM provider (overrides config/env)",
     )
     parser.add_argument(

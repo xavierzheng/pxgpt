@@ -7,12 +7,12 @@ with open("requirements.txt") as f:
 
 setup(
     name="pxgpt",
-    version="0.3.0",
+    version="0.4.0",
     description="Plant analysis tool with multiple LLM provider support",
     author="PXGPT Team", 
     packages=find_packages(),
     install_requires=requirements,
-    python_requires=">=3.8",
+    python_requires=">=3.10",
     entry_points={
         'console_scripts': [
             'pxgpt=pxgpt.main:main',
@@ -23,9 +23,8 @@ setup(
         "Intended Audience :: Developers",
         "License :: OSI Approved :: MIT License", 
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.8",
-        "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
     ],
 )

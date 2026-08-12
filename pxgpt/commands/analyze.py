@@ -7,18 +7,18 @@ from ..core.config import Config
 from ..core.image_utils import create_multi_image_message
 from ..core.file_utils import read_file_safely, write_file_safely
 from ..providers.anthropic_provider import AnthropicProvider
-from ..providers.litellm_provider import LiteLLMProvider
+from ..providers.openai_compat_provider import OpenAICompatProvider
 
 
-LITELLM_PROVIDERS = ["openai", "google", "ollama", "lmstudio", "vllm"]
+OPENAI_COMPAT_PROVIDERS = ["openai", "ollama", "lmstudio", "vllm"]
 
 
 def create_provider(provider_name: str, config: Config):
     """Factory function to create appropriate provider"""
     if provider_name == "anthropic":
         return AnthropicProvider(config)
-    elif provider_name in LITELLM_PROVIDERS:
-        return LiteLLMProvider(config, provider_name)
+    elif provider_name in OPENAI_COMPAT_PROVIDERS:
+        return OpenAICompatProvider(config, provider_name)
     else:
         raise ValueError(f"Unsupported provider: {provider_name}")
 
@@ -121,7 +121,7 @@ def setup_analyze_parser(subparsers):
     
     parser.add_argument(
         '--provider',
-        choices=['anthropic', 'openai', 'google', 'ollama', 'lmstudio', 'vllm'],
+        choices=['anthropic', 'openai', 'ollama', 'lmstudio', 'vllm'],
         help='LLM provider to use (overrides config/env)'
     )
 
