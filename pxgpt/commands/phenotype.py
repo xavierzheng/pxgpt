@@ -309,7 +309,8 @@ def _run_sharded(args, config, client, line_image_blocks, use_files_api):
     # Pre-flight: confirm each shard schema compiles; auto-reshard on failure.
     try:
         manifest, shards = sharding.ensure_compilable(
-            client, config.anthropic_model, shard_dir, manifest, shards, master_path
+            client, config.anthropic_model, shard_dir, manifest, shards, master_path,
+            allow_reshard=args.allow_reshard,
         )
     except RuntimeError as e:
         print(f"Error: {e}")
@@ -627,6 +628,14 @@ def setup_phenotype_parser(subparsers):
         help="Path to the master schema (sharded mode) used to validate the merged "
              "record and report missing traits. Defaults to the path recorded in "
              "the shard manifest.",
+    )
+    parser.add_argument(
+        "--allow-reshard", action="store_true", default=False,
+        help="Sharded mode: if a shard schema fails the pre-flight grammar "
+             "compile-check, let the tool regenerate the whole shard set at a "
+             "halved budget. WARNING: this OVERWRITES the schema, prompt and "
+             "manifest files inside --shard-dir. Off by default, in which case a "
+             "compile failure aborts the run and leaves --shard-dir untouched.",
     )
     parser.add_argument(
         "--dispatch", choices=("batch", "sequential"), default="batch",

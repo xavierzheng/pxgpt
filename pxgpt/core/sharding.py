@@ -8,8 +8,9 @@ grammar-cost budget, and writes one ``{schema, prompt}`` pair per shard plus a
 ``phenotype-batch``:
 
   - load a shard set (schemas + prompts + trait inventory),
-  - live compile-check each distinct shard schema and auto-reshard (re-run the
-    generator at a smaller budget) if one still trips the limit,
+  - live compile-check each distinct shard schema and, only when explicitly
+    opted in via ``--allow-reshard``, auto-reshard (re-run the generator at a
+    smaller budget) if one still trips the limit,
   - build per-(plant × shard) requests with a cached system prefix and uncached images,
   - parse + merge the per-shard ``{rationale, value}`` objects back into one
     per-plant record and validate coverage against the master schema.
@@ -178,13 +179,19 @@ def ensure_compilable(
     client, model: str, shard_dir: str, manifest: Dict[str, Any],
     shards: List[Dict[str, Any]], master_path: Optional[str],
     min_budget: int = 4,
+    allow_reshard: bool = False,
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
-    """Compile-check every shard; auto-reshard at a smaller budget on failure.
+    """Compile-check every shard; optionally auto-reshard on failure.
 
-    Auto-reshard re-runs the in-process generator (which owns schema + prompt +
-    manifest, so regenerating keeps them consistent); it needs the master schema
-    on disk.  Returns the (possibly regenerated) ``(manifest, shards)``.  Raises
-    ``RuntimeError`` if a shard cannot be made to compile.
+    By default (*allow_reshard* False) a compile failure raises ``RuntimeError``
+    and *shard_dir* is left byte-for-byte untouched -- a frozen shard set under
+    evaluation must never be silently regenerated.  Only with
+    ``allow_reshard=True`` does a failure re-run the in-process generator (which
+    owns schema + prompt + manifest, so regenerating keeps them consistent) at a
+    halved budget, **overwriting** the files in *shard_dir*; that path needs the
+    master schema on disk.  Returns the (possibly regenerated)
+    ``(manifest, shards)``.  Raises ``RuntimeError`` if a shard cannot be made
+    to compile.
     """
     can_reshard = bool(master_path and os.path.exists(master_path))
 
@@ -197,9 +204,29 @@ def ensure_compilable(
                 print(f"  {s['shard_id']}: compiles OK")
             else:
                 print(f"  {s['shard_id']}: TOO COMPLEX — {err}")
-                failed.append(s["shard_id"])
+                failed.append((s["shard_id"], err))
         if not failed:
             return manifest, shards
+
+        failed_ids = ", ".join(sid for sid, _ in failed)
+        if not allow_reshard:
+            raise RuntimeError(
+                "Shard(s) %s exceed the grammar-complexity limit:\n%s\n"
+                "The shard set in %s was NOT modified (no files written).\n"
+                "Options:\n"
+                "  1. Regenerate a shard set at a smaller budget yourself "
+                "(current budget %s): `pxgpt shard-schema --shard-budget "
+                "<smaller>` writing to a new directory, then point --shard-dir "
+                "at it.\n"
+                "  2. Re-run with --allow-reshard to let this tool reshard "
+                "automatically. WARNING: that OVERWRITES the schema, prompt and "
+                "manifest files in %s."
+                % (failed_ids,
+                   "\n".join(f"    - {sid}: {err}" for sid, err in failed),
+                   shard_dir,
+                   int(manifest.get("shard_budget", 0)) or 0,
+                   shard_dir)
+            )
 
         current_budget = int(manifest.get("shard_budget", 0)) or 0
         new_budget = max(min_budget, current_budget // 2) if current_budget else 0
@@ -209,7 +236,7 @@ def ensure_compilable(
                 "auto-resharded (master schema not found on disk, or budget floor "
                 "reached). Regenerate with a smaller --shard-budget (current %s) "
                 "via `pxgpt shard-schema` and retry."
-                % (", ".join(failed), current_budget)
+                % (failed_ids, current_budget)
             )
         print(f"\n  Re-sharding at smaller budget {current_budget} -> {new_budget}")
         reshard(master_path, shard_dir, new_budget)
