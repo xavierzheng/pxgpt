@@ -746,6 +746,39 @@ Reading them:
 - **Preemption count is the scheduling-pressure metric.** Monotonic; any
   increase means the scheduler discarded work to free KV blocks.
 
+### Read the memory numbers with this caveat
+
+**`MemAvailable` is a whole-machine number, and the machine was also running the
+thing doing the measuring.** These runs were driven from an interactive agent
+session on the same host: a Node process holding a growing conversation, the
+Python clients issuing the requests, two samplers, and repeated `docker` and
+`curl` invocations. All of it counts against the same unified pool, and none of
+it is separated out below.
+
+Two consequences, stated so nobody mistakes these figures for a clean
+measurement of vLLM:
+
+1. **Every `MemAvailable` figure understates the true headroom of an unattended
+   production run.** They are lower bounds on what the server alone would leave
+   free, not estimates of it.
+2. **The trend across N is partly confounded with time.** The levels ran in
+   ascending order — N = 1, then 2, then 3, then the saturated re-run — inside a
+   session whose own footprint grew monotonically throughout. Some of the
+   decline attributed to depth below may simply be the harness getting fatter.
+
+What is **not** affected, and can be read at face value: the preemption counts
+(server-side counters), the per-plant prefix-hit rates (per-request fields from
+the server), the per-request latencies, and the multimodal cache measurements
+(derived from tensor shapes, not from host memory).
+
+The practical conclusion drawn from all of this is deliberately modest, and is
+recorded here as the decision rather than left implicit: **run at N = 2 and leave
+`--mm-processor-cache-gb` at its 4 GiB default.** Both the depth ladder and the
+saturated re-run agree that N = 2 completes cleanly with no preemptions and full
+prefix reuse, which is what the pipeline actually needs to be correct. Chasing
+the memory floor further is not worth it when the instrument cannot separate the
+server's consumption from the observer's.
+
 ### Incremental pipeline depth: N = 1, 2, 3
 
 N plants in flight, each dispatched by Pattern D's rule (`shard_01` alone, wait,
@@ -757,9 +790,10 @@ the container had never served. All plants 22–23 photos, so the levels are
 comparable.
 
 Stop rule fixed in advance: `MemAvailable` low-water below 8 GiB, or any
-preemption. **Read the next subsection before treating these floors as the
-operating margin** — a restarted container also has an empty multimodal cache,
-which flatters every one of them by roughly 2.7 GiB.
+preemption. Two things to hold in mind while reading the floors: a restarted
+container also has an empty multimodal cache, which flatters all of them (next
+subsection), and the figures include the measuring harness (previous
+subsection).
 
 | N | plants | wall | per-plant | 267 plants | `MemAvailable` low | margin to 8 GiB | preemptions | per-plant prefix hit |
 |---|---|---|---|---|---|---|---|---|
@@ -775,7 +809,9 @@ failure. The excursion is not one stray sample: 22 of 2 092 samples (1.1 %,
 from 10.06 GiB at N = 2 to 8.56 GiB at N = 3. The machine survived and was
 healthy afterwards — but a single survival is not evidence about a failure mode
 that hard-locks, which is exactly why the low-water mark is reported instead of
-"it did not crash".
+"it did not crash". (How much of the N = 2 → N = 3 fall is depth and how much is
+the harness growing over the session cannot be separated from these runs; the
+stop rule was applied as written rather than argued with.)
 
 **Backing off costs almost nothing.** N = 2 → N = 3 buys 5.4 % (5.57 h → 5.27 h)
 while spending the entire memory margin. N = 1 → N = 2 buys 16 %. The knee is at
@@ -859,27 +895,28 @@ above implies. (Its 68.1 s per plant is *not* comparable with the 75.1 s above:
 those plants carry 21 photos rather than 23, and the system-prompt prefix was
 already resident. Read this run for its memory numbers, not its speed.)
 
-**The lever is the cache, not the depth.** What consumes the margin is a
-standing 4 GiB allocation, so backing off from two plants to one does not
-recover it — one plant in flight would sit on the same saturated cache. The
-knobs that do:
+**How much of that 2.7 GiB is the multimodal cache is an inference, not a
+measurement.** The 4 GiB cap and the ~5 GiB fall in idle `MemAvailable` line up
+suggestively, and the per-image cost is measured — but the saturated re-run was
+also the *last* thing executed in a long session, so the harness described in
+"Read the memory numbers with this caveat" had grown too. Nothing here separates
+the two, and no experiment was run that would.
 
-- **`--mm-processor-cache-gb`.** At the pinned 1120-token budget a plant of
-  22–23 photos costs ~0.69 GB, so two in flight need ~1.4 GB. The default 4 GiB
-  is holding roughly four plants that have already finished. Lowering it to
-  **2 GiB should return ~2 GiB of headroom** and cost only re-processing of
-  plants that are no longer in flight — nothing a live plant needs. Deliberately
-  **not changed here**: adding server flags is outside this ticket, and the
-  claim above is a prediction from the measured per-plant cost, not a
-  measurement. Worth one experiment before the production run.
-- `--gpu-memory-utilization`, in the other direction, is the known route to a
-  hard lock and should not be touched.
+What does follow regardless of the split: the margin is consumed by something
+that **does not shrink when the pipeline does**, so serialising to one plant in
+flight would not recover it. `--mm-processor-cache-gb` is the plausible lever —
+at the pinned 1120-token budget two plants in flight need only ~1.4 GB of the
+4 GiB default — but that is a prediction from the per-plant cost, untested, and
+it is **deliberately left at 4 GiB**. `--gpu-memory-utilization` in the other
+direction is the known route to a hard lock and must not be touched.
 
-Stated plainly, because it is the number a reader will want: the recommendation
-is still **two plants in flight**, but on the understanding that the 8 GiB stop
-line is crossed in steady state at *any* depth with the default multimodal cache
-size, and that the fix is to shrink that cache rather than to serialise the
-pipeline.
+**Decision: N = 2, `--mm-processor-cache-gb` at its 4 GiB default.** Two plants
+in flight completes cleanly with zero preemptions and full prefix reuse both on
+a fresh container and on a saturated one, which is the property the pipeline
+depends on. The 8 GiB line was set a priori against a ~12 GiB idle baseline that
+turns out not to describe a running system; crossing it produced no observable
+degradation. Tuning further would mean optimising against an instrument that
+cannot tell the server's memory from the observer's.
 
 ### Multimodal processor cache: `--mm-processor-cache-gb`, default 4 GiB
 
@@ -910,12 +947,13 @@ prefix-hit rate collapsing for one plant while `MemAvailable` stays flat;
 memory pressure shows up as `MemAvailable` falling with hit rates intact.
 Neither happened at N ≤ 3 — every plant kept 97.2–97.5 %.
 
-**But the cache is also what eats the memory margin.** Its 4 GiB is a standing
-allocation that does not shrink when the pipeline does, and it is what takes
-steady-state `MemAvailable` from ~12.9 GiB to ~7.8 GiB idle. See "The
-fresh-container floors are optimistic" above: at two plants in flight only
-~1.4 GB of that 4 GiB is doing live work, so this is the first knob to try if
-headroom is needed — not a shallower pipeline.
+**The cache is also the prime suspect for the memory margin.** Its 4 GiB is a
+standing allocation that does not shrink when the pipeline does, and its fill
+coincides with steady-state idle `MemAvailable` falling from ~12.9 GiB to
+~7.8 GiB — though see "The fresh-container floors are optimistic" for why that
+coincidence is not proof. At two plants in flight only ~1.4 GB of the 4 GiB is
+doing live work, so this is the first knob to try if headroom is ever needed,
+ahead of a shallower pipeline. It is left at the default for now.
 
 Two footnotes worth keeping. The visual-budget decision cost 4x here too: 1120
 shrank effective cache capacity from ~17 plants to ~4.3. And the documented

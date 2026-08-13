@@ -348,16 +348,18 @@ time (25–26 photos for the first three rows, 22–23 for the last two):
 > eviction. The 75.1 s / 5.6 h row replaces an earlier 83.6 s / 6.2 h figure
 > that came from a single run with no memory or prefix-hit data.
 
-> **Watch the multimodal cache before you watch the depth.** Those floors were
-> measured on freshly restarted containers, which also start with an empty
-> `--mm-processor-cache-gb` (default **4 GiB**). Once it fills — which a long run
-> does within the hour — idle `MemAvailable` falls from ~12.9 GiB to ~7.8 GiB,
-> and two plants in flight bottom out at **6.32 GiB**, below the stop line, with
-> no preemptions and prefix hits intact. Since that 4 GiB is a standing
-> allocation, running *one* plant instead of two would not recover it. At 1120
-> tokens/image a plant costs ~0.69 GB, so two in flight need ~1.4 GB — lowering
-> `--mm-processor-cache-gb` to 2 is the lever to try (untested; predicted from
-> the measured per-plant cost). Never raise `GPU_MEM_UTIL` to buy headroom.
+> **Treat the memory floors as soft.** They were measured on freshly restarted
+> containers, which also start with an empty `--mm-processor-cache-gb` (default
+> **4 GiB**); once that fills, idle `MemAvailable` falls from ~12.9 GiB to
+> ~7.8 GiB and two plants in flight bottom out at **6.32 GiB** — still with no
+> preemptions and prefix hits intact. And `MemAvailable` is a whole-machine
+> number that included the tooling doing the measuring, so it understates the
+> real headroom of an unattended run. **The settled configuration is two plants
+> in flight with the cache left at 4 GiB**; that combination completes cleanly
+> both cold and saturated, which is the property that matters.
+> `--mm-processor-cache-gb 2` is the lever if headroom is ever needed (two
+> plants need only ~1.4 GB of the 4 GiB) — untested. Never raise `GPU_MEM_UTIL`
+> to buy headroom: that is the known route to a hard lock.
 
 > **Never fan out a cold plant.** Releasing all 9 shards at once drops the
 > prefix-cache hit rate to **9.5 %** — none of them finds the shared prefix
@@ -446,6 +448,12 @@ preemption, not a crash. Watch `vllm:num_preemptions_total` for that.
 `sample_metrics.sh` checks every metric name against `/metrics` before it starts,
 because vLLM renames series between versions and a stale name would silently
 produce an empty column.
+
+> `MemAvailable` counts the **whole machine**, including whatever is driving the
+> workload. Run these samplers from as quiet a host as you can, and read the
+> numbers as lower bounds on the server's headroom rather than as measurements
+> of it. The RUNBOOK's figures were collected from an interactive session on the
+> same box and are caveated accordingly.
 
 > **Always restart before benchmarking.** Prefix caching is on by default and its
 > cache lives as long as the container, so a second `bench.sh` against the same
