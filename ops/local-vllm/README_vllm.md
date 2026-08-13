@@ -82,7 +82,7 @@ Then verify against your real data:
 ```bash
 pip install -r requirements.txt
 set -a; source .env; set +a
-python smoke.py                       # acceptance A-E, exits non-zero on failure
+python smoke.py                       # acceptance A-H, exits non-zero on failure
 ```
 
 Day-to-day:
@@ -139,6 +139,8 @@ written by `pull.sh` or by you.
 | `GPU_MEM_UTIL` | 0.80 — see the warning below |
 | `ENABLE_THINKING` | `false` (pinned decision) |
 | `IMAGE_TOKEN_BUDGET` | `1120` (pinned decision) |
+| `MOE_BACKEND` | `cutlass` — the **CLI** spelling of the backend the log calls `VLLM_CUTLASS`. Passing `VLLM_CUTLASS` here makes vLLM refuse to start. |
+| `TEMPERATURE`, `TOP_P`, `TOP_K` | `1.0` / `0.95` / `64` — the checkpoint's own defaults, now stated. Read by **both** `up.sh` and the clients. |
 | `SHARD_DIR`, `SYSTEM_PROMPT`, `BENCH_LINE`, `BENCH_COLD_LINE` | Real data used by `smoke.py` / `bench.sh`, **read-only** |
 
 > **Do not raise `GPU_MEM_UTIL` casually.** The unified pool is shared with the OS
@@ -149,6 +151,17 @@ written by `pull.sh` or by you.
 `MEDIA_ROOT` is bind-mounted as `$MEDIA_ROOT:$MEDIA_ROOT:ro` deliberately: the
 path must be **identical inside and outside** the container, or `file://` URLs
 sent by a client will not resolve on the server side.
+
+> **Sampling is set in two places from one source, and there is no seed.**
+> `up.sh` passes `--override-generation-config` (which *merges* into the
+> checkpoint's `generation_config.json` — verified, nothing else regresses to a
+> vLLM default), and `smoke.py` / `bench.sh` send the same three values on every
+> request. Server-side alone would keep them out of the request record;
+> client-side alone would let a client that forgets them silently inherit
+> Google's checkpoint defaults. Never add a `seed`: repeated inference of one
+> plant is how consistency gets measured, and a fixed seed would return
+> identical output with zero variance and no error. `smoke.py` check H guards
+> this.
 
 ---
 
@@ -227,6 +240,8 @@ client = OpenAI(base_url="http://localhost:8000/v1", api_key="local",
 resp = client.chat.completions.create(
     model="gemma4-26b-a4b-nvfp4",
     max_tokens=8192,
+    temperature=1.0, top_p=0.95,        # from .env; top_k rides in extra_body
+    # NO seed -- see the note under Configuration
     messages=[
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": [
@@ -239,6 +254,7 @@ resp = client.chat.completions.create(
                      "json_schema": {"name": "shard_02", "schema": schema, "strict": True}},
     extra_body={
         "chat_template_kwargs": {"enable_thinking": False},
+        "top_k": 64,          # no OpenAI field for it, so it goes here
         # NOTE: do NOT send mm_processor_kwargs -- see the warning below
     },
 )
@@ -336,7 +352,7 @@ the offending response and the `jsonschema` error path.
 
 ```bash
 set -a; source .env; set +a
-python smoke.py                 # A B C D1 D2 E
+python smoke.py                 # A B C D1 D2 E H
 python smoke.py --tests D1,E    # a subset
 python smoke.py --shard shard_04 --line s0016
 ```
@@ -349,6 +365,7 @@ python smoke.py --shard shard_04 --line s0016
 | D1 | thinking off + strict `json_schema` → parses and validates |
 | D2 | thinking on + `gemma4` parser → content validates, `reasoning` non-empty |
 | E | a whole plant line's photos + schema, within `MAX_MODEL_LEN` |
+| H | same plant + shard sent twice at temperature 0.7 → the two outputs must differ. Guards against a seed being pinned somewhere or sampling collapsing to greedy, either of which would silently zero the variance the consistency study measures. Never auto-retried. |
 
 By default `smoke.py` picks the **largest** shard schema, the one most likely to
 trip a grammar limit.
@@ -408,16 +425,23 @@ treat `finish_reason == "length"` as a **failed** shard, not a partial result.
 timeout or exit. Cold start is ~4 minutes (~100 s weights, ~41 s
 `torch.compile`, ~74 s engine init); allow for it before assuming a hang.
 
-**MoE backend differs between boots** (`FLASHINFER_CUTLASS` vs `VLLM_CUTLASS`) —
-expected. Auto-selection is not stable across boots and both serve correctly,
-which is exactly why `--moe-backend` is left unset. Never force Marlin: the model
-card measures it ~2x slower.
+**`--moe-backend: invalid choice: 'VLLM_CUTLASS'`** — the CLI and the startup log
+use different names for the same kernel. The CLI takes lowercase
+(`auto`, `cutlass`, `flashinfer_cutlass`, `marlin`, …); `cutlass` is the one the
+log prints as `VLLM_CUTLASS`. That is what `MOE_BACKEND` in `.env` must hold.
+
+**Startup log shows a MoE backend you did not expect** — check `MOE_BACKEND` is
+set and reaching the container (`docker inspect --format '{{join .Args " "}}'
+pxgpt-vllm`). Unpinned, vLLM walks a priority list and takes the first supported
+entry; five consecutive boots all picked `FLASHINFER_CUTLASS`, so an unexplained
+change means something else moved. Never force Marlin: the model card measures it
+~2x slower.
 
 ---
 
 ## What is deliberately not configured
 
-`--kv-cache-dtype`, `--quantization`, `--moe-backend`, `--linear-backend`,
+`--kv-cache-dtype`, `--quantization`, `--linear-backend`,
 `--enable-prefix-caching`, `--tensor-parallel-size`, `--trust-remote-code`. Each
 is either auto-detected, already the default, meaningless on a single GB10, or a
 known performance trap on Spark. [RUNBOOK.md](RUNBOOK.md) records the reasoning

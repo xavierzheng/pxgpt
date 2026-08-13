@@ -28,6 +28,8 @@ flags actually work.
 | `GPU_MEM_UTIL` | 0.80 |
 | **Thinking** | **off** (`enable_thinking: false` per request) |
 | **Visual token budget** | **1120 tokens/image** (`--mm-processor-kwargs '{"max_soft_tokens": 1120}'`) |
+| **MoE backend** | **pinned** — `MOE_BACKEND=cutlass` → `--moe-backend cutlass`, which the log calls `VLLM_CUTLASS` |
+| **Sampling** | **temperature 1.0 / top_p 0.95 / top_k 64**, set on both the server and every request. **No seed.** |
 
 ## Image selection
 
@@ -68,10 +70,16 @@ Using AttentionBackendEnum.TRITON_ATTN backend
 
 The model card says "do not use the Marlin backend (around 2x slower); let vLLM
 auto-select the NVFP4 kernel" — auto-selection picks a FlashInfer/CUTLASS path,
-never Marlin, so `--moe-backend` stays unset as instructed. Note the choice is
-**not stable across boots**: an earlier boot of the same image selected
-`VLLM_CUTLASS` rather than `FLASHINFER_CUTLASS` for the MoE. Both served
-correctly; this is why pinning a backend by hand would be wrong.
+never Marlin.
+
+> **Superseded.** This section originally read that the MoE choice is "not
+> stable across boots" because an earlier boot selected `VLLM_CUTLASS`, and
+> concluded that pinning a backend by hand would be wrong. Five consecutive
+> boots later failed to reproduce any drift, and the earlier `VLLM_CUTLASS`
+> sighting matches the log of the **rejected** candidate 1 quoted above, not
+> this image. `--moe-backend` is now pinned to `cutlass` (= `VLLM_CUTLASS`) —
+> see "Pinned runtime selections" for the boot-diff table, the reasoning and the
+> measured cost.
 
 ### 3. `vllm/vllm-openai:cu130-nightly` — works, but not needed
 
@@ -262,7 +270,8 @@ Anthropic and OpenAI backends.
 ## Acceptance results
 
 `smoke.py` — all green, exit 0. Re-run at the pinned budget of **1120** (182 s);
-the 280 column is the original run, kept for comparison.
+the 280 column is the original run, kept for comparison. Check H was added later
+and re-run against the fully pinned configuration (186 s, all of A–H green).
 
 | | check | result @1120 | @280 |
 |---|---|---|---|
@@ -274,6 +283,7 @@ the 280 column is the original run, kept for comparison.
 | E | all 32 photos of `s0019` + schema | PASS, **37 349** ≤ 65 536, 84.8 s | PASS, 10 245 ≤ 65 536 |
 | F | `up.sh` twice → one container; `down.sh` then `up.sh` → back up | PASS | PASS |
 | G | `bench.sh` reports the five numbers | PASS | PASS |
+| H | same plant + shard twice at temperature 0.7 → outputs differ | PASS (426 vs 528 completion tokens) | — |
 
 C deliberately asserts only that the pipeline works (HTTP 200, non-empty
 content), not that the model sees correctly. For the record it did describe the
@@ -451,12 +461,235 @@ further.
 wait for it, then release shards 2-9 at concurrency 8; overlap the next plant's
 cold prefill with the current plant's warm set. Never fan out a cold plant.
 
+## Pinned runtime selections
+
+Pinning the image by digest pins the *software*. It does not pin what that
+software chooses at runtime, and this deployment's third goal is consistency:
+the same plant will be inferred repeatedly at temperature > 0 to see how much
+the model's reading of it moves. Anything else that moves between runs
+contaminates that measurement, so this section establishes what actually moves.
+
+### What floats between boots, measured
+
+Five consecutive `./down.sh && ./up.sh` cycles on the pinned digest, with
+`--moe-backend` still unset, every auto-selection line diffed:
+
+| selection | log line it comes from | 5 boots | verdict |
+|---|---|---|---|
+| NVFP4 MoE backend | `nvfp4.py` `Using 'X' NvFp4 MoE backend out of potential backends: [...]` | `FLASHINFER_CUTLASS` x5 | **stable** |
+| NVFP4 GEMM (linear) kernel | `__init__.py:937` `Using X for NVFP4 GEMM` | `FlashInferCutlassNvFp4LinearKernel` x5 | **stable** |
+| FP8 scaled-mm kernel | `__init__.py:594` `Selected X for CompressedTensorsW8A8Fp8` | `CutlassFP8ScaledMMLinearKernel` x5 | **stable** |
+| attention backend | `cuda.py:420` `Using AttentionBackendEnum.X backend` | `TRITON_ATTN` x5 | **stable, and forced** |
+| MoE prepare/finalize | `nvfp4.py:482` `Using X` | `MoEPrepareAndFinalizeNoDPEPModular` x5 | **stable** |
+| top-p/top-k sampler | `topk_topp_sampler.py:55` `Using X for top-p & top-k sampling` | `FlashInfer` x5 | **stable** |
+| KV cache size | `kv_cache_utils.py` `GPU KV cache size: N tokens` | 5 052 777 / 5 065 352 / 5 070 923 / 5 071 006 / 5 089 983 | **floats, +-0.4 %** |
+
+Three findings worth stating plainly:
+
+1. **The MoE drift this ticket was written to stop did not reproduce.** Five
+   boots, same backend every time. The selection is not a race or a
+   timing-based probe either: `select_nvfp4_moe_backend()` walks a fixed
+   priority list (`FLASHINFER_TRTLLM`, `FLASHINFER_CUTEDSL`,
+   `FLASHINFER_CUTEDSL_BATCHED`, `FLASHINFER_CUTLASS`, `VLLM_CUTLASS`,
+   `MARLIN`, `EMULATION`) and returns the first entry whose
+   `is_supported_config()` passes. Same inputs, same answer.
+
+   The earlier `VLLM_CUTLASS` sighting is almost certainly the **rejected**
+   candidate-1 image, not this one: its log is quoted verbatim under "Image
+   selection" above and reads `[nvfp4.py:256] Using 'VLLM_CUTLASS' NvFp4 MoE
+   backend`. That is vLLM `0.19.1`, a different priority list. Two images, one
+   note, read as one image drifting.
+
+   Pinning is still right — the choice is now stated instead of inherited from
+   a list any image bump can reorder — but it is insurance, not a fix for an
+   observed fault.
+
+2. **The attention backend cannot float on this model.** Before any
+   auto-selection runs, `config.py:99` prints `Gemma4 model has heterogeneous
+   head dimensions (head_dim=256, global_head_dim=512). FA4 not available,
+   forcing TRITON_ATTN backend.` It is forced by the architecture, not chosen.
+
+3. **The one thing that does move is the KV cache size**, by up to 37 k tokens
+   (0.4 %) between boots. That is memory-profiling noise —
+   `--gpu-memory-utilization` is applied to whatever is free at profiling time —
+   and it is harmless here: at ~37 k prompt tokens per request even the smallest
+   observed pool holds ~135 full requests. It is recorded because it is the only
+   measured boot-to-boot variance, so if a run ever behaves oddly this is the
+   number to compare first.
+
+### What is still unpinned, and why it is only recorded
+
+`enable_flashinfer_autotune=True` runs a **timing-based** tactic search at every
+startup. It profiles tactics and keeps the fastest, and the winner is never
+logged — so it cannot be diffed across boots the way the table above was, and
+there is no CLI flag that pins the outcome. Per the ticket, recorded rather than
+fought with environment variables or patches.
+
+Pinning the MoE backend does cut it down measurably. Counting autotuner blocks
+in the startup logs:
+
+| boot | tuned |
+|---|---|
+| unpinned (`FLASHINFER_CUTLASS` MoE) | `fp4_gemm`, `trtllm::fused_moe::gemm1`, `trtllm::fused_moe::gemm2` |
+| pinned (`cutlass` → `VLLM_CUTLASS` MoE) | `fp4_gemm` only |
+
+So the pin removes the FlashInfer MoE path and with it two of the three
+autotuned kernels. What remains is `fp4_gemm`, belonging to the NVFP4 *linear*
+kernel, which is still `FlashInferCutlassNvFp4LinearKernel`. If that ever needs
+pinning too the flag is `--linear-backend` (same lowercase spelling rule); it is
+deliberately left on `auto` here because it never floated in the log.
+
+### The `--moe-backend` spelling trap
+
+The CLI and the log use **different names for the same kernel**. Passing the
+name from the log fails outright:
+
+```
+vllm serve: error: argument --moe-backend: invalid choice: 'vllm_cutlass'
+(choose from 'aiter', 'auto', 'cutlass', 'deep_gemm', 'deep_gemm_mega_moe',
+ 'emulation', 'flashinfer_b12x', 'flashinfer_cutedsl', 'flashinfer_cutlass',
+ 'flashinfer_trtllm', 'flydsl', 'humming', 'marlin', 'triton', 'triton_unfused')
+```
+
+The CLI takes lowercase `MoEBackend` values; the log prints `NvFp4MoeBackend`
+values. `map_nvfp4_backend()` in
+`vllm/model_executor/layers/fused_moe/oracle/nvfp4.py` is the mapping, and it
+sends `"cutlass"` → `VLLM_CUTLASS`. So **`MOE_BACKEND=cutlass` in `.env` is what
+produces `Using 'VLLM_CUTLASS'` in the log.** Verified: three consecutive
+`down.sh && up.sh` cycles, `VLLM_CUTLASS` all three times.
+
+### Cost of the pin
+
+Auto-selection currently picks `FLASHINFER_CUTLASS`, so pinning to
+`VLLM_CUTLASS` *changes* the serving kernel — every measurement elsewhere in
+this file predates the pin and was taken on `FLASHINFER_CUTLASS`. Minimum
+comparison, one cold + three warm on the same unseen plant (`s0176`, 23 photos,
+`shard_02`, 26 774 prompt tokens), fresh container each side, with a JIT warm-up
+on a different plant first so the ~11 s of first-request codegen does not land
+inside the cold TTFT:
+
+| | cold TTFT | cold total | warm total (3) | warm decode |
+|---|---|---|---|---|
+| `FLASHINFER_CUTLASS` (auto picks this) | 52.34 s | 65.5 s | 14.9 / 12.8 / 14.6 s | 41.4 / 41.3 / 41.4 tok/s |
+| **`VLLM_CUTLASS` (pinned)** | **50.51 s** | **63.6 s** | **13.5 / 15.5 / 13.6 s** | **39.5 / 40.0 / 39.8 tok/s** |
+| difference | **-3.5 %** (faster) | -2.9 % | comparable | **-3.6 %** (slower) |
+
+Decode is ~3.6 % slower and cold prefill ~3.5 % faster — both far inside the
+20 % limit that would have required stopping, and both close enough to the noise
+between repeats (the warm totals overlap) that neither is worth acting on. The
+pin is effectively free.
+
+`bench.sh` re-run on a fresh container with everything pinned, against the same
+`s0019` / `shard_02` / `s0044` setup as the Benchmark section above, so the
+headline figures can be read at the configuration that will actually serve the
+run:
+
+| metric (median of 3) | before the pin (`FLASHINFER_CUTLASS`) | after the pin (`VLLM_CUTLASS`) |
+|---|---|---|
+| prompt tokens | 37 349 | 37 349 |
+| TTFT (prefix-cache hit) | 0.21 s | 0.22 s |
+| decode throughput | 40.8 tok/s | **39.2 tok/s** (-3.9 %) |
+| total latency | 14.6 s | 12.8 s |
+| completion tokens | 588 | 462 |
+| cold probe (`s0044`, 26 photos) | TTFT 58.17 s, total 72.7 s | TTFT 60.41 s, total 75.4 s |
+| serial 2400-request projection | 12.0 h | 13.2 h |
+
+Decode throughput is the only figure that moves consistently, by the same ~4 %
+the head-to-head found. Total latency and the projection move mostly because
+sampling produced shorter completions this time (462 against 588 tokens) — at
+temperature 1.0 the cached shards are decode-bound, so completion length drives
+their latency more than the kernel does. Do not read the 12.8 s as a speed-up.
+
+### Sampling parameters were never recorded until now
+
+Nothing was passing sampling parameters, so every measurement in this file up to
+this point ran on the checkpoint's own defaults. Those defaults, read from
+`generation_config.json` inside the container
+(`/root/.cache/huggingface/hub/models--unsloth--gemma-4-26B-A4B-it-NVFP4/snapshots/20df0542.../`):
+
+```json
+{
+  "bos_token_id": 2,
+  "do_sample": true,
+  "eos_token_id": [1, 106, 50],
+  "pad_token_id": 0,
+  "temperature": 1.0,
+  "top_k": 64,
+  "top_p": 0.95,
+  "transformers_version": "5.13.0"
+}
+```
+
+**So every latency and token count above was measured at temperature 1.0 / top_p
+0.95 / top_k 64 — sampled, not greedy.** vLLM says so at startup, and the line
+is worth grepping for after any config change:
+
+```
+WARNING [model.py:1477] Default vLLM sampling parameters have been overridden by
+the model's `generation_config.json`: `{'temperature': 1.0, 'top_k': 64, 'top_p': 0.95}`.
+```
+
+`TEMPERATURE` / `TOP_P` / `TOP_K` in `.env` now carry exactly these values, so
+behaviour is unchanged — the difference is that they are stated. They are
+consumed in **two** places from that one source: `up.sh` passes
+`--override-generation-config`, and `smoke.py` / `bench.sh` send them on every
+request. Server-side alone would keep them out of the request record, so writing
+the paper's methods section would mean archaeology; client-side alone would let
+any client that forgets them fall back to Google's checkpoint defaults silently.
+Sharing one set of variables is what stops the two layers disagreeing.
+
+**No `seed` is sent anywhere** (`grep -rn seed *.sh *.py` finds only comments).
+vLLM accepts a per-request seed, and a fixed one would make repeated inference
+of the same plant return identical output with zero variance and no error —
+which would quietly destroy the consistency study rather than break it. Note the
+engine config dump prints `seed=0`: that is this build's default engine seed and
+it is *not* a per-request seed. Sequential identical requests still differ,
+which acceptance check H asserts on every run.
+
+### `--override-generation-config` merges, it does not replace
+
+Verified in this build rather than assumed, by constructing `ModelConfig` with
+different overrides and reading back `get_diff_sampling_param()`:
+
+| override passed | effective sampling defaults |
+|---|---|
+| `{}` (what every earlier measurement ran on) | `{'temperature': 1.0, 'top_k': 64, 'top_p': 0.95}` |
+| `{"temperature": 0.5}` | `{'temperature': 0.5, 'top_k': 64, 'top_p': 0.95}` |
+| `{"temperature": 1.0, "top_p": 0.95, "top_k": 64}` (up.sh) | `{'temperature': 1.0, 'top_k': 64, 'top_p': 0.95}` |
+| `{"repetition_penalty": 1.05}` | `{'repetition_penalty': 1.05, 'temperature': 1.0, 'top_k': 64, 'top_p': 0.95}` |
+
+Row 2 settles it: `top_k` and `top_p` survive an override that never mentions
+them. The mechanism is `config.update(self.override_generation_config)` in
+`ModelConfig.get_diff_sampling_param()` — a dict merge over the loaded
+`generation_config.json`.
+
+**Nothing therefore regresses to a vLLM default.** The effective sampling
+configuration is byte-identical before and after the flag, so the pin does not
+invalidate any earlier measurement. Only six keys are ever forwarded as
+server-side defaults (`repetition_penalty`, `temperature`, `top_k`, `top_p`,
+`min_p`, `max_new_tokens`); this checkpoint's file sets three of them, and
+`up.sh` overrides those same three. `repetition_penalty` was never present and
+still is not.
+
+### Departure: `--enable-prompt-tokens-details`
+
+`up.sh` also passes `--enable-prompt-tokens-details`, which is not on the
+ticket's flag list. It is a **reporting** flag only — no kernel, no sampling, no
+memory — and it makes the server fill in
+`usage.prompt_tokens_details.cached_tokens` per response. Without it that field
+is `null`, and a per-request prefix-cache hit count is unobtainable: `/metrics`
+counters are cumulative and cannot be attributed to a request once requests
+overlap. It is added because the pipeline-depth measurement below has to answer
+"when two plants are in flight, did **both** warm sets hit the cache, or did one
+evict the other" with per-plant numbers.
+
 ## Deviations from the ticket's flag list
 
 The "deliberately not added" list was honoured in full: no `--kv-cache-dtype`,
-no `--quantization`, no `--moe-backend`, no `--linear-backend`, no
-`--enable-prefix-caching`, no `--tensor-parallel-size`, no `--trust-remote-code`.
-Four unavoidable departures:
+no `--quantization`, no `--linear-backend`, no `--enable-prefix-caching`, no
+`--tensor-parallel-size`, no `--trust-remote-code`. (`--moe-backend` was on that
+list too and is now set — see "Pinned runtime selections" for why, and for the
+measured cost.) Four unavoidable departures:
 
 1. **`vllm serve` is not always the command.** `vllm/vllm-openai` images have
    `ENTRYPOINT ["vllm","serve"]`, so passing `vllm serve <model>` yields
@@ -524,9 +757,12 @@ Four unavoidable departures:
 - **First request after startup costs ~11 s** of JIT codegen on top of the
   prefill. `bench.sh` absorbs this in a `max_tokens=3` warm-up; production code
   should not read the first response's latency as representative.
-- **MoE backend auto-selection varies between boots** of the same image
-  (`FLASHINFER_CUTLASS` vs `VLLM_CUTLASS`). Both worked. If a boot ever behaves
-  oddly, check this log line before anything else.
+- ~~**MoE backend auto-selection varies between boots**~~ — **not reproduced,
+  and now moot.** Five consecutive boots of the pinned digest chose
+  `FLASHINFER_CUTLASS` every time, and the selection is a deterministic walk
+  down a fixed priority list. The backend is pinned anyway; see "Pinned runtime
+  selections". If a boot ever behaves oddly this log line is still the first
+  one to check — it now has to read `VLLM_CUTLASS`.
 - Image ships `flashinfer-python 0.6.6` / `nvidia-cutlass-dsl 4.4.2`, both
   *below* the model card's recommended `>=0.6.13` / `>=4.5.2`. It works anyway;
   noted in case a future symptom traces back here.

@@ -7,8 +7,9 @@ cd "$(dirname "$0")"
 # shellcheck disable=SC1091
 source .env
 
-for v in VLLM_IMAGE MODEL_REVISION MEDIA_ROOT IMAGE_TOKEN_BUDGET; do
-  [[ "${!v}" == "<FILL>" || -z "${!v}" ]] && { echo "$v is unset in .env (run ./pull.sh)" >&2; exit 1; }
+for v in VLLM_IMAGE MODEL_REVISION MEDIA_ROOT IMAGE_TOKEN_BUDGET \
+         MOE_BACKEND TEMPERATURE TOP_P TOP_K; do
+  [[ "${!v-}" == "<FILL>" || -z "${!v-}" ]] && { echo "$v is unset in .env (run ./pull.sh)" >&2; exit 1; }
 done
 [[ "$VLLM_IMAGE" == *@sha256:* ]] || { echo "VLLM_IMAGE must be pinned by digest, got: $VLLM_IMAGE" >&2; exit 1; }
 [[ -d "$MEDIA_ROOT" ]] || { echo "MEDIA_ROOT does not exist: $MEDIA_ROOT" >&2; exit 1; }
@@ -25,6 +26,8 @@ echo "    image    : $VLLM_IMAGE"
 echo "    model    : $MODEL_REPO @ $MODEL_REVISION"
 echo "    media    : $MEDIA_ROOT (ro, same path inside)"
 echo "    img budget: $IMAGE_TOKEN_BUDGET tokens/image"
+echo "    moe      : $MOE_BACKEND (pinned; CLI spelling, log says VLLM_CUTLASS)"
+echo "    sampling : temperature=$TEMPERATURE top_p=$TOP_P top_k=$TOP_K (no seed)"
 
 # Pinned decisions (RUNBOOK.md has the evidence):
 #   - visual token budget goes on --mm-processor-kwargs so every request shares
@@ -36,9 +39,29 @@ echo "    img budget: $IMAGE_TOKEN_BUDGET tokens/image"
 #     the answer from its first token. --reasoning-parser gemma4 is still passed
 #     so the thinking-on path (acceptance D2) stays reproducible against this
 #     same server; it is inert while thinking is off.
-# Deliberately NOT set: --kv-cache-dtype, --quantization, --moe-backend,
-# --linear-backend, --enable-prefix-caching, --tensor-parallel-size,
-# --trust-remote-code. See RUNBOOK.md for why each is omitted.
+#   - --moe-backend is PINNED so the NVFP4 expert kernel is stated rather than
+#     inherited from vLLM's priority list, which can be reordered by any image
+#     bump. A different MoE kernel means a different floating-point accumulation
+#     order, and the consistency study runs the same plant repeatedly at
+#     temperature > 0 -- kernel drift there would be indistinguishable from
+#     model instability. NOTE the CLI takes lowercase names: `cutlass` is what
+#     the startup log calls VLLM_CUTLASS.
+#   - --override-generation-config states the sampling parameters that were
+#     previously inherited, unrecorded, from the checkpoint's
+#     generation_config.json. It MERGES into that file rather than replacing it
+#     (verified, see RUNBOOK). smoke.py and bench.sh send the same three values
+#     per request from the same .env, so the two layers cannot disagree.
+#     No seed is passed at either layer -- see env.example.
+#   - --enable-prompt-tokens-details makes the server report
+#     usage.prompt_tokens_details.cached_tokens per response. Reporting only:
+#     it changes no kernel, no sampling and no memory. It is the only way to
+#     get a PER-REQUEST prefix-cache hit count, and therefore the only way to
+#     ask "did both plants' warm sets hit, or did one evict the other" while
+#     several plants are in flight -- a /metrics delta cannot be attributed to
+#     a request once requests overlap.
+# Deliberately NOT set: --kv-cache-dtype, --quantization, --linear-backend,
+# --enable-prefix-caching, --tensor-parallel-size, --trust-remote-code.
+# See RUNBOOK.md for why each is omitted.
 #
 # vllm/vllm-openai images have ENTRYPOINT ["vllm","serve"], so the model must be
 # the first argument; the NGC image execs its args verbatim and needs the
@@ -63,6 +86,10 @@ docker run -d --name "$CONTAINER_NAME" --ipc=host --restart unless-stopped \
     --gpu-memory-utilization "$GPU_MEM_UTIL" \
     --allowed-local-media-path "$MEDIA_ROOT" \
     --mm-processor-kwargs "{\"max_soft_tokens\": $IMAGE_TOKEN_BUDGET}" \
+    --moe-backend "$MOE_BACKEND" \
+    --override-generation-config \
+      "{\"temperature\": $TEMPERATURE, \"top_p\": $TOP_P, \"top_k\": $TOP_K}" \
+    --enable-prompt-tokens-details \
     --reasoning-parser gemma4 >/dev/null
 
 echo "    waiting for /health (weight load + JIT codegen, up to 20 min)..."

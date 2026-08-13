@@ -45,6 +45,13 @@ RUNS = int(os.getenv("RUNS", "3"))
 TOTAL = int(os.getenv("TOTAL_REQUESTS", "2400"))
 BUDGET = int(os.getenv("IMAGE_TOKEN_BUDGET", "1120"))
 THINKING = os.getenv("ENABLE_THINKING", "false").lower() in ("1", "true", "yes")
+# Same three values up.sh pins server-side via --override-generation-config.
+# Sent explicitly so the benchmark's sampling configuration is in the request
+# record rather than inherited from the checkpoint's generation_config.json.
+# No seed: repeated inference has to be free to vary.
+TEMPERATURE = float(os.getenv("TEMPERATURE", "1.0"))
+TOP_P = float(os.getenv("TOP_P", "0.95"))
+TOP_K = int(os.getenv("TOP_K", "64"))
 
 client = OpenAI(base_url=BASE, api_key="local", max_retries=0, timeout=3600)
 
@@ -63,13 +70,16 @@ messages = [
 # same 30 695 prompt tokens, but 71.6 s instead of 14.8 s because the cached entry
 # is not reused). Clients must be consistent; relying on the server default is the
 # single source of truth, and is what pxgpt does.
-extra = {"chat_template_kwargs": {"enable_thinking": THINKING}}
+# top_k has no field in the OpenAI schema, so it rides in extra_body;
+# temperature and top_p go as ordinary arguments in timed_run().
+extra = {"chat_template_kwargs": {"enable_thinking": THINKING}, "top_k": TOP_K}
 
 print(f"model        : {MODEL}")
 print(f"line         : {line} ({len(photos)} photos)")
 print(f"shard        : {shard_id}")
 print(f"img budget   : {BUDGET} tokens/image (server-side; not sent per request)")
 print(f"thinking     : {THINKING}")
+print(f"sampling     : temperature={TEMPERATURE} top_p={TOP_P} top_k={TOP_K} (no seed)")
 print(f"runs         : {RUNS}")
 print("")
 
@@ -77,6 +87,7 @@ print("")
 def timed_run(max_tokens, structured):
     """One streamed request. Reads the module-level `messages`. Returns (ttft, total, prompt_tok, completion_tok)."""
     kwargs = dict(model=MODEL, messages=messages, max_tokens=max_tokens,
+                  temperature=TEMPERATURE, top_p=TOP_P,
                   stream=True, stream_options={"include_usage": True},
                   extra_body=extra)
     if structured:

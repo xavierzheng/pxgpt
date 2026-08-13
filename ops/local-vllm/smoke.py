@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""Acceptance checks A-E for the local vLLM server, against real pxGPT data.
+"""Acceptance checks A-H for the local vLLM server, against real pxGPT data.
 
 Everything under --shard-dir and --media-root is opened read-only; the frozen
 shard set is never written to. Run after ./up.sh:
 
     pip install -r requirements.txt
     set -a; source .env; set +a
-    python smoke.py                # A B C D1 D2 E
+    python smoke.py                # A B C D1 D2 E H
     python smoke.py --tests D2     # D2 alone (server needs --reasoning-parser)
+
+Every request carries the TEMPERATURE / TOP_P / TOP_K from .env -- the same
+values up.sh pins server-side via --override-generation-config -- so the
+sampling configuration is visible in the request rather than inherited from the
+checkpoint's generation_config.json. No seed is ever sent.
 
 Exit 1 if any selected check fails, with the offending response and the
 jsonschema error path printed.
@@ -23,7 +28,12 @@ from pathlib import Path
 import jsonschema
 from openai import OpenAI
 
-ALL_TESTS = ["A", "B", "C", "D1", "D2", "E"]
+ALL_TESTS = ["A", "B", "C", "D1", "D2", "E", "H"]
+
+# Sampling values from .env, filled in by main() and sent on every request.
+# Never holds a seed: the consistency study needs repeated inference of the same
+# plant to actually vary.
+SAMPLING = {}
 
 
 def log(msg=""):
@@ -77,8 +87,22 @@ def response_format(schema, name):
     }
 
 
-def thinking_body(enabled):
-    return {"chat_template_kwargs": {"enable_thinking": bool(enabled)}}
+def sampling_args(temperature=None):
+    """temperature/top_p as ordinary request arguments. `temperature` overrides
+    the .env value for check H, which needs a specific one."""
+    return {
+        "temperature": SAMPLING["temperature"] if temperature is None else temperature,
+        "top_p": SAMPLING["top_p"],
+    }
+
+
+def request_extra(thinking):
+    """extra_body: the thinking switch plus top_k, which the OpenAI schema has
+    no field for and which therefore has to ride here."""
+    return {
+        "chat_template_kwargs": {"enable_thinking": bool(thinking)},
+        "top_k": SAMPLING["top_k"],
+    }
 
 
 def reasoning_of(message):
@@ -130,8 +154,13 @@ def main():
     ap.add_argument("--line", default=os.getenv("BENCH_LINE", "s0019"))
     ap.add_argument("--max-model-len", type=int, default=int(os.getenv("MAX_MODEL_LEN", "65536")))
     ap.add_argument("--max-tokens", type=int, default=8192)
+    ap.add_argument("--temperature", type=float, default=float(os.getenv("TEMPERATURE", "1.0")))
+    ap.add_argument("--top-p", type=float, default=float(os.getenv("TOP_P", "0.95")))
+    ap.add_argument("--top-k", type=int, default=int(os.getenv("TOP_K", "64")))
     ap.add_argument("--tests", default=",".join(ALL_TESTS))
     args = ap.parse_args()
+
+    SAMPLING.update(temperature=args.temperature, top_p=args.top_p, top_k=args.top_k)
 
     for req in ("shard_dir", "system_prompt", "media_root"):
         if not getattr(args, req):
@@ -153,6 +182,7 @@ def main():
     log(f"model     : {args.model}")
     log(f"shard     : {shard_id} (from {args.shard_dir}, read-only)")
     log(f"line      : {args.line} ({len(photos)} photos)")
+    log(f"sampling  : temperature={args.temperature} top_p={args.top_p} top_k={args.top_k} (no seed)")
     log("")
 
     results = {}
@@ -178,7 +208,7 @@ def main():
             r = client.chat.completions.create(
                 model=args.model, max_tokens=args.max_tokens,
                 messages=[{"role": "user", "content": "Name three plant organs."}],
-                extra_body=thinking_body(False))
+                extra_body=request_extra(False), **sampling_args())
             c = r.choices[0].message.content
             ok = bool(c and c.strip())
             log(f"    content: {preview(c, 200)}")
@@ -196,7 +226,7 @@ def main():
                 model=args.model, max_tokens=args.max_tokens,
                 messages=[{"role": "user", "content": image_parts(photos[:1]) +
                            [{"type": "text", "text": "Describe this photograph in one sentence."}]}],
-                extra_body=thinking_body(False))
+                extra_body=request_extra(False), **sampling_args())
             c = r.choices[0].message.content
             ok = bool(c and c.strip())   # pipeline check only: no semantic assertion
             log(f"    content: {preview(c, 300)}")
@@ -219,7 +249,7 @@ def main():
             r = client.chat.completions.create(
                 model=args.model, max_tokens=args.max_tokens, messages=schema_msgs,
                 response_format=response_format(schema, shard_id),
-                extra_body=thinking_body(False))
+                extra_body=request_extra(False), **sampling_args())
             dt = time.time() - t0
             m = r.choices[0].message
             log(f"    latency {dt:.1f}s | prompt={r.usage.prompt_tokens} completion={r.usage.completion_tokens}")
@@ -236,7 +266,7 @@ def main():
             r = client.chat.completions.create(
                 model=args.model, max_tokens=args.max_tokens, messages=schema_msgs,
                 response_format=response_format(schema, shard_id),
-                extra_body=thinking_body(True))
+                extra_body=request_extra(True), **sampling_args())
             dt = time.time() - t0
             m = r.choices[0].message
             rc = reasoning_of(m)
@@ -262,7 +292,7 @@ def main():
                           {"role": "user", "content": image_parts(photos) +
                            [{"type": "text", "text": shard_prompt}]}],
                 response_format=response_format(schema, shard_id),
-                extra_body=thinking_body(False))
+                extra_body=request_extra(False), **sampling_args())
             dt = time.time() - t0
             pt = r.usage.prompt_tokens
             log(f"    latency {dt:.1f}s | prompt={pt} completion={r.usage.completion_tokens}")
@@ -274,6 +304,38 @@ def main():
             log(f"    FAIL: {type(e).__name__}: {preview(e)}")
             results["E"] = False
 
+    # --- H: sampling really samples -------------------------------------
+    # A guard, not a benchmark. The consistency study measures how much the
+    # model's reading of one plant moves between repeats, which only means
+    # anything if the sampler is actually stochastic. A seed accidentally sent
+    # by a client, a seed baked into the server config, or a collapse to greedy
+    # would all zero out that variance silently -- no error, just suspiciously
+    # stable results. So: same plant, same shard, twice, at a temperature high
+    # enough that identical output is not a coincidence.
+    if "H" in tests:
+        log(f"[H] two identical requests at temperature=0.7 must differ ({shard_id})")
+        try:
+            outs = []
+            for i in (1, 2):
+                r = client.chat.completions.create(
+                    model=args.model, max_tokens=args.max_tokens, messages=schema_msgs,
+                    response_format=response_format(schema, shard_id),
+                    extra_body=request_extra(False), **sampling_args(temperature=0.7))
+                outs.append(r.choices[0].message.content or "")
+                log(f"    call {i}: completion={r.usage.completion_tokens} tokens, "
+                    f"{len(outs[-1])} chars")
+            differ = outs[0] != outs[1]
+            log(f"    outputs differ -> {'OK' if differ else 'FAIL'}")
+            if not differ:
+                log("    Two byte-identical samples at temperature=0.7 means sampling is")
+                log("    pinned somewhere. Deliberately not retried: a retry would only")
+                log("    hide it. Find the pin before trusting any variance measurement.")
+                log(f"    output: {preview(outs[0], 300)}")
+            results["H"] = differ
+        except Exception as e:
+            log(f"    FAIL: {type(e).__name__}: {preview(e)}")
+            results["H"] = False
+
     # --- verdict --------------------------------------------------------
     log("")
     log(f"===== summary ({time.time() - t0_all:.0f}s) =====")
@@ -281,7 +343,7 @@ def main():
         if t in results:
             log(f"  {t:2} : {'PASS' if results[t] else 'FAIL'}")
 
-    hard = [t for t in ("A", "B", "C", "E") if t in results and not results[t]]
+    hard = [t for t in ("A", "B", "C", "E", "H") if t in results and not results[t]]
     # The ticket's rule: at least one of D1/D2 must work. Both failing is a
     # real finding about this checkpoint's guided decoding -- report, don't patch.
     d_run = [t for t in ("D1", "D2") if t in results]
