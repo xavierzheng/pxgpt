@@ -135,7 +135,7 @@ written by `pull.sh` or by you.
 | `SERVED_MODEL_NAME` | `gemma4-26b-a4b-nvfp4` — what clients pass as `model` |
 | `MEDIA_ROOT` | Absolute photo root. Mounted read-only at the **same path** inside the container. |
 | `MAX_MODEL_LEN` | 65536 |
-| `MAX_NUM_SEQS` | 16 — free (KV cache is sized by `GPU_MEM_UTIL`, not by sequence count) |
+| `MAX_NUM_SEQS` | 16 — free *for KV cache* (that pool is sized by `GPU_MEM_UTIL`, not by sequence count). It is not a licence to run many plants' cold prefills at once: see the depth limit under [Concurrency](#concurrency-how-to-dispatch). |
 | `GPU_MEM_UTIL` | 0.80 — see the warning below |
 | `ENABLE_THINKING` | `false` (pinned decision) |
 | `IMAGE_TOKEN_BUDGET` | `1120` (pinned decision) |
@@ -211,7 +211,15 @@ is 32 photos, and even 49 would fit.
 | cold request, total | 24.4 s | **72.7 s** |
 | prefix-cached request, total | 12.2 s | **14.6 s** |
 | 2400-request run, serial | 9.0 h (modelled) | **12.0 h (measured)** |
-| 2400-request run, best dispatch | — | **6.2 h (measured)** |
+| 2400-request run, best dispatch | — | **5.6 h (measured, n=4 plants)** |
+
+> **What these hours do and do not include.** Both are wall-clock extrapolations
+> from plants that completed normally: **runaway generation is not in them.** It
+> was probed at 30 requests over 10 plants and did not occur, which bounds its
+> rate at ~10 % rather than measuring it (see [RUNBOOK.md](RUNBOOK.md)); at the
+> ~0.5 % point estimate the 5.6 h becomes ~6.2 h, and capping `max_tokens` at
+> 2048 brings it back to ~5.7 h. The 5.6 h supersedes an earlier 6.2 h figure
+> that came from a single run of two plants with no prefix-hit or memory data.
 
 The 4x token increase does **not** cost 4x wall-clock. Cold prefill does get much
 worse (7.4x: the vision tower processes 10 080 patches per image instead of
@@ -312,17 +320,44 @@ See [../../user_manual.md](../../user_manual.md) for the full command reference.
 
 ## Concurrency: how to dispatch
 
-`MAX_NUM_SEQS=16` costs nothing — the KV cache is preallocated from
+`MAX_NUM_SEQS=16` costs no KV cache — that pool is preallocated from
 `GPU_MEM_UTIL`, not from the sequence count (5 074 332 tokens at 16 vs 5 081 419
-at 2). But **how** you dispatch a plant's 9 shards matters more than the setting,
-and the obvious approach is the worst one. Measured on cold 25-26 photo plants:
+at 2). It does **not** follow that concurrency is free: the KV pool is
+preallocated, so its size cannot reflect what the vision encoder and the
+multimodal cache spend, and those come out of the same unified host pool that
+hard-locks the machine when exhausted. What is free is running one plant's *warm*
+shards 8-wide, where no new images are processed.
+
+**How** you dispatch a plant's 9 shards matters more than the setting, and the
+obvious approach is the worst one. Measured on cold plants, fresh container each
+time (25–26 photos for the first three rows, 22–23 for the last two):
 
 | pattern | per-plant | 2400 requests |
 |---|---|---|
 | all 9 serial | 161.6 s | 12.0 h |
 | **all 9 concurrent from cold** | **402.1 s** | **29.8 h** |
 | cold `shard_01` alone, then 2-9 at conc 8 | 101.6 s | 7.5 h |
-| **+ overlap the next plant's cold prefill** | **83.6 s** | **6.2 h** |
+| **+ overlap the next plant's cold prefill (2 plants in flight)** | **75.1 s** | **5.6 h** |
+| 3 plants in flight | 71.0 s | 5.3 h — **do not use**, see below |
+
+> **Two plants in flight, not three.** At three, host `MemAvailable` bottoms out
+> at **7.37 GiB** against an 8 GiB stop line — and exhausting the unified pool is
+> the failure that hard-locks this machine. The third plant buys 5 %. All plants
+> keep their cached prefix at both depths (97.2–97.5 % per plant, measured per
+> plant rather than in aggregate), so depth is limited by memory, not by cache
+> eviction. The 75.1 s / 5.6 h row replaces an earlier 83.6 s / 6.2 h figure
+> that came from a single run with no memory or prefix-hit data.
+
+> **Watch the multimodal cache before you watch the depth.** Those floors were
+> measured on freshly restarted containers, which also start with an empty
+> `--mm-processor-cache-gb` (default **4 GiB**). Once it fills — which a long run
+> does within the hour — idle `MemAvailable` falls from ~12.9 GiB to ~7.8 GiB,
+> and two plants in flight bottom out at **6.32 GiB**, below the stop line, with
+> no preemptions and prefix hits intact. Since that 4 GiB is a standing
+> allocation, running *one* plant instead of two would not recover it. At 1120
+> tokens/image a plant costs ~0.69 GB, so two in flight need ~1.4 GB — lowering
+> `--mm-processor-cache-gb` to 2 is the lever to try (untested; predicted from
+> the measured per-plant cost). Never raise `GPU_MEM_UTIL` to buy headroom.
 
 > **Never fan out a cold plant.** Releasing all 9 shards at once drops the
 > prefix-cache hit rate to **9.5 %** — none of them finds the shared prefix
@@ -337,8 +372,12 @@ The rule, for any client driving this server:
 2. Release shards 2-9 at **concurrency 8**. They hit ~98 % of the prefix and the
    set finishes 3.4x faster than serial (74.8 s → 21.4 s measured on a warm
    prefix; aggregate decode 37 → 136 tok/s).
-3. Overlap the *next* plant's cold `shard_01` with the current plant's warm set.
-   Two plants in flight measured 83.6 s per plant; deeper pipelining is untested.
+3. Overlap the *next* plant's cold `shard_01` with the current plant's warm set,
+   and keep **two plants in flight**. Measured 75.1 s per plant; three in flight
+   is 5 % faster and lands past the memory stop line.
+4. Bound the output. `max_tokens=2048` is 3.4x the observed p90 of 607 tokens,
+   so it cannot truncate a real answer, and it caps a runaway at ~50 s instead
+   of ~190 s.
 
 Individual requests do get slower under concurrency (`shard_02`: 14.9 s at conc 1,
 21.4 s at conc 8). That is the expected batching trade — throughput is what a
@@ -378,18 +417,35 @@ short-prompt/long-output dataset:
 ./down.sh && ./up.sh && ./bench.sh     # restart first, see below
 ```
 
-Reference figures at the pinned budget of **1120** (32 photos, thinking off,
-fresh container): **37 349** prompt tokens, **40.8 tok/s** decode, **14.6 s** with
-a warm prefix cache, **72.7 s** cold. Sending a plant's full 9-shard set serially
-measures **162.2 s per plant**, i.e. **~12.0 h** for 2400 requests — falling to
-**~6.2 h** with the dispatch pattern in
-[Concurrency](#concurrency-how-to-dispatch) below. `bench.sh` itself is serial by
-design, so its numbers are the conservative baseline.
+Reference figures at the pinned budget of **1120** and the pinned MoE backend
+(32 photos, thinking off, fresh container): **37 349** prompt tokens,
+**39.2 tok/s** decode, **12.8 s** with a warm prefix cache, **75.4 s** cold.
+Sending a plant's full 9-shard set serially measures **162.2 s per plant**, i.e.
+**~12.0 h** for 2400 requests — falling to **~5.6 h** with the dispatch pattern
+in [Concurrency](#concurrency-how-to-dispatch) below. `bench.sh` itself is serial
+by design, so its numbers are the conservative baseline, and none of these
+figures includes runaway generation.
 
 > Ordering matters as much as the budget: 9 shards per plant share one image
 > prefix, so dispatching **plant-major** keeps 8 of 9 requests on the cache. Going
 > shard-major would pay the cold prefill every time and push the same run toward
 > **48.5 h**.
+
+Two samplers exist for watching a run rather than timing it. Both write TSV, so
+the low-water mark survives the run:
+
+```bash
+./sample_mem.sh mem.tsv &          # /proc/meminfo every 0.2 s
+./sample_metrics.sh metrics.tsv &  # selected /metrics series every 1 s
+```
+
+`MemAvailable` is the safety number — the unified pool is shared with the OS and
+exhausting it hard-locks the box. `vllm:kv_cache_usage_perc` is **not**: the KV
+pool is preallocated, so it cannot exceed 100 % and saturating it causes
+preemption, not a crash. Watch `vllm:num_preemptions_total` for that.
+`sample_metrics.sh` checks every metric name against `/metrics` before it starts,
+because vLLM renames series between versions and a stale name would silently
+produce an empty column.
 
 > **Always restart before benchmarking.** Prefix caching is on by default and its
 > cache lives as long as the container, so a second `bench.sh` against the same
@@ -411,8 +467,11 @@ subcommand must not be repeated; the NGC image needs it spelled out. `up.sh` and
 
 **A request takes ~190 s and returns 8192 completion tokens** — runaway
 generation. The grammar keeps output well-formed but nothing bounds length, so the
-model can pad `rationale` strings indefinitely. Set a per-request timeout and
-treat `finish_reason == "length"` as a **failed** shard, not a partial result.
+model can pad `rationale` strings indefinitely. Set a per-request timeout, cap
+`max_tokens` at 2048 (3.4x the observed p90 of 607), and treat
+`finish_reason == "length"` as a **failed** shard, not a partial result. Rate:
+0 in 30 requests across 10 plants, which bounds it at ~10 % rather than
+measuring it — do not assume it will not happen.
 
 **First request is ~11 s slower than the rest** — JIT codegen. Send a
 `max_tokens=3` warm-up before timing anything.

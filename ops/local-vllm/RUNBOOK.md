@@ -397,11 +397,26 @@ order; a future vLLM Stage 3 path must keep it.
 
 ## Concurrency
 
-`MAX_NUM_SEQS` was raised from 2 to 16. It is **free**: the KV cache is
+`MAX_NUM_SEQS` was raised from 2 to 16. It is **free for KV cache**: the pool is
 preallocated from `gpu-memory-utilization`, not from the sequence count —
 5 074 332 tokens at 16 against 5 081 419 at 2. At ~37 k tokens per request even
-16 concurrent requests need only ~600 k tokens, so the memory ceiling that
-Decision (b) and the failure-modes section warn about is untouched.
+16 concurrent requests need only ~600 k tokens.
+
+> **Narrowed.** This paragraph used to say the setting was free full stop, on
+> the evidence that the KV token count barely moved. That evidence cannot
+> support the broader claim: the KV pool is preallocated, so its size is
+> **constitutionally incapable** of reflecting what concurrency costs — the
+> vision encoder's activations and the multimodal processor cache are not in it,
+> and the failure mode this deployment actually risks is exhaustion of the
+> unified host pool, not a GPU-side OOM.
+>
+> What is now measured: **free when the multimodal cache is fully hit** — a
+> plant's warm shards run 8-wide at no memory cost, because no new images are
+> processed. **Not free for cold concurrency** — running several plants' cold
+> prefills at once does move host memory, and at three plants in flight
+> `MemAvailable` fell to 7.37 GiB, past the 8 GiB stop line. See "Pipeline
+> depth, memory, and runaway generation" for the numbers; the recommended depth
+> is **2 plants**, not more.
 
 ### Concurrency on an already-cached prefix
 
@@ -453,13 +468,19 @@ rest are released.
 
 **Pattern D is the best measured.** Overlapping two plants' cold prefills, then
 running both warm sets at conc 16, reaches 83.6 s per plant — 1.93x better than
-serial — because one plant's cold prefill overlaps the other's decode. Only two
-plants in flight were tested; deeper pipelining was not measured and may help
-further.
+serial — because one plant's cold prefill overlaps the other's decode.
+
+> This row was n = 1 (two plants, one run) with no prefix-hit or memory numbers
+> — the `—` in the table. It has since been re-measured properly at depths 1, 2
+> and 3 with per-plant prefix hits and a memory trace: **75.1 s per plant at two
+> in flight (5.57 h)**, both plants hitting 97.5 %. Deeper pipelining was also
+> tested and is **not** recommended: three in flight buys 5 % and spends the
+> whole memory margin. See "Pipeline depth, memory, and runaway generation".
 
 **Recommendation for a vLLM Stage 3 path:** per plant, send `shard_01` alone,
 wait for it, then release shards 2-9 at concurrency 8; overlap the next plant's
-cold prefill with the current plant's warm set. Never fan out a cold plant.
+cold prefill with the current plant's warm set, **two plants in flight, not
+more**. Never fan out a cold plant.
 
 ## Pinned runtime selections
 
@@ -683,6 +704,271 @@ overlap. It is added because the pipeline-depth measurement below has to answer
 "when two plants are in flight, did **both** warm sets hit the cache, or did one
 evict the other" with per-plant numbers.
 
+## Pipeline depth, memory, and runaway generation
+
+Everything above this point measured latency. Nothing measured **memory**, which
+is the resource whose exhaustion hard-locks this machine, and the recommended
+dispatch pattern (D) was the least examined of the four. This section closes
+both gaps and puts a number on runaway generation.
+
+### Two samplers, and how to read them
+
+`sample_mem.sh` (0.2 s) and `sample_metrics.sh` (1 s) write TSV files. Both
+intervals are deliberate: host memory moves on a sub-second scale because the
+vision encoder's activations do, while `/metrics` is a ~100-series Prometheus
+dump that would load the server being measured if scraped five times a second.
+Neither uses `watch` — the number that matters is the *lowest point*
+`MemAvailable` ever reached, and a repainted terminal cannot be queried
+afterwards.
+
+**Metric names were read off this build's live `/metrics`, not from docs**, and
+the ticket's warning was justified: the cache-usage series is
+`vllm:kv_cache_usage_perc` here, **not** the `vllm:gpu_cache_usage_perc` older
+vLLM used. A stale name greps to an empty column rather than an error, so
+`sample_metrics.sh` verifies every name against `/metrics` before it starts and
+refuses to run if one is missing. Verified names:
+
+```
+vllm:num_requests_running      vllm:num_requests_waiting
+vllm:num_preemptions_total     vllm:kv_cache_usage_perc
+vllm:prefix_cache_queries_total  vllm:prefix_cache_hits_total
+vllm:mm_cache_queries_total      vllm:mm_cache_hits_total
+```
+
+Reading them:
+
+- **`MemAvailable` is the safety metric.** The GB10's memory is one unified pool
+  shared with the OS and the page cache, and exhausting it is the failure mode
+  that needs a power cycle.
+- **KV cache usage is not.** The pool is preallocated from
+  `--gpu-memory-utilization`, so the fraction cannot exceed 1.0 and cannot
+  exhaust anything; saturating it produces *preemption*, not a crash.
+- **Preemption count is the scheduling-pressure metric.** Monotonic; any
+  increase means the scheduler discarded work to free KV blocks.
+
+### Incremental pipeline depth: N = 1, 2, 3
+
+N plants in flight, each dispatched by Pattern D's rule (`shard_01` alone, wait,
+then shards 2–9 at concurrency 8). N lanes run concurrently and each lane
+processes **two** plants back to back, so every level contains the within-lane
+cold/warm overlap as well as the across-lane one. Container restarted between
+levels, `vllm:prefix_cache_queries_total` asserted at 0 before each, and plants
+the container had never served. All plants 22–23 photos, so the levels are
+comparable.
+
+Stop rule fixed in advance: `MemAvailable` low-water below 8 GiB, or any
+preemption. **Read the next subsection before treating these floors as the
+operating margin** — a restarted container also has an empty multimodal cache,
+which flatters every one of them by roughly 2.7 GiB.
+
+| N | plants | wall | per-plant | 267 plants | `MemAvailable` low | margin to 8 GiB | preemptions | per-plant prefix hit |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 2 | 178.4 s | 89.2 s | **6.62 h** | 8.74 GiB | +0.74 | 0 | 97.5 %, 97.5 % |
+| **2** | 4 | 300.6 s | **75.1 s** | **5.57 h** | **9.04 GiB** | **+1.04** | 0 | 97.5 % x4 |
+| 3 | 6 | 426.3 s | 71.0 s | 5.27 h | **7.37 GiB** | **-0.63** | 0 | 97.4–97.5 % x6 |
+| 4 | — | **not run** — N = 3 tripped the stop rule | | | | | | |
+
+**N = 3 triggered the stop condition, so N = 4 was not attempted and the
+recommendation falls back to N = 2.** Per the ticket this is a pass, not a
+failure. The excursion is not one stray sample: 22 of 2 092 samples (1.1 %,
+4.4 s of wall clock) sat below 8 GiB, p1 was 7.85 GiB, and the *median* fell
+from 10.06 GiB at N = 2 to 8.56 GiB at N = 3. The machine survived and was
+healthy afterwards — but a single survival is not evidence about a failure mode
+that hard-locks, which is exactly why the low-water mark is reported instead of
+"it did not crash".
+
+**Backing off costs almost nothing.** N = 2 → N = 3 buys 5.4 % (5.57 h → 5.27 h)
+while spending the entire memory margin. N = 1 → N = 2 buys 16 %. The knee is at
+N = 2.
+
+**Both plants' warm sets hit. Neither evicts the other.** This is the question
+Pattern D's `—` left open, and it is answered per plant rather than in
+aggregate: every plant at every depth reused 97.4–97.5 % of its prompt, i.e.
+the whole shared system+images prefix, with the 2.5 % miss being each shard's
+own trailing prompt text — exactly the part that should differ. Concretely at
+N = 2, all four plants read `207104/212379 = 97.5 %`; at N = 3, all six read
+97.4–97.5 %. No plant was starved.
+
+Per-request totals (`shard_01` first, then shards 02–09):
+
+```
+N=1  s0167: 65.9  28.7 19.6 24.9 15.6 17.6 22.1 13.0 18.7
+     s0162: 58.3  22.9 20.3 25.5 13.3 15.4 20.6 13.0 21.0
+N=2  s0147: 113.4 40.9 23.5 35.2 19.9 27.4 27.4 18.0 35.1
+     s0146: 113.2 39.6 26.9 40.7 20.9 32.5 29.5 20.5 27.7
+     s0141: 109.6 34.1 25.3 36.8 19.2 23.8 29.7 19.8 28.8
+     s0046: 109.6 34.3 22.5 32.9 18.3 27.4 30.9 19.7 26.1
+N=3  s0018: 181.5 31.6 18.1 99.1 23.1 25.3 25.5 29.2 127.2
+     s0010: 163.3 45.3 27.7 47.7 18.3 23.8 38.5 16.2 39.0
+     s0195: 167.8 43.9 29.1 39.7 17.7 30.5 35.3 16.9 40.9
+     s0188:  86.5 31.0 22.6 28.8 14.4 21.8 21.6 15.3 25.3
+     s0183: 162.3 41.7 19.3 38.1 18.3 35.3 21.9 32.1 27.5
+     s0178: 157.4 41.8 24.0 37.3 18.7 22.9 24.6 19.8 37.3
+```
+
+Individual requests get much slower as N rises — cold `shard_01` goes 58–66 s at
+N = 1 to 110–113 s at N = 2 to 87–182 s at N = 3, and the N = 3 tail is ragged
+(`s0018` has warm shards at 99 s and 127 s). Throughput still improves because
+the machine is never idle. Anything that cares about per-request latency rather
+than total wall clock should read this table before choosing a depth.
+
+**What the memory trace actually shows.** The drop is a **step, not a spike**.
+At N = 1, `MemAvailable` sits at 12.9 GiB idle, falls to ~9.3 GiB within four
+seconds of the first cold prefill and stays flat there for its whole 66 s, rises
+to ~10.6 GiB during the decode-bound warm set, and reaches its 8.7 GiB minimum
+at the instant one plant's warm tail overlaps the next plant's cold prefill —
+the Pattern D handover itself. So the cost is a resident working set plus a
+handover overlap, not a sub-second activation peak. The 0.2 s sampling was still
+the right choice: it is what establishes that there is no spike.
+
+Note also that N = 2's low-water mark (9.04 GiB) is *higher* than N = 1's
+(8.74 GiB). Memory does not scale with the number of plants in flight the way
+the ticket's premise assumed — the KV pool is preallocated and the multimodal
+cache is capped, so what grows is largely bounded. It is only at N = 3 that the
+floor moves decisively.
+
+### The fresh-container floors are optimistic, and this matters more than depth
+
+Every row of the table above was measured on a container restarted moments
+earlier, because that is the only way to get an honest *cold* prefix cache. But
+a restarted container also has an **empty multimodal processor cache**, and that
+cache grows to its 4 GiB cap and stays there. A 267-plant production run spends
+essentially all of its time on the far side of that fill.
+
+Measured directly. Idle `MemAvailable`, same server, same settings:
+
+| | idle `MemAvailable` |
+|---|---|
+| container just booted, mm cache empty | **12.9–13.7 GiB** |
+| after ~1 h of serving, mm cache at its 4 GiB cap | **7.76 GiB** |
+
+So N = 2 was re-run **without restarting**, on four plants the container had
+never served, with the multimodal cache already saturated — the steady state of
+a long run:
+
+| N = 2 | `MemAvailable` low | median | samples < 8 GiB | preemptions | per-plant prefix hit |
+|---|---|---|---|---|---|
+| fresh container | 9.04 GiB | 10.06 GiB | 0 / 1 482 | 0 | 97.5 % x4 |
+| **mm cache saturated** | **6.32 GiB** | **7.71 GiB** | **1 175 / 1 337 (88 %)** | **0** | 97.2 % x4 |
+
+**In steady state, two plants in flight sits below the 8 GiB stop line for most
+of the run** — 2.7 GiB lower than the fresh-container measurement suggested. The
+run completed cleanly, all 36 requests succeeded, no preemptions, and every
+plant still kept 97.2 % of its prefix, but the headroom is not what the table
+above implies. (Its 68.1 s per plant is *not* comparable with the 75.1 s above:
+those plants carry 21 photos rather than 23, and the system-prompt prefix was
+already resident. Read this run for its memory numbers, not its speed.)
+
+**The lever is the cache, not the depth.** What consumes the margin is a
+standing 4 GiB allocation, so backing off from two plants to one does not
+recover it — one plant in flight would sit on the same saturated cache. The
+knobs that do:
+
+- **`--mm-processor-cache-gb`.** At the pinned 1120-token budget a plant of
+  22–23 photos costs ~0.69 GB, so two in flight need ~1.4 GB. The default 4 GiB
+  is holding roughly four plants that have already finished. Lowering it to
+  **2 GiB should return ~2 GiB of headroom** and cost only re-processing of
+  plants that are no longer in flight — nothing a live plant needs. Deliberately
+  **not changed here**: adding server flags is outside this ticket, and the
+  claim above is a prediction from the measured per-plant cost, not a
+  measurement. Worth one experiment before the production run.
+- `--gpu-memory-utilization`, in the other direction, is the known route to a
+  hard lock and should not be touched.
+
+Stated plainly, because it is the number a reader will want: the recommendation
+is still **two plants in flight**, but on the understanding that the 8 GiB stop
+line is crossed in steady state at *any* depth with the default multimodal cache
+size, and that the fix is to shrink that cache rather than to serialise the
+pipeline.
+
+### Multimodal processor cache: `--mm-processor-cache-gb`, default 4 GiB
+
+The flag is `--mm-processor-cache-gb` (`float`, **default 4**, `ge=0`), with
+`--mm-processor-cache-type` defaulting to `lru`. Neither is set by `up.sh`, so
+**4 GiB LRU is what is in force.**
+
+What it holds is the **processor** output — the pre-encoder tensors — not the
+vision encoder's result. Measured directly by running this checkpoint's
+`AutoProcessor` over a real dataset photo (1568 x 1043):
+
+| visual budget | `pixel_values` | per image | per 32-photo plant | plants per 4 GiB |
+|---|---|---|---|---|
+| 280 | `(1, 2520, 768)` float32 | 7.78 MB | 0.25 GB | ~17 |
+| **1120 (pinned)** | `(1, 10080, 768)` float32 | **31.13 MB** | **1.00 GB** | **~4.3** |
+
+At 22–23 photos — the common case in this dataset — a plant costs ~0.69 GB, so
+the cache holds about **6 plants**. That is a real constraint on pipelining, and
+it is independent of the memory stop rule: at N = 3, six plants totalled ~4.1 GB
+against a 4 GiB budget, so the level finished right at the eviction boundary
+(harmlessly — by then the evicted plant was done). Beyond ~4 plants in flight
+with 32-photo lines, a plant's images could be evicted *before its own warm set
+finishes*, which is a different failure from running out of memory and has a
+different fix: raise `--mm-processor-cache-gb`, do not reduce depth.
+
+**This is how to tell the two apart.** LRU eviction shows up as a per-plant
+prefix-hit rate collapsing for one plant while `MemAvailable` stays flat;
+memory pressure shows up as `MemAvailable` falling with hit rates intact.
+Neither happened at N ≤ 3 — every plant kept 97.2–97.5 %.
+
+**But the cache is also what eats the memory margin.** Its 4 GiB is a standing
+allocation that does not shrink when the pipeline does, and it is what takes
+steady-state `MemAvailable` from ~12.9 GiB to ~7.8 GiB idle. See "The
+fresh-container floors are optimistic" above: at two plants in flight only
+~1.4 GB of that 4 GiB is doing live work, so this is the first knob to try if
+headroom is needed — not a shallower pipeline.
+
+Two footnotes worth keeping. The visual-budget decision cost 4x here too: 1120
+shrank effective cache capacity from ~17 plants to ~4.3. And the documented
+accounting `mm_processor_cache_gb * (api_server_count + data_parallel_size)`
+overstates this deployment — the API process stores only
+`MultiModalProcessorCacheItemMetadata` (an `item_size` plus prompt updates)
+because, in vLLM's own words, "P1 already stores the tensor data". The tensor
+data exists once.
+
+### Runaway generation: 0 in 30, which bounds it rather than measures it
+
+30 structured-output requests at the pinned temperature of 1.0, spread over
+**10 different plants**, 3 shards each with the shard rotated so all 9 are
+covered — not 30 repeats of one plant, whose rationale text would be too
+self-similar to show the real spread.
+
+| | value |
+|---|---|
+| `max_tokens` actually in force | **8192** (what `smoke.py` / `bench.sh` send; unset, vLLM would allow `MAX_MODEL_LEN` minus the prompt, ~28 k) |
+| completion tokens: min / median / p90 / max | **176 / 362.5 / 607 / 681** |
+| mean | 374.2 |
+| `finish_reason == "length"` | **0 / 30 (0 %)** |
+| median latency | 12.6 s |
+| slowest request | 63.3 s (a cold prefill, not a runaway) |
+
+**Zero occurrences does not mean zero rate.** With 0 events in 30 trials the
+rule of three puts the 95 % upper bound at **~10 %**, which is far too loose to
+plan with — at 10 % a 2400-request run would contain 240 runaways. Folding in
+the one runaway previously observed (8192 tokens, 190.6 s) over roughly 150
+earlier requests gives a point estimate nearer **0.5 %**. The honest statement
+is: rare enough not to appear in 30 requests, not rare enough to ignore.
+
+**Suggested cap: `max_tokens = 2048`** — about 3.4x the observed p90 (607) and
+3x the observed max (681), so it cannot truncate a legitimate answer, while
+bounding a runaway at ~50 s instead of ~190 s. This is a recommendation only;
+the ticket puts the retry/timeout decision at the provider layer.
+
+What runaway does to the estimate, using N = 2's measured 5.57 h as the base:
+
+| assumption | added time | 267-plant total |
+|---|---|---|
+| **no runaway** (what every figure in this file assumes) | — | **5.57 h** |
+| 0.5 % at `max_tokens=8192` | 12 requests x ~178 s | 6.16 h |
+| 0.5 % at `max_tokens=2048` | 12 requests x ~39 s | 5.70 h |
+| 10 % (the 95 % upper bound) at 8192 | 240 x ~178 s | 17.4 h |
+| 10 % at 2048 | 240 x ~39 s | 8.2 h |
+
+The last two rows are the argument for the cap: at the pessimistic end of what
+n = 30 can rule out, capping `max_tokens` is the difference between 8 h and 17 h.
+Concurrency makes it worse than the arithmetic suggests, because a runaway
+occupies a scheduler slot for its whole duration and holds up the batch it is
+in.
+
 ## Deviations from the ticket's flag list
 
 The "deliberately not added" list was honoured in full: no `--kv-cache-dtype`,
@@ -707,12 +993,18 @@ measured cost.) Four unavoidable departures:
   request on `s0016` produced 8192 completion tokens and took **190.6 s** instead
   of the usual ~500 tokens / ~12 s. The grammar keeps output well-formed, but
   nothing bounds *length* — the model can pad `rationale` strings indefinitely.
-  At 9 shards x 267 plants a few such requests are near-certain, so the #1
-  provider needs a per-request timeout and should treat
-  `finish_reason == "length"` as a failed shard rather than a partial result.
-  Not worked around here: that is a provider-layer decision.
+  A 30-request probe over 10 plants at temperature 1.0 produced **none**, which
+  bounds the rate at ~10 % (95 %, rule of three) rather than measuring it; the
+  point estimate including the earlier sighting is ~0.5 %. Suggested cap
+  `max_tokens=2048` — 3.4x the observed p90 of 607. The #1 provider still needs
+  a per-request timeout and should treat `finish_reason == "length"` as a failed
+  shard rather than a partial result. Not worked around here: that is a
+  provider-layer decision. Numbers in "Pipeline depth, memory, and runaway
+  generation".
 - **Memory is genuinely tight at `GPU_MEM_UTIL=0.80`.** With the server up,
-  `free -g` shows 109 GiB of 121 GiB used and only ~12 GiB available. vLLM also
+  `free -g` shows 109 GiB of 121 GiB used and only ~12 GiB available. Under load
+  that shrinks further: a single plant's cold prefill holds it at ~9.3 GiB, and
+  three plants in flight took the low-water mark to **7.37 GiB**. vLLM also
   warns that 0.80 is effectively 0.7958 once CUDA-graph profiling is counted. Do
   not raise this casually — the unified pool is shared with the OS and page
   cache, and raising it is the reported route to a hard lock needing a power
