@@ -18,3 +18,6 @@ Rules that must hold regardless of the task:
   Their run-to-run inconsistency is **expected and accepted** — never fold them
   into a trait-agreement rate.
 - No drive-by changes: do what was asked, then report anything else you found.
+- `03_mature_v2/` is **not usable yet** — the images on this machine are the wrong
+  ones (a copy of `02_mature_v1`) and its master schema is missing. Verify both
+  before running anything against it; see `HANDOFF.md`.

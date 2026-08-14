@@ -121,6 +121,76 @@ annotations; the recipe is in LAB_NOTEBOOK §5.
 
 ---
 
+## Next study: discrimination, on `03_mature_v2` — BLOCKED on a re-scp
+
+`02_mature_v1` cannot answer whether the method separates lines (all Chinese kale,
+photographed too early). `03_mature_v2` is the intended dataset for that: the same
+142 line IDs at a **later growth stage**, where variety differences are expressed.
+
+### ⚠ As of 2026-08-14 the files on this machine are the WRONG ones
+
+The user scp'd the wrong images. `03_mature_v2/images` is currently a byte-identical
+copy of `02_mature_v1/images`, verified:
+
+- all **2784** paths and byte-sizes match between the two trees;
+- 12 of 12 sampled files across 6 different lines have identical sha256;
+- different inodes, so they are genuine duplicate copies, not hardlinks.
+
+**Running a discrimination study on it today would silently re-measure the same
+too-early photographs.** The user will scp the correct mature-stage images later.
+
+Also missing: `shards_manifest.json` records `master_schema: ../master_schema.json`,
+which does **not exist** here. `master_schema_opus4-8_v2.json` is present but has NOT
+been shown to be the file the shard set was generated from. That one is also pending
+a re-scp.
+
+### Verification gate — run BOTH before trusting anything in `03_mature_v2`
+
+```bash
+cd /home/xavier/project/pxgpt
+# 1. are the images actually the later timepoint, not the 02 copies?
+diff <(cd 02_mature_v1/images && find . -type f -printf '%p %s\n' | sort) \
+     <(cd 03_mature_v2/images && find . -type f -printf '%p %s\n' | sort) >/dev/null \
+  && echo "STILL THE WRONG IMAGES — stop" || echo "trees differ, proceed to check 2"
+
+# 2. does the scp'd master reproduce the frozen 03 shard set byte-identically?
+#    (this is the check that validated 02_mature_v1; do not skip it)
+pxgpt shard-schema --master 03_mature_v2/<the scp'd master>.json \
+    --shard-dir /tmp/v2check --shard-budget 40
+for f in 03_mature_v2/shard_master_schema/shard_*.schema.json; do
+  cmp -s "$f" "/tmp/v2check/$(basename $f)" && echo "$(basename $f) OK" \
+    || echo "$(basename $f) DIFFERS -> wrong master, stop"
+done
+```
+
+### What does NOT carry over from `02_mature_v1`
+
+The v2 schema is a redesign, not a revision: **only 4 trait names are shared** with
+v1. 50 traits / 13 groups / **7 quantitative** (v1: 49 / 12 / 4), with renamed and
+new traits (`leaf_count`, `canopy_spread`, `bolting_status`, `storage_organ`,
+`growing_medium`, …). So:
+
+- every stability number in this handoff (AC1 0.88, the per-trait AC1 ranking, the
+  4-trait quantitative split) is **specific to the v1 schema** and must be
+  re-measured on v2 before it means anything there;
+- `analysis/compare_configs.py` and `reproducibility.py` take the master path as
+  input and will work unchanged — but the quantitative/categorical split becomes
+  43 + 7, not 45 + 4.
+
+`03_mature_v2` has never been run: no `file_manifest.json`, no
+`openai_file_manifest.json`, no `Result_Stage3/`. Its `step_04_phenotyping.sh` is an
+Anthropic manifest-only invocation, so it needs `--input-dir` on the OpenAI path.
+
+### Study design, once the data is right
+
+Two runs per configuration on ~20–30 lines gives both the v2 stability baseline and
+the discrimination estimate from the same data: Cohen's kappa becomes interpretable
+because between-line variance is real. Worth pairing with `TEMPERATURE=0` vs `0.5`,
+since that lever is still untested and is the cheapest way to raise reproducibility
+on the OpenAI path.
+
+---
+
 ## Open questions
 
 1. **Accuracy.** Everything measured so far is model-vs-model *consistency*. Which
