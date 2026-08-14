@@ -212,6 +212,56 @@ def openai_compile_check_schema(
         raise
 
 
+# Wording OpenAI uses when a schema busts one of its strict-mode SIZE limits,
+# measured against gpt-5.6-luna:
+#
+#   nesting depth 15  -> "14 levels of nesting exceeds limit of 10."
+#   6000 properties   -> "6000 parameters exceeds limit of 5000."
+#
+# Both are 400 invalid_json_schema, and both carry "exceeds limit of".  A schema
+# that is merely malformed for strict mode does not, e.g.
+#   "'additionalProperties' is required to be supplied and to be false."
+# That distinction is what keeps ``--allow-reshard`` from overwriting a frozen
+# shard set over an error resharding cannot fix.  The extra phrases are cheap
+# insurance against future wording; only "exceeds limit of" is measured.
+_OPENAI_SIZE_LIMIT_MARKERS = ("exceeds limit of", "too complex", "too large",
+                              "too many")
+
+
+def is_openai_size_limit_error(message: str) -> bool:
+    """True if *message* is OpenAI rejecting a schema for exceeding a size limit."""
+    msg = (message or "").lower()
+    return any(marker in msg for marker in _OPENAI_SIZE_LIMIT_MARKERS)
+
+
+def openai_compile_probe(client, model: str, schema: Dict[str, Any]) -> Tuple[bool, Optional[str]]:
+    """``ensure_compilable``-compatible probe for the OpenAI path.
+
+    Takes the RAW shard schema, names the response format from its ``title``
+    before :func:`openai_normalize_schema` strips it, and probes the normalized
+    copy.
+
+    Returns ``False`` only for a genuine size-limit rejection — the one class of
+    failure a smaller shard budget can fix.  Any other schema 400 (strict-mode
+    malformation, an unsupported keyword) raises ``RuntimeError`` instead:
+    resharding would not fix it, and a ``False`` return is what authorises
+    ``--allow-reshard`` to overwrite the shard set on disk.
+    """
+    name = schema_format_name(schema)
+    ok, err = openai_compile_check_schema(
+        client, model, openai_normalize_schema(schema), name=name
+    )
+    if ok:
+        return True, None
+    if is_openai_size_limit_error(err):
+        return False, err
+    raise RuntimeError(
+        f"OpenAI rejected the schema for response_format {name!r}, and not for a "
+        f"size limit — resharding at a smaller budget would not fix this, so the "
+        f"shard set was NOT modified:\n  {err}"
+    )
+
+
 def build_responses_request_body(
     model: str,
     system_prompt: str,

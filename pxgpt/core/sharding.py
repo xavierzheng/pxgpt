@@ -180,6 +180,7 @@ def ensure_compilable(
     shards: List[Dict[str, Any]], master_path: Optional[str],
     min_budget: int = 4,
     allow_reshard: bool = False,
+    probe=None,
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     """Compile-check every shard; optionally auto-reshard on failure.
 
@@ -192,14 +193,25 @@ def ensure_compilable(
     master schema on disk.  Returns the (possibly regenerated)
     ``(manifest, shards)``.  Raises ``RuntimeError`` if a shard cannot be made
     to compile.
+
+    *probe* is ``(client, model, schema) -> (ok, error_message)``; ``None`` means
+    the Anthropic :func:`compile_check_schema`, resolved on each call so it stays
+    patchable.  The OpenAI path passes its own (see
+    ``openai_batch_utils.openai_compile_probe``) so this module needs no
+    knowledge of any provider but Anthropic's.  A probe must return ``False``
+    ONLY for a size/complexity failure that resharding could actually fix, and
+    raise for anything else — a ``False`` here is what authorises overwriting
+    *shard_dir*.
     """
+    if probe is None:
+        probe = compile_check_schema
     can_reshard = bool(master_path and os.path.exists(master_path))
 
     while True:
         failed = []
         print(f"\n--- Pre-flight: compile-checking {len(shards)} shard schema(s) ---")
         for s in shards:
-            ok, err = compile_check_schema(client, model, s["schema"])
+            ok, err = probe(client, model, s["schema"])
             if ok:
                 print(f"  {s['shard_id']}: compiles OK")
             else:
