@@ -221,16 +221,23 @@ Images remain ordinary input and stay before the per-shard text prompt.
 `--master-schema`, `--allow-reshard`, `--dispatch` and `--resume/--no-resume`
 flags, writes the same `<output>/_partial/` store and produces the same
 `{line_id}.json` / `{line_id}.gaps.json`, so one shard set can be scored by both
-providers and compared trait-for-trait. Note that sharding is an *Anthropic*
-constraint: `gpt-5.6-luna` accepts the full unsharded master schema. Sharding for
-OpenAI anyway is what keeps the comparison like-for-like. Two things differ in
-practice — with `--no-files-api` the images are repeated once per shard (1 plant ×
-15 images × 10 shards is a 200 MB batch input file, versus 94 KB through the Files
-API; pxGPT estimates this before encoding and refuses to upload over 190 MB), and
-OpenAI's automatic prompt caching recovers only the ~1 k-token system prompt
-across a plant's shards — not the ~30 k of images — so a sharded OpenAI run pays
-close to full input price per shard. Both are detailed in
-[`user_manual.md`](user_manual.md) →
+providers and compared trait-for-trait. Three things differ in practice:
+
+- **The shard *count* is an Anthropic constraint, not an OpenAI one.** `gpt-5.6-luna`
+  accepts the whole 49-trait `02_mature_v1` schema in a *single* shard, so on OpenAI
+  `--shard-budget` is the main cost lever — every extra shard repeats the whole
+  ~30 k-token image payload. `pxgpt shard-schema` is still required either way: it
+  is what injects `not_assessable` into every nominal/ordinal enum.
+- **Prompt caching recovers only the ~1 k-token system prompt** across a plant's
+  shards, not the ~30 k of images, so a fresh sharded OpenAI run pays close to full
+  input price per shard.
+- **`--no-files-api` does not scale with shards.** 1 plant × 15 images × 10 shards is
+  a 200 MB batch input file against OpenAI's 200 MB cap, versus 94 KB through the
+  Files API; pxGPT estimates this before encoding and refuses to upload over 190 MB.
+
+Sizing, costs and the measurements behind all three are in
+[`dispatch_batch_vs_sequential.md`](dispatch_batch_vs_sequential.md) → *OpenAI*, and
+the flags in [`user_manual.md`](user_manual.md) →
 *`pxgpt describe-batch-openai` / `pxgpt phenotype-batch-openai` → Sharded mode*.
 
 `--dispatch sequential` is **crash-safe and resumable**: each shard is written to

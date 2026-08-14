@@ -4,6 +4,12 @@
 same *(plant × shard)* requests in both modes. The mode changes how requests are
 sent. It does not change how Anthropic Structured Outputs affect prompt caching.
 
+Both providers offer the same two dispatch modes. Everything up to
+**"Practical mode selection"** describes the Anthropic path
+(`pxgpt phenotype-batch`); the OpenAI path (`pxgpt phenotype-batch-openai`) is
+covered in **"OpenAI"** at the end, including measured caching numbers and the
+`--shard-budget` cost lever that only applies there.
+
 ## Bottom line
 
 - `batch` sends one asynchronous Message Batch. It has the Batch API discount
@@ -173,3 +179,199 @@ result retrieval is acceptable.
 For cost decisions, run a small representative pilot and compare actual input,
 output, cache-read and cache-creation tokens. Image tokens should now appear as
 ordinary input instead of a large cache creation on every shard.
+
+---
+
+# OpenAI
+
+`pxgpt phenotype-batch-openai --shard-dir ... --dispatch {batch,sequential}` is
+the OpenAI counterpart. It consumes the **same shard set**, writes the same
+`<output>/_partial/` store and produces the same `{line_id}.json` /
+`{line_id}.gaps.json`, so one shard set can be scored by both providers and the
+results compared trait-for-trait.
+
+Every number in this section was measured against `gpt-5.6-luna` on one real
+plant (s0001, 15 images) with the frozen 10-shard set, through the Files API.
+
+## Bottom line (OpenAI)
+
+- The two dispatches send **identical request bodies**. Measured: the same plant
+  cost **308,397 input tokens** through `--dispatch batch` and **308,397**
+  through `--dispatch sequential`. The batch JSONL only adds the
+  `custom_id` / `method` / `url` envelope around that body.
+- `batch` gets the Batch API's documented 50% discount and a 24 h completion
+  window; the 10-request job above actually finished in about 5 minutes.
+- `sequential` gets no discount but gives incremental writes, resume, bounded
+  retry and live progress — the same properties as the Anthropic path.
+- **Neither dispatch gets image tokens out of cache.** See below; this is the
+  dominant cost fact and it is not a mode choice.
+- A batch that leaves gaps is recovered by a sequential resume to the same
+  `--output`, measured end to end (below).
+
+## Request structure (Responses API)
+
+Requests go to `/v1/responses`, which is required so images can be referenced by
+Files-API `file_id`. There is no explicit cache breakpoint to place — OpenAI's
+prompt caching is automatic.
+
+```text
+instructions: [shared system preamble]
+input:        [plant images] [per-shard text prompt]
+text.format:  [per-shard json_schema, strict]   <- top-level parameter
+```
+
+Requests are built plant-major, shard-minor, matching the Anthropic builder.
+
+## Prompt caching: only the system prompt is reused across shards
+
+The Anthropic section above explains that changing `output_config.format`
+invalidates the prompt cache, so a plant's shards cannot share one cache
+identity. **OpenAI behaves the same way**, measured independently:
+
+| request | input tokens | `cache_read` |
+|---|---|---|
+| 10 consecutive shards of one plant | ~31 k each | 1,055–1,281 (one 0) |
+| the *same* shard body re-sent later | ~31 k | 30,672–31,196 |
+
+The shared system prompt is ~1 k tokens on its own, which accounts for the whole
+of that first row. So across a plant's shards the ~30 k of image tokens are **not**
+reused.
+
+The images cannot be what breaks it: they sit *before* the per-shard text prompt
+in `input`, so a differing text tail alone would still leave them inside a common
+prefix. The per-shard `text.format.schema` evidently breaks the cacheable prefix
+ahead of the image blocks — the same effect Anthropic Structured Outputs have, for
+the same reason.
+
+Two consequences:
+
+- Referencing images by `file_id` does **not** prevent caching. The second row
+  above is a `file_id` request hitting 31,117 of 31,120 tokens, so the image
+  content is cacheable when the *whole* prefix matches.
+- The cache pays off only when an **identical** *(plant, shard)* request is
+  re-sent — a resume or a gap recovery. Measured: a resume that re-sent 2 shards
+  read 31,196 and 30,672 tokens from cache.
+
+Budget a **fresh** sharded OpenAI run at close to full input price per shard. Do
+not assume the two providers' per-plant input costs scale alike.
+
+## `--shard-budget` is the real cost lever on OpenAI
+
+Sharding exists because a large schema exceeds **Anthropic's** grammar-size
+limit. OpenAI has no such limit at this scale: its strict-mode caps are 5,000
+object properties, 1,000 enum values and depth 10, and the whole 49-trait schema
+in one shard measures 159 / 165 / 4. Every shard set below was accepted by the
+live API, including the single-shard one:
+
+| `--shard-budget` | shards | largest shard (props / enum values / depth) | OpenAI accepts | input tokens per plant |
+|---|---|---|---|---|
+| 40 (current) | 10 | 25 / 26 / 4 | yes | **308,397** (measured) |
+| 80 | 4 | 46 / 52 / 4 | yes | ~125 k |
+| 160 | 2 | 93 / 93 / 4 | yes | ~65 k |
+| 320 | 1 | 159 / 165 / 4 | yes | ~35 k |
+
+Only the first row is measured; the others extrapolate from the measured
+~30 k-token image payload that every request repeats, plus a shard-prompt total
+that stays roughly constant however it is split. Since the images are the payload
+being repeated, **halving the shard count nearly halves the input cost**. At
+`gpt-5.6-luna` input pricing, 142 plants sequentially: ~$8.80 at budget 40 versus
+~$1.00 at budget 320, and about half that again through `--dispatch batch`.
+Output tokens (~2,600 per plant) barely move, because the same 49 rationales get
+written either way.
+
+**All four shard sets keep every trait and every `not_assessable`.** This matters:
+`pxgpt shard-schema` *adds* `not_assessable` to every nominal and ordinal enum —
+in the 02_mature_v1 master, 45 of 45 nominal/ordinal traits get it injected, none
+list it themselves. So the shard set is not merely a split of the master, and you
+cannot skip `pxgpt shard-schema` on the grounds that OpenAI would accept a bigger
+schema. Raising the budget is safe; bypassing the generator is not.
+
+Before raising it, weigh three things:
+
+- **Comparability.** Anthropic still needs the small budget. If the two providers
+  run different shard counts, the per-request context differs and the comparison
+  is no longer like-for-like. Keep separate `--shard-dir` and `--output` trees if
+  you do this.
+- **Blast radius.** With 10 shards a failed request costs ~5 traits for that
+  plant; with 1 shard it costs all 49.
+- **Quality is untested.** More traits per request means a longer output and more
+  to attend to at once. Whether that changes scoring is an empirical question —
+  run a pilot on a handful of plants and diff the records before committing a
+  whole collection.
+
+## `--dispatch sequential` (OpenAI)
+
+Uses `client.responses.create()` with the same body the batch path writes to its
+JSONL — deliberately not the sync chat-completions provider. If the two
+dispatches sent different request formats their results would not be comparable
+and their `_partial/` stores could not be mixed, which is the whole point of the
+shared store.
+
+Same properties as the Anthropic sequential path: plant-contiguous order,
+immediate `_partial/` writes, resume from valid partials, bounded retry for
+429/5xx/connection errors, and a 400 surfaced without retry (it writes no partial,
+so the next resume retries it).
+
+## `--dispatch batch` (OpenAI)
+
+Submits all *(plant × shard)* requests as one JSONL job and writes a checkpoint
+with `"stage": "phenotype_sharded"` plus `shard_dir`, `master_schema` and
+`shard_ids` — the same field names the Anthropic sharded checkpoint uses, so
+`fetch-results` serves both.
+
+One OpenAI-specific limit: **the batch input file cannot exceed 200 MB.** With
+the Files API this is a non-issue — the 10-shard job above was a 93,686-byte
+JSONL, because each request carries only `file_id` strings. With
+`--no-files-api`, every image is embedded once per shard: the *same one-plant job*
+becomes 209,301,506 bytes, already over the cap. pxGPT estimates the size from
+the images on disk before encoding anything, warns, and refuses to upload a JSONL
+over 190 MB rather than failing after the transfer. That cap applies to the batch
+input file (`purpose="batch"`) only and has nothing to do with image uploads
+(`purpose="vision"`).
+
+## Recovering failed shards from an OpenAI batch
+
+Identical to the Anthropic recovery, and verified live. Deleting files from
+`_partial/` does **not** create a gap — the batch results are still on the server,
+so a re-fetch restores them (that is idempotency, not recovery). A real gap is a
+shard the batch never produced. Measured with one:
+
+```bash
+# 1. fetch: the plant with no shards in the batch gets a gaps file
+pxgpt fetch-results --checkpoint checkpoint_<batch_id>.json
+#    -> "s0002: 49 missing trait(s)"; s0002.gaps.json written
+
+# 2. re-issue ONLY the missing shards, to the SAME --output
+pxgpt phenotype-batch-openai \
+    --input-dir <images> --shard-dir <shard_dir> \
+    --system-prompt <system.txt> --output <same output dir> \
+    --dispatch sequential
+#    -> "Resume: 10 of 20 shard(s) already on disk"
+#    -> "20 call(s) (10 skip, 10 to run)"; gaps file deleted, both plants 49/49
+```
+
+The batch's 10 succeeded shards were adopted and **not** re-billed. Use the same
+model and `STAGE3_EFFORT` as the original run so the recovered shards match.
+
+A `_partial/.run.json` stamp records which provider and model created the store
+and refuses a run that does not match, so an OpenAI run cannot silently merge its
+shards into an Anthropic run's output directory.
+
+## Reading token usage (OpenAI)
+
+`cache_creation` is always 0: the Responses usage has no counterpart to
+Anthropic's cache-write counter, because OpenAI's caching is automatic and the
+write is not separately billed. `cache_read` comes from
+`usage.input_tokens_details.cached_tokens`.
+
+```text
+input=<input_tokens>
+cache_read=<cached_tokens>     ~1 k across a plant's shards; ~30 k on a re-send
+```
+
+## Practical mode selection (OpenAI)
+
+The same rule as Anthropic — `sequential` for recovery and observability on long
+HPC jobs, `batch` for throughput and the discount — but on OpenAI the mode is the
+*smaller* of the two cost decisions. Shard count moves the bill by up to ~10×;
+the batch discount moves it by 2×. Decide `--shard-budget` first.
