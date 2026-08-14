@@ -29,7 +29,11 @@ from typing import Any, Dict, List, Optional, Tuple
 import openai
 
 from .image_utils import get_base64_encoded_image, _MEDIA_TYPES
-from .batch_utils import strip_code_fence  # shared code-fence stripper
+from .batch_utils import (          # shared with the Anthropic path
+    assert_partial_provenance,
+    merge_sharded_results,
+    strip_code_fence,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +307,54 @@ def build_responses_request_body(
     return body
 
 
+def build_openai_sharded_requests(
+    line_image_blocks: Dict[str, List[Dict[str, Any]]],
+    shards: List[Dict[str, Any]],
+    system_prompt: str,
+    config,
+) -> List[Dict[str, Any]]:
+    """Build one request body per (plant × shard).
+
+    Returns ``[{"custom_id": ..., "body": ...}]``, the OpenAI counterpart of
+    ``sharding.build_sharded_requests``.  Both dispatch paths call this and send
+    exactly this body — ``--dispatch batch`` wraps it in the JSONL envelope
+    (``method``/``url``), ``--dispatch sequential`` passes it straight to
+    ``client.responses.create``.  Sharing one builder is what makes the two
+    dispatches comparable and lets their ``_partial/`` stores be mixed for
+    recovery.
+
+    The loop is plant-major, shard-minor to match the Anthropic builder: under
+    sequential dispatch that lets OpenAI's automatic prompt caching hit the
+    instructions + image prefix across one plant's N shards.
+    """
+    from .sharding import shard_custom_id
+
+    requests: List[Dict[str, Any]] = []
+    for line_id, image_blocks in line_image_blocks.items():
+        for s in shards:
+            raw_schema = s["schema"]
+            # Name first: openai_normalize_schema strips ``title``.
+            name = schema_format_name(raw_schema)
+            text_format = build_text_format(
+                openai_normalize_schema(raw_schema), name=name
+            )
+            body = build_responses_request_body(
+                model=config.openai_model,
+                system_prompt=system_prompt,
+                image_blocks=image_blocks,
+                user_prompt=s["prompt"],
+                max_tokens=config.stage3_max_tokens,
+                temperature=config.temperature,
+                text_format=text_format,
+                reasoning_effort=config.stage3_effort,
+            )
+            requests.append({
+                "custom_id": shard_custom_id(line_id, s["shard_id"]),
+                "body": body,
+            })
+    return requests
+
+
 def write_jsonl_requests(requests: List[Dict[str, Any]], path: str) -> None:
     """Write one batch request per line to *path* as JSONL."""
     with open(path, "w", encoding="utf-8") as f:
@@ -398,6 +450,20 @@ def _extract_text_and_usage(line: Dict[str, Any]):
     return "".join(texts), None, usage
 
 
+def extract_response_text_and_usage(response):
+    """``(content, error_message, usage_dict)`` for a LIVE Responses object.
+
+    Wraps the object in the same envelope a batch output line has and reuses
+    :func:`_extract_text_and_usage`, so a refusal, an empty output or a usage
+    field is read identically whether it arrived through ``--dispatch batch`` or
+    ``--dispatch sequential``.  Two separate extractors would be free to disagree
+    about what counts as a usable answer.
+    """
+    return _extract_text_and_usage(
+        {"response": {"status_code": 200, "body": response.model_dump()}}
+    )
+
+
 def _accumulate_usage(totals: Dict[str, int], usage: Dict[str, Any]) -> None:
     # Responses API usage uses input_tokens / output_tokens.
     totals["input"] += usage.get("input_tokens", 0)
@@ -475,4 +541,50 @@ def write_openai_phenotype_results(
             errored += 1
 
     print(f"  Wrote {written} JSON files; {errored} errors")
+    return totals
+
+
+def write_openai_phenotype_sharded_results(
+    client, batch, line_ids: List[str], master_index, output_dir: str,
+    provider: str = "openai", model: str = "",
+) -> Dict[str, int]:
+    """Retrieve a SHARDED OpenAI phenotype batch and merge it per plant.
+
+    The OpenAI-specific half only: download the result lines and pull text +
+    usage out of the Responses shape.  Everything after that —
+    ``_partial/`` adoption, the union merge, the gap rule — is
+    :func:`~pxgpt.core.batch_utils.merge_sharded_results`, shared with the
+    Anthropic path so the two can never drift.
+
+    Returns token-usage totals for THIS batch.  ``cache_creation`` stays 0: the
+    Responses usage has no counterpart to Anthropic's cache-write counter, since
+    OpenAI's prompt caching is automatic and not separately billed.
+    """
+    from .sharding import split_custom_id
+
+    # Refuse a foreign _partial/ store before downloading the result files.
+    # merge_sharded_results asserts again; the check is idempotent.
+    assert_partial_provenance(Path(output_dir) / "_partial", provider, model)
+
+    totals = {"input": 0, "output": 0, "cache_creation": 0, "cache_read": 0}
+    fresh: Dict[str, Dict[str, Any]] = {}
+    shard_errors: Dict[str, List[str]] = {}
+
+    for cid, line in collect_openai_results(client, batch).items():
+        line_id, shard_id = split_custom_id(cid)
+        content, err, usage = _extract_text_and_usage(line)
+        # An errored response can still carry usage — count it either way.
+        _accumulate_usage(totals, usage)
+        if content is None:
+            shard_errors.setdefault(line_id, []).append(f"{shard_id}: {err}")
+            print(f"  WARNING: {cid} failed — {err}")
+            continue
+        try:
+            fresh[cid] = json.loads(strip_code_fence(content))
+        except json.JSONDecodeError:
+            shard_errors.setdefault(line_id, []).append(f"{shard_id}: JSON parse failed")
+            print(f"  WARNING: {cid} — JSON parse failed")
+
+    merge_sharded_results(fresh, shard_errors, line_ids, master_index, output_dir,
+                          provider, model)
     return totals
