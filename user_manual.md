@@ -50,9 +50,13 @@ pip install -e .
 
 ### 2. Configuration
 
+pxGPT reads its settings from the process environment; it does not load a `.env`
+file on its own. Copy the template, fill it in, then **export** it:
+
 ```bash
-cp .env.example .env
-vim .env          # add ANTHROPIC_API_KEY at minimum
+cp .env.example project_A.env
+vim project_A.env                       # add ANTHROPIC_API_KEY at minimum
+set -a; source project_A.env; set +a    # plain `source` is not enough — see below
 ```
 
 ### 3. Image layout
@@ -390,8 +394,8 @@ which is what `--dispatch sequential` does (it retries transient errors in-run).
 
 You need the same shard set, image manifest and master schema the batch used — they
 are all recorded in the `checkpoint_<batch_id>.json` from Step 2/3. Run **both**
-commands from the directory that holds `Result_Stage3` (so the relative paths and
-`.env` resolve), and re-use the **same** `--output` both times.
+commands from the directory that holds `Result_Stage3` (so the relative paths
+resolve), and re-use the **same** `--output` both times.
 
 ```bash
 # 4a. FREE — re-download the completed batch so every SUCCEEDED shard is saved
@@ -1075,10 +1079,13 @@ In fact you can drop `--input-dir` entirely: with the Files API, `phenotype-batc
 
 ### "ANTHROPIC_API_KEY is not set"
 
-Add the key to `.env` and confirm it is in the same directory where you run `pxgpt`:
+Export the key into the environment `pxgpt` runs in. A `.env` file sitting in the
+working directory has no effect on its own — pxGPT never reads one:
 ```bash
-ANTHROPIC_API_KEY=sk-ant-...
+export ANTHROPIC_API_KEY=sk-ant-...     # or from ~/.bashrc / ~/.zshrc
+set -a; source project_A.env; set +a    # or export a whole project file at once
 ```
+Check with `echo ${ANTHROPIC_API_KEY:0:7}` in the same shell that runs `pxgpt`.
 
 ### No images found / wrong image format
 
@@ -1155,8 +1162,14 @@ ANTHROPIC_MODEL=claude-sonnet-4-6
 STAGE3_EFFORT=high
 STAGE1_MAX_TOKENS=32768
 
-source project_A.env && pxgpt describe-batch ...
+set -a; source project_A.env; set +a
+pxgpt describe-batch ...
 ```
+
+`set -a` is what makes the assignments **exported**. Plain
+`source project_A.env` only sets shell variables, which `pxgpt` — a child
+process — never sees, so the run would silently use the defaults instead.
+(Prefixing every line in the file with `export` has the same effect.)
 
 ### Integration with HPC job schedulers
 

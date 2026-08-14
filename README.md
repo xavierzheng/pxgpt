@@ -40,12 +40,32 @@ git clone https://github.com/xavierzheng/pxgpt.git
 cd pxgpt
 pip install -r requirements.txt
 pip install -e .
-cp .env.example .env   # then fill in your API keys
+cp .env.example project_A.env       # then fill in your API keys
+set -a && source project_A.env && set +a
 ```
 
 ## Configuration
 
-Key variables in `.env`:
+pxGPT reads its settings from the **process environment** — it does not load a
+`.env` file on its own. The file only takes effect once its variables are
+**exported**, so wrap the `source` in `set -a` / `set +a`:
+
+```bash
+set -a && source project_A.env && set +a   # now exported
+pxgpt describe-batch ...
+```
+
+Plain `source project_A.env` is not enough: it sets shell variables that
+`pxgpt` — a child process — never sees. (Prefixing every line with `export`
+works too.)
+
+Variables that never change, typically the API keys, can instead be exported
+from your `~/.bashrc` / `~/.zshrc`, leaving only the per-project settings in the
+file. Anything left unset falls back to the default compiled into
+`pxgpt/core/config.py`; the run banner echoes the values actually in effect, so
+check it before a long batch.
+
+Key variables:
 
 ```bash
 ANTHROPIC_API_KEY=your_key_here
