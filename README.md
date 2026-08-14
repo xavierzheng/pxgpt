@@ -6,7 +6,7 @@
 
 - **Batch API** (Stage 1 & 3): submit hundreds of plant lines in a single API call; fire-and-forget with checkpoint-based result retrieval
 - **Files API**: upload each image once, reuse the same `file_id` across Stage 1 and Stage 3 — no re-uploading 10 k images
-- **Adaptive thinking** (Stage 3): native `output_config.effort` on claude-sonnet-4-6; temperature guard enforced automatically
+- **Adaptive thinking** (Stage 3): native `output_config.effort` on claude-sonnet-5; temperature guard enforced automatically
 - **Native structured output** (Stage 3): schema passed directly as `output_config.format`; no regex or tag parsing
 - **Schema normalizer**: one command adds `additionalProperties: false` and `required` arrays to every object in your schema
 - **JSON-to-table flattening**: one command turns the per-plant Stage 3 JSON output into a wide, typed CSV + feather table (ordinal traits reconstructed from level code to label, as an ordered factor in R)
@@ -78,9 +78,11 @@ ANTHROPIC_MODEL=claude-sonnet-5
 STAGE1_MAX_TOKENS=16384   # raise to 65536 for long descriptions
 STAGE3_MAX_TOKENS=16384
 
-# Adaptive thinking effort. default = off = none = NO reasoning + temperature is sent.
+# Adaptive thinking effort. default = off = none = NO reasoning.
 # (blank, "off", and "none" are equivalent.) Set a level low/medium/high/xhigh/max to
 # enable reasoning; the --effort flag overrides per run.
+# TEMPERATURE is sent only with reasoning off AND a Sonnet 4.6-or-earlier model;
+# claude-sonnet-5 and newer reject a custom value, so pxGPT omits it.
 STAGE3_EFFORT=     # Stage 3 / schema command   (off | low | medium | high | xhigh | max)
 DESCRIBE_EFFORT=   # Stage 1 describe-batch
 ANALYZE_EFFORT=    # sync analyze command

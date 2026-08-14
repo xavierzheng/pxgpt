@@ -154,8 +154,9 @@ def describe_batch_command(args):
         content = image_blocks + [{"type": "text", "text": user_prompt}]
         messages = [{"role": "user", "content": content}]
 
-        # Stage 1: effort off by default → temperature included; the temperature
-        # guard in build_request_params drops it automatically if effort is set.
+        # Stage 1: effort is off by default. build_request_params decides whether
+        # temperature survives — it is dropped when effort is set, and also on the
+        # strict-guard tiers (Sonnet 5 and newer) even with effort off.
         params = build_request_params(
             model=config.anthropic_model,
             max_tokens=config.stage1_max_tokens,

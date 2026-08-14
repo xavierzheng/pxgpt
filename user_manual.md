@@ -285,7 +285,7 @@ Pass `--input-dir ./images` as well if you want Stage 3 to also pick up (and upl
 
 **API features used:**
 - `output_config.format = {"type": "json_schema", "schema": …}` — native structured output; the schema grammar is compiled once and cached across all requests in the batch
-- `output_config.effort` — adaptive thinking, **off by default**. Stage 3 runs without reasoning and sends `temperature`. Enable reasoning by setting `STAGE3_EFFORT` (e.g. `medium`).
+- `output_config.effort` — adaptive thinking, **off by default**. Stage 3 then runs without reasoning; whether a custom `temperature` goes out depends on the model tier — sent on Sonnet 4.6 and earlier, omitted on `claude-sonnet-5` and newer (which instead receive an explicit `thinking: {"type": "disabled"}`). Enable reasoning by setting `STAGE3_EFFORT` (e.g. `medium`).
 - When `STAGE3_EFFORT` is set, `temperature` is **not sent** (the API enforces this; the guard is automatic)
 
 **Retrieve results:**
@@ -595,7 +595,7 @@ pxgpt describe-batch \
 
 Output file: grouped descriptions, one section per plant line/cultivar.
 
-By default Stage 1 runs **without reasoning** and sends `temperature` (the model's whole response is the description — no `<think>`/`<report>` tags needed). Enable Anthropic adaptive thinking with `--effort` (e.g. `--effort medium`) or by setting `DESCRIBE_EFFORT`; thinking blocks are produced natively and stripped from the saved description.
+By default Stage 1 runs **without reasoning** (the model's whole response is the description — no `<think>`/`<report>` tags needed); a custom `temperature` is sent only on Sonnet 4.6 and earlier. Enable Anthropic adaptive thinking with `--effort` (e.g. `--effort medium`) or by setting `DESCRIBE_EFFORT`; thinking blocks are produced natively and stripped from the saved description.
 
 > Using a legacy `<think>`/`<report>` prompt instead of native reasoning? The tags are saved verbatim — post-process the output with [`pxgpt extract-report`](#pxgpt-extract-report) to keep only the `<report>` body.
 
@@ -898,7 +898,7 @@ pxgpt schema \
   [--effort {off,low,medium,high,xhigh,max}]   # overrides STAGE3_EFFORT
 ```
 
-For Anthropic, `schema` runs **without reasoning by default** (and sends `temperature`). Enable adaptive thinking with `--effort` (e.g. `--effort medium`) or by setting `STAGE3_EFFORT`.
+For Anthropic, `schema` runs **without reasoning by default**; a custom `temperature` is sent only on Sonnet 4.6 and earlier. Enable adaptive thinking with `--effort` (e.g. `--effort medium`) or by setting `STAGE3_EFFORT`.
 
 ---
 
@@ -908,11 +908,13 @@ For Anthropic, `schema` runs **without reasoning by default** (and sends `temper
 
 ```bash
 ANTHROPIC_API_KEY=your_key_here
-ANTHROPIC_MODEL=claude-sonnet-4-6
+ANTHROPIC_MODEL=claude-sonnet-5
 
 # Adaptive thinking effort (Anthropic). For every knob below:
-#   default = off = none = NO reasoning + temperature IS sent
+#   default = off = none = NO reasoning
 #   (blank, "off", "none" are all equivalent). Set a level to enable reasoning.
+# TEMPERATURE is sent only with reasoning off AND a Sonnet 4.6-or-earlier model;
+# claude-sonnet-5 and newer reject a custom value, so pxGPT omits it.
 STAGE3_EFFORT=          # off/none (default) | low | medium | high | xhigh | max  — Stage 3 / schema
 DESCRIBE_EFFORT=        # off/none (default) | low | medium | high | xhigh | max  — Stage 1 describe-batch
 ANALYZE_EFFORT=         # off/none (default) | low | medium | high | xhigh | max  — sync analyze
@@ -1158,7 +1160,7 @@ pxgpt fetch-results --checkpoint checkpoint_<S3_id>.json
 ```bash
 # project_A.env
 DEFAULT_PROVIDER=anthropic
-ANTHROPIC_MODEL=claude-sonnet-4-6
+ANTHROPIC_MODEL=claude-sonnet-5
 STAGE3_EFFORT=high
 STAGE1_MAX_TOKENS=32768
 

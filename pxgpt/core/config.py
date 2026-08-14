@@ -13,8 +13,10 @@ VALID_OPENAI_EFFORT_LEVELS = {"minimal", "low", "medium", "high"}
 def _normalize_effort(value: str) -> str:
     """Map the "no reasoning" spellings to the empty string.
 
-    ``off``, ``none`` and ``""`` (any case) all mean: no reasoning + temperature
-    is sent. This lets the env vars and the ``--effort off`` CLI flag agree.
+    ``off``, ``none`` and ``""`` (any case) all mean: no reasoning. Whether a
+    custom temperature is then sent depends on the model tier — see
+    ``batch_utils.build_request_params``. This lets the env vars and the
+    ``--effort off`` CLI flag agree.
     """
     v = (value or "").strip()
     return "" if v.lower() in ("", "off", "none") else v
@@ -63,7 +65,9 @@ class Config:
     stage3_max_tokens: int = 16384   # Stage 3 structured JSON
 
     # Adaptive thinking effort (Anthropic). For all three knobs below:
-    #   default = "" = off = none = NO reasoning + temperature IS sent.
+    #   default = "" = off = none = NO reasoning. Whether a custom temperature
+    #   is then sent depends on the model tier (see `temperature` above): sent
+    #   on Sonnet 4.6 and earlier, omitted on the strict-guard tiers.
     # Enable reasoning with a level: "low" | "medium" | "high" | "xhigh" | "max"
     # (env vars also accept "off"/"none"; the --effort flag overrides per run).
 
@@ -101,7 +105,8 @@ class Config:
     @classmethod
     def from_env(cls) -> "Config":
         """Create config from environment variables."""
-        # Effort env vars accept off/none/"" — all mean: no reasoning + temperature.
+        # Effort env vars accept off/none/"" — all mean: no reasoning (whether a
+        # custom temperature is then sent is decided per model tier downstream).
         stage3_effort = _normalize_effort(os.getenv("STAGE3_EFFORT", ""))
         if stage3_effort not in VALID_EFFORT_LEVELS and stage3_effort != "":
             raise ValueError(
