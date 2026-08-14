@@ -6,16 +6,19 @@ from pathlib import Path
 from typing import Dict, List, Any, Iterable
 
 
-# Explicit extension → media_type map. Some systems' mimetypes DB does not know
-# .webp (and occasionally .gif), so we resolve known image types ourselves and
-# only fall back to mimetypes/jpeg for anything else.
+# Explicit extension → media_type map, and the single source of truth for which
+# image formats pxGPT accepts anywhere.  Plant photographs are .jpg/.jpeg/.png;
+# .gif and .webp are deliberately NOT supported.  Resolving the media type here
+# rather than through mimetypes keeps it consistent across platforms.
 _MEDIA_TYPES = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".png": "image/png",
-    ".gif": "image/gif",
-    ".webp": "image/webp",
 }
+
+# Every image-discovery path filters on this set (matched against
+# ``p.suffix.lower()``, so upper-case extensions are accepted too).
+IMAGE_EXTENSIONS = frozenset(_MEDIA_TYPES)
 
 
 def get_base64_encoded_image(image_path: str) -> str:
@@ -29,9 +32,9 @@ def build_base64_content_list(image_paths: Iterable) -> List[Dict[str, Any]]:
 
     Used by the batch stages when the Files API is disabled: each image is
     embedded inline in the request rather than referenced by file_id. The
-    media_type is derived per file so .png/.webp/.gif are handled correctly
-    (unlike ``create_image_content_list``, which is jpeg-only). Input order is
-    preserved, so callers should pass an already-sorted list.
+    media_type is derived per file, so .png is labelled correctly rather than
+    being sent as jpeg. Input order is preserved, so callers should pass an
+    already-sorted list.
     """
     blocks: List[Dict[str, Any]] = []
     for p in image_paths:
@@ -55,19 +58,17 @@ def build_base64_content_list(image_paths: Iterable) -> List[Dict[str, Any]]:
 
 
 def create_image_content_list(folder_path: str) -> List[Dict[str, Any]]:
-    """Return base64 image content blocks for every .jpg in *folder_path*."""
-    image_paths = list(Path(folder_path).glob("*.jpg"))
-    return [
-        {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/jpeg",
-                "data": get_base64_encoded_image(str(p)),
-            },
-        }
-        for p in image_paths
-    ]
+    """Return base64 image content blocks for every supported image in *folder_path*.
+
+    Uses the same IMAGE_EXTENSIONS filter and per-file media_type as the batch
+    stages, so the sync ``analyze`` / ``schema`` commands accept exactly the same
+    formats. Sorted by filename for a stable image order.
+    """
+    image_paths = sorted(
+        p for p in Path(folder_path).iterdir()
+        if p.suffix.lower() in IMAGE_EXTENSIONS
+    )
+    return build_base64_content_list(image_paths)
 
 
 def create_multi_image_message(folder_path: str, prompt_text: str) -> List[Dict[str, Any]]:

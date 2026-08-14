@@ -19,7 +19,10 @@ from typing import Dict, List, Optional
 
 from anthropic import Anthropic
 
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+# Re-exported so the existing `from ..core.files_manager import IMAGE_EXTENSIONS`
+# call sites keep working; image_utils owns the definition.
+from .image_utils import IMAGE_EXTENSIONS
+
 _MANIFEST_VERSION = 1
 
 # Upload retry policy for transient gateway errors (e.g. Cloudflare 502/503/504).

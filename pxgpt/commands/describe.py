@@ -4,7 +4,7 @@ Input layout
 ------------
 ``--input-dir`` must contain one subdirectory per plant line; the subdir
 name becomes the ``custom_id`` and the ``cultivar_id`` in the output.
-Each subdir may contain any mix of .jpg / .jpeg / .png / .gif / .webp files.
+Each subdir may contain any mix of .jpg / .jpeg / .png files.
 
 Workflow
 --------

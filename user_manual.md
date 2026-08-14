@@ -75,7 +75,7 @@ images/
     └── ...
 ```
 
-Supported image formats: `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`
+Supported image formats: `.jpg`, `.jpeg`, `.png` (upper-case extensions are fine too). `.gif` and `.webp` are not supported.
 
 ### 4. Normalize your schema (one-time)
 
@@ -1095,8 +1095,8 @@ Check with `echo ${ANTHROPIC_API_KEY:0:7}` in the same shell that runs `pxgpt`.
 
 ### No images found / wrong image format
 
-- Supported extensions: `.jpg`, `.jpeg`, `.png`, `.gif`, `.webp`
-- Images must be inside subdirectories of `--input-dir`, not directly in the root folder
+- Supported extensions: `.jpg`, `.jpeg`, `.png` — matched case-insensitively, so `.JPG` works. `.gif` and `.webp` are **not** supported and are skipped silently.
+- The batch commands (`--input-dir`) need images inside subdirectories, not directly in the root folder; the sync commands (`--input-folder`) read images directly from the folder given.
 - Use absolute paths if relative paths are ambiguous
 
 ### Batch status shows `errored` requests
