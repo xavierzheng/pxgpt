@@ -4,6 +4,13 @@
 **Model:** `gpt-5.6-luna` (`STAGE3_EFFORT` off → `reasoning.effort: "none"`, `TEMPERATURE=0.5`)
 **Plants:** experiment A — 1 (`s0001`); experiment B — 10 (`s0001`–`s0011`)
 
+> **Data, scripts and reproduction notes:**
+> `02_mature_v1/Result_openai_shard_budget_pilot/LAB_NOTEBOOK.md`.
+> Every number here can be re-derived from the archived per-plant JSON with
+> `analysis/compare_configs.py` — no inference, no API calls, no cost. A long-format
+> table (`tables/all_configs_long.csv`, 1,960 rows) is ready to join against the
+> manual annotations.
+
 ## Question
 
 Sharding exists because a large Stage 3 schema exceeds *Anthropic's* grammar-size
@@ -42,6 +49,23 @@ traits on average, not 5. That reframes everything: budget 80's excess over nois
 is **+1.68 traits** (paired t(9) = 3.03, p = 0.014, 95% CI +0.42 … +2.93), which is
 real but modest — **re-running budget 40 already changes ~7 traits; switching to
 budget 80 changes ~8.2.**
+
+**Split the 4 quantitative traits out and the picture is cleaner.** They are
+eyeballed against a nearby ruler / colorchecker over several camera angles, so
+their inconsistency is expected and accepted; pooling them into an agreement rate
+muddies what that rate means:
+
+| trait subset | b40 noise | b80 noise | b40 vs b80 | excess | p |
+|---|---|---|---|---|---|
+| all 49 | 7.00 | 6.10 | 8.22 | +1.68 | 0.0142 |
+| **categorical (45)** | **4.60** (10.2%) | **3.50** (7.8%) | **5.92** (13.2%) | **+1.88** | **0.0103** |
+| quantitative (4) | 2.40 (60%) | 2.60 (65%) | 2.30 (57%) | −0.20 | 0.18 (ns) |
+
+Quantitative traits carry **no budget signal at all** — they disagree ~60% of the
+time *within* one configuration and budget 80 is no worse than a re-run. Excluding
+them does not rescue budget 80: the categorical penalty is slightly *clearer*
+(+1.88 of 45, p = 0.010, 8 of 10 plants above their own noise). Categorical
+reproducibility is ~90%, better than the pooled figure implied.
 
 Per-trait rationale length — the chain-of-thought the schema deliberately forces
 before each value — shortens robustly: 180.6 → 152.9 characters (−15%, n = 490
@@ -379,11 +403,32 @@ sign of the "gives up under load" failure mode.
 
 Cells where *both* budget-80 runs disagree with *both* budget-40 runs:
 **33 of 490 (6.7%)**, spread across **23 distinct traits**. Only one trait is hit
-in as many as 4 of 10 plants (`whole_plant_architecture.plant_canopy_spread`).
+in as many as 4 of 10 plants (`whole_plant_architecture.plant_canopy_spread`) —
+and that one is **quantitative, with ±4.4 cm of spread between two runs of the same
+configuration**, so it is measurement noise rather than a budget effect. Retracted
+accordingly.
 
-This corrects experiment A. From one plant it looked as though budget 80 shifted a
-specific handful of traits; across ten it does not concentrate anywhere. Budget 80
+This corrects experiment A twice over. From one plant it looked as though budget 80
+shifted a specific handful of traits; across ten it does not concentrate anywhere,
+and the single apparent concentration is a ruler-eyeballed measurement. Budget 80
 is diffusely slightly less stable, not biased on particular traits.
+
+## Quantitative traits, in their own units
+
+Their run-to-run inconsistency is expected and accepted (rough measurement against
+a nearby ruler / colorchecker, from several camera angles), so they are reported as
+magnitudes rather than folded into an agreement count:
+
+| trait | unit | mean \|b40r1 − b40r2\| | mean \|b40 − b80\| |
+|---|---|---|---|
+| `plant_height` | cm | 1.00 | 0.70 |
+| `plant_canopy_spread` | cm | **4.40** | 2.05 |
+| `plant_true_leaf_number` | count | 0.30 | 0.80 |
+| `leaf_blade_length` | cm | 0.85 | 0.75 |
+
+For three of the four, the *within*-configuration spread is as large as or larger
+than the between-budget difference. Budget choice is not what determines these
+values.
 
 ---
 
