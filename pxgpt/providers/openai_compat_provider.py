@@ -120,9 +120,15 @@ class OpenAICompatProvider(BaseProvider):
         messages: List[Dict[str, Any]],
         system_prompt: str,
         schema: Optional[str] = None,
-        output_config: Optional[Dict[str, Any]] = None,  # Anthropic-only
+        output_config: Optional[Dict[str, Any]] = None,
     ) -> APIResponse:
-        """Send request via the OpenAI SDK"""
+        """Send request via the OpenAI SDK.
+
+        Only ``output_config["effort"]`` is honoured here, and only for OpenAI
+        reasoning models, where it becomes ``reasoning_effort``.  The Anthropic
+        ``format`` key has no equivalent on this wire protocol and is ignored;
+        the local backends ignore effort as well.
+        """
 
         # Build combined system prompt (no caching support)
         combined_system = self._build_system_prompt(system_prompt, schema)
@@ -140,9 +146,22 @@ class OpenAICompatProvider(BaseProvider):
             "max_tokens": self.config.max_tokens,
         }
 
-        # OpenAI reasoning models (gpt-5 / o-series) only accept the default temperature.
         if self.llm_provider == "openai" and self._is_openai_reasoning_model():
-            print("## Note: OpenAI reasoning model — using default temperature")
+            # These models reject `max_tokens` outright, and omitting
+            # `reasoning_effort` leaves reasoning ON at the model's own default
+            # (medium on gpt-5.6) — so both have to be spelled out.  A custom
+            # temperature is accepted only with reasoning fully off.
+            params.pop("max_tokens")
+            params["max_completion_tokens"] = self.config.max_tokens
+            effort = (output_config or {}).get("effort") or "none"
+            params["reasoning_effort"] = effort
+            if effort == "none":
+                params["temperature"] = self.config.temperature
+                print(f"## Reasoning effort: none (off); "
+                      f"temperature {self.config.temperature}")
+            else:
+                print(f"## Reasoning effort: {effort}; temperature omitted "
+                      f"(only effort 'none' accepts a custom value)")
         else:
             params["temperature"] = self.config.temperature
 

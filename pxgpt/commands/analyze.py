@@ -61,9 +61,13 @@ def analyze_command(args):
         if provider_name == "anthropic":
             output_config = config.build_output_config(effort)
             print(f"Thinking effort: {effort} (temperature omitted while thinking)")
+        elif provider_name == "openai":
+            # The provider turns this into reasoning_effort; off is sent as "none".
+            output_config = config.build_output_config(effort)
+            print(f"Reasoning effort: {effort}")
         else:
-            print(f"Note: --effort is only supported for the anthropic provider; "
-                  f"ignoring for '{provider_name}'")
+            print(f"Note: --effort is only supported for the anthropic and openai "
+                  f"providers; ignoring for '{provider_name}'")
 
     # Create provider and send request
     try:
@@ -129,10 +133,11 @@ def setup_analyze_parser(subparsers):
         '--effort',
         choices=['off', 'low', 'medium', 'high', 'xhigh', 'max'],
         default=None,
-        help='Anthropic adaptive thinking effort (overrides ANALYZE_EFFORT). '
-             'default = off = none = no reasoning; whether a custom temperature '
-             'is sent when off depends on the model tier; '
-             'a level enables reasoning. Ignored for non-anthropic providers.'
+        help='Reasoning effort (overrides ANALYZE_EFFORT). default = off = none '
+             '= no reasoning; a level enables it. Anthropic adaptive thinking or '
+             'OpenAI reasoning_effort, depending on the provider; whether a '
+             'custom temperature is sent when off depends on the model. '
+             'Ignored by the local providers.'
     )
 
     parser.set_defaults(func=analyze_command)

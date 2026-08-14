@@ -78,10 +78,17 @@ def schema_command(args):
             # Legacy: schema text in system prompt
             schema_text = read_file_safely(args.schema, "JSON schema")
             print(f"Structured output: schema in system prompt (legacy)")
+            # OpenAI reasoning models read the effort off output_config; the local
+            # backends ignore it.  --effort still overrides STAGE3_EFFORT.
+            effort = config.stage3_effort if args.effort is None else args.effort
+            if effort == "off":
+                effort = ""
+            legacy_output_config = config.build_output_config(effort) if effort else None
             response = provider.send_request_with_retry(
                 messages=messages,
                 system_prompt=system_prompt,
                 schema=schema_text,
+                output_config=legacy_output_config,
             )
     except Exception as e:
         print(f"Error during schema analysis: {e}")
@@ -130,9 +137,10 @@ def setup_schema_parser(subparsers):
         "--effort",
         choices=["off", "low", "medium", "high", "xhigh", "max"],
         default=None,
-        help="Anthropic adaptive thinking effort (overrides STAGE3_EFFORT). "
-             "default = off = none = no reasoning; whether a custom temperature "
-             "is sent when off depends on the model tier; a level enables "
-             "reasoning. Ignored for non-anthropic providers.",
+        help="Reasoning effort (overrides STAGE3_EFFORT). default = off = none "
+             "= no reasoning; a level enables it. Anthropic adaptive thinking or "
+             "OpenAI reasoning_effort, depending on the provider; whether a "
+             "custom temperature is sent when off depends on the model. "
+             "Ignored by the local providers.",
     )
     parser.set_defaults(func=schema_command)

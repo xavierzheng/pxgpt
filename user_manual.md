@@ -835,7 +835,7 @@ pxgpt analyze \
   [--effort {off,low,medium,high,xhigh,max}]   # Anthropic adaptive thinking; default off
 ```
 
-`--effort` enables Anthropic adaptive thinking (overrides `ANALYZE_EFFORT`; default **off**, preserving the original non-thinking behavior). When thinking is active, `temperature` is omitted automatically and the thinking blocks are stripped from the output. Ignored for non-anthropic providers.
+`--effort` enables reasoning (overrides `ANALYZE_EFFORT`; default **off**, preserving the original non-thinking behavior). On Anthropic it becomes adaptive thinking and the thinking blocks are stripped from the output; on OpenAI it becomes `reasoning_effort`, with "off" sent as the explicit level `none`. Either way `temperature` is omitted whenever the model will not accept a custom value. Ignored by the local providers (Ollama / LM Studio / vLLM).
 
 #### Recipe: gather descriptions from `analyze` (single-folder mode)
 

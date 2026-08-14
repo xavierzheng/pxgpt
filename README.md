@@ -85,7 +85,7 @@ STAGE3_MAX_TOKENS=16384
 # custom value: Anthropic Sonnet 4.6 and earlier, or OpenAI at effort "none".
 STAGE3_EFFORT=     # Stage 3: phenotype-batch + phenotype-batch-openai + schema
 DESCRIBE_EFFORT=   # Stage 1: describe-batch + describe-batch-openai
-ANALYZE_EFFORT=    # sync analyze command (Anthropic only)
+ANALYZE_EFFORT=    # sync analyze command (Anthropic + OpenAI)
 
 # Set true to allow up to 300 k output tokens per response in Stage 1 batches
 BATCH_300K_OUTPUT=false
