@@ -29,10 +29,19 @@ shards?" — `--shard-budget 40` (10 shards, current) vs `80` (4) vs `320` (1).
 
 Facts worth keeping in mind:
 
-- **Run-to-run noise is bigger than the budget effect.** The *same* configuration
-  disagrees with itself on 4.6 of 45 categorical traits between two runs
-  (~90% reproducibility, `TEMPERATURE=0.5`). Any analysis treating one Stage 3 run
-  as a fixed measurement absorbs that already.
+- **Method reproducibility is trait-dependent, and the average flatters it.** Two
+  runs of the production config agree on 87.6% of *informative* categorical traits,
+  but chance-corrected that is only **Cohen's kappa 0.59 mean / 0.64 median**: ~23 of
+  37 traits are at kappa > 0.6 (usable from a single run) with a tail of ~8 near
+  kappa 0. Two failure modes: near-invariant traits where the lone deviation *is*
+  the noise, and rare-category positives that land on different plants each run.
+  n=10 cannot identify *which* traits are unreliable (the b40 and b80 worst-8 lists
+  overlap on 3). Numbers and script: `analysis/reproducibility.py` in the pilot dir.
+- **`TEMPERATURE=0` is untested and is the obvious lever** — every run so far used
+  0.5. It is settable on the OpenAI path (effort `none` accepts a temperature) but
+  **not on Anthropic `claude-sonnet-5`, which rejects a custom temperature**, so the
+  Anthropic path's reproducibility cannot be tuned at all. Worth knowing before
+  claiming reproducibility in a paper.
 - **Quantitative traits (4 of 49) are exempt.** They are eyeballed against a nearby
   ruler / colorchecker from several camera angles; the user **accepts** their
   inconsistency (~60% disagreement *within* one config, ±4.4 cm on
@@ -110,10 +119,15 @@ annotations; the recipe is in LAB_NOTEBOOK §5.
    configuration is closer to truth needs the manual annotations (LAB_NOTEBOOK §5).
    The user intends to do this comparison themselves.
 2. **Two runs instead of one?** The noise floor exceeds the whole budget effect, so
-   two runs plus a disagreement flag would buy more per-trait reliability than any
-   budget change — and two budget-80 runs cost less than one budget-40 run.
-3. Budget 160 unscored; budget 320 only n=1; reasoning-on (`STAGE3_EFFORT` set)
+   replicate-and-vote would buy more per-trait reliability than any budget change.
+   Two budget-80 runs cost less than one budget-40 run ($0.072 vs $0.084 per plant);
+   three cost ~30% more.
+3. **Reproducibility properly measured** would need ~20–30 plants x 3 runs, at
+   `TEMPERATURE` 0 and 0.5, and ideally a comparison against human inter-rater
+   agreement on the same plants — human phenotypers disagree too, and that is the
+   benchmark that matters, not 100%.
+4. Budget 160 unscored; budget 320 only n=1; reasoning-on (`STAGE3_EFFORT` set)
    entirely untested — every benchmark run had reasoning off.
-4. Deferred by scope, not by judgement: `--dispatch batch` only checks `_partial/`
+5. Deferred by scope, not by judgement: `--dispatch batch` only checks `_partial/`
    provenance at fetch time (both providers), and `phenotype-batch-openai` has no
    manifest-only mode (would need `group_by_line()` on `OpenAIFilesManager`).
