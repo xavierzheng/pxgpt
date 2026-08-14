@@ -109,6 +109,7 @@ def _fetch_openai(config, checkpoint, output):
     from ..core.openai_batch_utils import (
         write_openai_describe_results,
         write_openai_phenotype_results,
+        write_openai_phenotype_sharded_results,
     )
 
     if not config.openai_api_key:
@@ -146,6 +147,22 @@ def _fetch_openai(config, checkpoint, output):
     elif stage == "phenotype":
         totals = write_openai_phenotype_results(client, batch, line_ids, output)
         print(f"Phenotype JSON files written to: {output}/")
+    elif stage == "phenotype_sharded":
+        master_index = _sharded_master_index(checkpoint)
+        if master_index is None:
+            return 1
+        # The checkpoint records the model the batch was submitted with; the
+        # provider is openai by definition of this branch.
+        ck_model = checkpoint.get("model")
+        if not ck_model:
+            print(f"  WARNING: checkpoint has no model; assuming "
+                  f"{config.openai_model!r} for the _partial/ provenance check.")
+            ck_model = config.openai_model
+        totals = write_openai_phenotype_sharded_results(
+            client, batch, line_ids, master_index, output,
+            "openai", ck_model,
+        )
+        print(f"Merged phenotype JSON files written to: {output}/")
     else:
         print(f"Error: unknown stage in checkpoint: {stage!r}")
         return 1
