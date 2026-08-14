@@ -350,39 +350,41 @@ def assert_partial_provenance(partial_dir, provider: str, model: str) -> None:
     )
 
 
-def write_phenotype_sharded_results(
-    client,
-    batch_id: str,
+def merge_sharded_results(
+    fresh: Dict[str, Dict[str, Any]],
+    shard_errors: Dict[str, List[str]],
     line_ids: List[str],
     master_index,
     output_dir: str,
     provider: str,
     model: str,
 ) -> Dict[str, int]:
-    """Retrieve a SHARDED phenotype batch, merge shards, write one JSON per plant.
+    """Merge freshly-fetched shards with the ``_partial/`` store; write per plant.
 
-    Results have ``custom_id = "<line_id>__<shard_id>"``.  Per plant the shard
-    objects are merged into one record keyed by the master organ structure,
-    quantitative strings are parsed to numbers, and any missing trait is
-    reported.  ``master_index`` is ``(group_order, group_traits, trait_meta)``
-    from :mod:`pxgpt.core.sharding`.
+    Provider-agnostic half of a sharded fetch.  *fresh* maps
+    ``"<line_id>__<shard_id>"`` to the parsed shard object retrieved in THIS run;
+    *shard_errors* maps ``line_id`` to ``"<shard_id>: <detail>"`` strings for the
+    shards that produced nothing.  ``master_index`` is
+    ``(group_order, group_traits, trait_meta)`` from :mod:`pxgpt.core.sharding`.
 
     Partial-aware + cumulative.  This shares the sequential dispatch's
-    ``<output>/_partial/<line_id>__<shard_id>.json`` store so a batch that left
+    ``<output>/_partial/<line_id>__<shard_id>.json`` store so a run that left
     gaps (e.g. a shard hit a transient ``overloaded_error``) can be recovered:
 
       * per-shard partials already on disk are adopted before merging,
       * each freshly-succeeded shard is persisted as a partial, and
-      * the merge uses the UNION of prior partials + this batch.
+      * the merge uses the UNION of prior partials + this run.
 
     So re-running ``fetch-results`` is idempotent, and a follow-up
-    ``phenotype-batch --dispatch sequential`` (whose resume reads the same
-    ``_partial/`` dir) re-issues only the still-missing shards.  A trait is only
-    reported in ``<lid>.gaps.json`` if it is missing *after* the union; a stale
-    gaps file whose traits are now filled is removed.
+    ``--dispatch sequential`` (whose resume reads the same ``_partial/`` dir)
+    re-issues only the still-missing shards.  A trait is only reported in
+    ``<lid>.gaps.json`` if it is missing *after* the union; a stale gaps file
+    whose traits are now filled is removed.
 
-    Returns token-usage totals for the calls made in THIS batch (adopted
-    partials contribute nothing to the totals — they were billed earlier).
+    Returns ``{"written", "plants_with_gaps", "total_gaps"}``.  Both providers
+    share this so the merge, the gap rule and the recovery story can never drift
+    apart between them — an asymmetry there would silently break the
+    cross-provider comparison this project exists to make.
     """
     from .sharding import split_custom_id, merge_plant_record
 
@@ -392,12 +394,10 @@ def write_phenotype_sharded_results(
     partial_dir = out / "_partial"
     partial_dir.mkdir(parents=True, exist_ok=True)
     assert_partial_provenance(partial_dir, provider, model)
-    totals = {"input": 0, "output": 0, "cache_creation": 0, "cache_read": 0}
 
     # Per plant, keep one object per shard so a re-fetch overrides cleanly and
     # a shard is never merged twice.  Adopt existing partials first.
     shards_by_line: Dict[str, Dict[str, Any]] = {lid: {} for lid in line_ids}
-    shard_errors: Dict[str, List[str]] = {}
 
     adopted = 0
     for p in sorted(partial_dir.glob("*.json")):
@@ -413,30 +413,11 @@ def write_phenotype_sharded_results(
     if adopted:
         print(f"  Adopted {adopted} shard partial(s) from {partial_dir}")
 
-    for result in client.beta.messages.batches.results(batch_id):
-        cid = result.custom_id
+    for cid, obj in fresh.items():
         line_id, shard_id = split_custom_id(cid)
-        if result.result.type == "succeeded":
-            msg = result.result.message
-            text = strip_code_fence(extract_text_content(msg.content))
-            u = msg.usage
-            totals["input"] += getattr(u, "input_tokens", 0)
-            totals["output"] += getattr(u, "output_tokens", 0)
-            totals["cache_creation"] += getattr(u, "cache_creation_input_tokens", 0)
-            totals["cache_read"] += getattr(u, "cache_read_input_tokens", 0)
-            try:
-                obj = json.loads(text)
-            except json.JSONDecodeError:
-                shard_errors.setdefault(line_id, []).append(f"{shard_id}: JSON parse failed")
-                print(f"  WARNING: {cid} — JSON parse failed")
-                continue
-            # Persist immediately (crash safety + feeds a later sequential resume).
-            write_json_atomic(partial_dir / f"{cid}.json", obj)
-            shards_by_line.setdefault(line_id, {})[shard_id] = obj
-        else:
-            detail = describe_batch_error(result.result.error)
-            shard_errors.setdefault(line_id, []).append(f"{shard_id}: {detail}")
-            print(f"  WARNING: {cid} failed — {detail}")
+        # Persist (crash safety + feeds a later sequential resume).
+        write_json_atomic(partial_dir / f"{cid}.json", obj)
+        shards_by_line.setdefault(line_id, {})[shard_id] = obj
 
     written = 0
     plants_with_gaps = 0
@@ -472,7 +453,63 @@ def write_phenotype_sharded_results(
           f"{plants_with_gaps} plant(s) with gaps ({total_gaps} missing traits total)")
     if total_gaps or plants_with_gaps:
         print("  (see *.gaps.json next to the affected records; recover them with "
-              "`phenotype-batch --dispatch sequential` to the same --output)")
+              "`--dispatch sequential` to the same --output)")
+    return {"written": written, "plants_with_gaps": plants_with_gaps,
+            "total_gaps": total_gaps}
+
+
+def write_phenotype_sharded_results(
+    client,
+    batch_id: str,
+    line_ids: List[str],
+    master_index,
+    output_dir: str,
+    provider: str,
+    model: str,
+) -> Dict[str, int]:
+    """Retrieve a SHARDED Anthropic phenotype batch and merge it per plant.
+
+    Results have ``custom_id = "<line_id>__<shard_id>"``.  This is the
+    Anthropic-specific half — iterate the batch, pull text + usage out of the
+    Anthropic result shape — and :func:`merge_sharded_results` does everything
+    after that, shared with the OpenAI path.
+
+    Returns token-usage totals for the calls made in THIS batch (adopted
+    partials contribute nothing to the totals — they were billed earlier).
+    """
+    from .sharding import split_custom_id
+
+    # Refuse a foreign _partial/ store before spending the results download.
+    # merge_sharded_results asserts again; the check is idempotent.
+    assert_partial_provenance(Path(output_dir) / "_partial", provider, model)
+
+    totals = {"input": 0, "output": 0, "cache_creation": 0, "cache_read": 0}
+    fresh: Dict[str, Dict[str, Any]] = {}
+    shard_errors: Dict[str, List[str]] = {}
+
+    for result in client.beta.messages.batches.results(batch_id):
+        cid = result.custom_id
+        line_id, shard_id = split_custom_id(cid)
+        if result.result.type == "succeeded":
+            msg = result.result.message
+            text = strip_code_fence(extract_text_content(msg.content))
+            u = msg.usage
+            totals["input"] += getattr(u, "input_tokens", 0)
+            totals["output"] += getattr(u, "output_tokens", 0)
+            totals["cache_creation"] += getattr(u, "cache_creation_input_tokens", 0)
+            totals["cache_read"] += getattr(u, "cache_read_input_tokens", 0)
+            try:
+                fresh[cid] = json.loads(text)
+            except json.JSONDecodeError:
+                shard_errors.setdefault(line_id, []).append(f"{shard_id}: JSON parse failed")
+                print(f"  WARNING: {cid} — JSON parse failed")
+        else:
+            detail = describe_batch_error(result.result.error)
+            shard_errors.setdefault(line_id, []).append(f"{shard_id}: {detail}")
+            print(f"  WARNING: {cid} failed — {detail}")
+
+    merge_sharded_results(fresh, shard_errors, line_ids, master_index, output_dir,
+                          provider, model)
     return totals
 
 
