@@ -78,14 +78,14 @@ ANTHROPIC_MODEL=claude-sonnet-5
 STAGE1_MAX_TOKENS=16384   # raise to 65536 for long descriptions
 STAGE3_MAX_TOKENS=16384
 
-# Adaptive thinking effort. default = off = none = NO reasoning.
+# Reasoning effort, shared by BOTH providers. default = off = none = NO reasoning.
 # (blank, "off", and "none" are equivalent.) Set a level low/medium/high/xhigh/max to
 # enable reasoning; the --effort flag overrides per run.
-# TEMPERATURE is sent only with reasoning off AND a Sonnet 4.6-or-earlier model;
-# claude-sonnet-5 and newer reject a custom value, so pxGPT omits it.
-STAGE3_EFFORT=     # Stage 3 / schema command   (off | low | medium | high | xhigh | max)
-DESCRIBE_EFFORT=   # Stage 1 describe-batch
-ANALYZE_EFFORT=    # sync analyze command
+# TEMPERATURE only goes out with reasoning off, and only where the model accepts a
+# custom value: Anthropic Sonnet 4.6 and earlier, or OpenAI at effort "none".
+STAGE3_EFFORT=     # Stage 3: phenotype-batch + phenotype-batch-openai + schema
+DESCRIBE_EFFORT=   # Stage 1: describe-batch + describe-batch-openai
+ANALYZE_EFFORT=    # sync analyze command (Anthropic only)
 
 # Set true to allow up to 300 k output tokens per response in Stage 1 batches
 BATCH_300K_OUTPUT=false

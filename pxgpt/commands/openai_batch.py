@@ -34,6 +34,7 @@ from ..core.openai_batch_utils import (
     build_openai_base64_blocks,
     build_responses_request_body,
     build_text_format,
+    openai_effort_status,
     openai_normalize_schema,
     write_jsonl_requests,
     poll_openai_batch,
@@ -64,6 +65,16 @@ def _run_openai_batch(args, stage: str) -> int:
 
     model = config.openai_model
     client = _make_openai_client(config)
+
+    # Reasoning effort mirrors the Anthropic stages: Stage 1 takes DESCRIBE_EFFORT
+    # with an --effort override, Stage 3 takes STAGE3_EFFORT and has no flag.
+    # "" / off / none all mean off, sent as reasoning.effort "none" downstream.
+    if stage == "describe":
+        effort = config.describe_effort if args.effort is None else args.effort
+        if effort == "off":
+            effort = ""
+    else:
+        effort = config.stage3_effort
 
     try:
         system_prompt = read_file_safely(args.system_prompt, "system prompt")
@@ -100,6 +111,7 @@ def _run_openai_batch(args, stage: str) -> int:
 
     print(f"Found {len(plant_lines)} plant line(s) in {input_dir}")
     print(f"Model: {model}")
+    print(f"Reasoning effort: {openai_effort_status(model, effort)}")
 
     # ------------------------------------------------------------------
     # Collect images: upload via Files API (default) or embed inline base64
@@ -155,7 +167,7 @@ def _run_openai_batch(args, stage: str) -> int:
             max_tokens=max_tokens,
             temperature=config.temperature,
             text_format=text_format,
-            reasoning_effort=config.openai_reasoning_effort,
+            reasoning_effort=effort,
         )
         requests.append({
             "custom_id": line_id,
@@ -290,6 +302,15 @@ def setup_describe_batch_openai_parser(subparsers):
     parser.add_argument(
         "--output", required=True,
         help="Output text file (grouped descriptions, one section per plant line)",
+    )
+    parser.add_argument(
+        "--effort",
+        choices=["off", "low", "medium", "high", "xhigh", "max"],
+        default=None,
+        help="OpenAI reasoning effort (overrides DESCRIBE_EFFORT). "
+             "default = off = none = no reasoning, sent as reasoning.effort "
+             "'none'; a level enables reasoning (TEMPERATURE is then omitted, "
+             "because only effort 'none' accepts a custom temperature).",
     )
     parser.set_defaults(func=describe_batch_openai_command)
 

@@ -5,9 +5,12 @@ from dataclasses import dataclass
 from typing import Optional, Dict, Any
 
 
+# One effort vocabulary for both providers: Anthropic (claude-sonnet-5 and the
+# other adaptive-thinking tiers) and OpenAI (gpt-5.x / o-series) both accept
+# these five levels.  ""/off/none all mean OFF, spelled per provider — Anthropic
+# gets thinking disabled, OpenAI gets reasoning.effort "none".
+# Note: OpenAI's older "minimal" level is not offered; gpt-5.6 dropped it.
 VALID_EFFORT_LEVELS = {"low", "medium", "high", "xhigh", "max"}
-# OpenAI reasoning models accept a different set; "" disables the param.
-VALID_OPENAI_EFFORT_LEVELS = {"minimal", "low", "medium", "high"}
 
 
 def _normalize_effort(value: str) -> str:
@@ -92,10 +95,11 @@ class Config:
     upload_concurrency: int = 10
 
     # --- OpenAI batch settings (describe-batch-openai / phenotype-batch-openai) ---
-    # Reasoning effort for OpenAI reasoning models (gpt-5, o-series).
-    # default = "" = off = none = no reasoning param sent.
-    # Enable with: "minimal" | "low" | "medium" | "high" (env also accepts off/none).
-    openai_reasoning_effort: str = ""
+    # Reasoning effort reuses the shared per-stage knobs above: describe_effort
+    # for Stage 1 (overridable with --effort) and stage3_effort for Stage 3.
+    # Off is sent to OpenAI as an explicit reasoning.effort "none" — omitting the
+    # param would leave the model on its own default (medium on gpt-5.6), i.e.
+    # reasoning silently ON.
     # Completion window passed to the OpenAI Batch API.
     openai_batch_completion_window: str = "24h"
 
@@ -112,12 +116,6 @@ class Config:
             raise ValueError(
                 f"STAGE3_EFFORT must be one of {VALID_EFFORT_LEVELS} or off/none, "
                 f"got: {stage3_effort!r}"
-            )
-        openai_reasoning_effort = _normalize_effort(os.getenv("OPENAI_REASONING_EFFORT", ""))
-        if openai_reasoning_effort not in VALID_OPENAI_EFFORT_LEVELS and openai_reasoning_effort != "":
-            raise ValueError(
-                f"OPENAI_REASONING_EFFORT must be one of {VALID_OPENAI_EFFORT_LEVELS} "
-                f"or off/none, got: {openai_reasoning_effort!r}"
             )
         analyze_effort = _normalize_effort(os.getenv("ANALYZE_EFFORT", ""))
         if analyze_effort not in VALID_EFFORT_LEVELS and analyze_effort != "":
@@ -158,7 +156,6 @@ class Config:
             batch_300k_output=os.getenv("BATCH_300K_OUTPUT", "false").lower() in ("1", "true", "yes"),
             use_files_api=os.getenv("USE_FILES_API", "true").lower() in ("1", "true", "yes"),
             upload_concurrency=int(os.getenv("UPLOAD_CONCURRENCY", "10")),
-            openai_reasoning_effort=openai_reasoning_effort,
             openai_batch_completion_window=os.getenv("OPENAI_BATCH_COMPLETION_WINDOW", "24h"),
             rate_limit_sleep=int(os.getenv("RATE_LIMIT_SLEEP", "60")),
         )

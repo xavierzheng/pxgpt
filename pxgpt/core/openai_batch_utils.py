@@ -112,6 +112,19 @@ def _is_reasoning_model(model: str) -> bool:
     return "gpt-5" in m or m.startswith(("o1", "o3", "o4"))
 
 
+def openai_effort_status(model: str, effort: str) -> str:
+    """Human-readable summary of what ``build_responses_request_body`` will send.
+
+    For the run banner — keeps it in sync with the logic below instead of
+    assuming a model family.
+    """
+    if not _is_reasoning_model(model):
+        return "not a reasoning model; temperature sent"
+    if effort:
+        return f"{effort} (temperature omitted — only effort 'none' accepts it)"
+    return "none — reasoning explicitly off; temperature sent"
+
+
 def build_text_format(schema: Dict[str, Any], name: str = "structured_output") -> Dict[str, Any]:
     """Return a Responses-API ``text`` value for strict structured output."""
     return {
@@ -136,9 +149,10 @@ def build_responses_request_body(
 ) -> Dict[str, Any]:
     """Assemble one ``/v1/responses`` request body.
 
-    The system prompt is passed via ``instructions``.  Temperature is omitted
-    for reasoning models (which only accept the default); for those models a
-    ``reasoning.effort`` is added when configured.
+    The system prompt is passed via ``instructions``.  Reasoning models always
+    receive an explicit ``reasoning.effort`` (default ``"none"``); temperature
+    rides along only when that effort is ``"none"``, the one level that accepts
+    it.
     """
     user_content = image_blocks + [{"type": "input_text", "text": user_prompt}]
     body: Dict[str, Any] = {
@@ -148,8 +162,15 @@ def build_responses_request_body(
         "max_output_tokens": max_tokens,
     }
     if _is_reasoning_model(model):
-        if reasoning_effort:
-            body["reasoning"] = {"effort": reasoning_effort}
+        # Always send an explicit effort.  Omitting ``reasoning`` does NOT turn
+        # reasoning off — the model falls back to its own default (medium on
+        # gpt-5.6), so "off" has to be spelled out as "none".
+        effort = reasoning_effort or "none"
+        body["reasoning"] = {"effort": effort}
+        # A custom temperature is accepted only with reasoning fully off; any
+        # other effort level rejects it with a 400 (verified against gpt-5.6-luna).
+        if effort == "none":
+            body["temperature"] = temperature
     else:
         body["temperature"] = temperature
     if text_format is not None:

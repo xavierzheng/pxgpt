@@ -643,6 +643,7 @@ pxgpt describe-batch-openai \
   --prompt FILE \
   [--manifest FILE]      # default: openai_file_manifest.json (ignored with --no-files-api)
   [--no-files-api]       # embed images inline as base64 instead of uploading
+  [--effort {off,low,medium,high,xhigh,max}]   # overrides DESCRIBE_EFFORT
   [--wait]
 
 pxgpt phenotype-batch-openai \
@@ -661,7 +662,9 @@ Key differences from the Anthropic stages:
 - **Model**: uses `OPENAI_MODEL` (default `gpt-5.6-luna`).
 - **Files API**: images are uploaded with OpenAI's `purpose="vision"` and referenced by `file_id`. Because OpenAI and Anthropic file_ids are different namespaces, the OpenAI manifest defaults to a **separate file** (`openai_file_manifest.json`) — do not point it at the Anthropic `file_manifest.json`.
 - **Structured output** (`phenotype-batch-openai`): the schema is normalized in memory for OpenAI **strict** mode — every property is forced into `required` and `additionalProperties: false` is set on every object (stricter than `pxgpt normalize-schema`, which targets Anthropic). The file on disk is not modified.
-- **Reasoning effort**: set `OPENAI_REASONING_EFFORT` (`minimal`/`low`/`medium`/`high`, or empty to disable) — applied only to reasoning models (gpt-5, o-series). For those models a custom `temperature` is omitted automatically.
+- **Reasoning effort**: the same knobs as the Anthropic stages — `DESCRIBE_EFFORT` for Stage 1 (with `--effort` to override per run) and `STAGE3_EFFORT` for Stage 3 (no flag; the variable is the only control). Levels `low`/`medium`/`high`/`xhigh`/`max`; empty/`off`/`none` means reasoning **off**. There is no OpenAI-specific effort variable.
+- **Reasoning off is explicit**: "off" is sent as `reasoning: {"effort": "none"}`. Omitting the parameter would *not* disable reasoning — the model falls back to its own default (`medium` on gpt-5.6) — so pxGPT always sends a level. Verified: `effort=none` returns `reasoning_tokens=0`.
+- **Temperature**: `TEMPERATURE` is sent **only** when effort is `none`; any other level rejects it with `400 Unsupported parameter: 'temperature' is not supported with this model.`, so pxGPT omits it there. The run banner prints the effort and what happened to temperature.
 - **Completion window**: `OPENAI_BATCH_COMPLETION_WINDOW` (default `24h`).
 
 Checkpoints are tagged with `"provider": "openai"`, so `pxgpt fetch-results` retrieves them the same way as Anthropic batches.
@@ -947,7 +950,8 @@ OPENAI_MODEL=gpt-5.6-luna
 OPENAI_BASE_URL=                  # optional: point the openai provider at a proxy
 
 # OpenAI Batch API stages (describe-batch-openai / phenotype-batch-openai)
-OPENAI_REASONING_EFFORT=          # minimal | low | medium | high | "" (gpt-5/o-series only)
+                                  # Reasoning effort is NOT set here — the OpenAI stages read the
+                                  # shared DESCRIBE_EFFORT / STAGE3_EFFORT knobs (see above).
 OPENAI_BATCH_COMPLETION_WINDOW=24h
 ```
 
