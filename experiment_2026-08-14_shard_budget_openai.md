@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-14
 **Model:** `gpt-5.6-luna` (`STAGE3_EFFORT` off → `reasoning.effort: "none"`, `TEMPERATURE=0.5`)
-**Plant:** one — `s0001`
+**Plants:** experiment A — 1 (`s0001`); experiment B — 10 (`s0001`–`s0011`)
 
 ## Question
 
@@ -14,28 +14,44 @@ whether packing more traits into one request degrades the scoring.
 
 ## Answer
 
-**Budget 80 (4 shards) is defensible; budget 320 (1 shard) is not.**
+**Budget 80 (4 shards) costs about 1.7 traits of 49 for a 2.4× saving, and that
+penalty is statistically detectable. Budget 320 (1 shard) is much worse and should
+not be used.**
 
-Divergence from the current budget-40 configuration, measured against the
-run-to-run noise floor of the same configuration:
+Two experiments, in this order. The second supersedes the first wherever they
+overlap:
 
-| comparison | disagreeing traits (of 49) |
-|---|---|
-| run-to-run noise, *any* single configuration | **5.0** |
-| budget 40 → budget 80 | 6.5 |
-| budget 40 → budget 320 | **10.2** |
-| *switching provider entirely* (Anthropic b40 → OpenAI b40) | **10.0** |
+| experiment | plants | runs per config | scope |
+|---|---|---|---|
+| **A** (below) | 1 (`s0001`) | 2 | budgets 40 / 80 / 320 + Anthropic reference |
+| **B** ([below](#follow-up-budget-80-on-10-plants)) | 10 | 2 | budgets 40 / 80 only |
 
-Budget 320 changes the phenotype about as much as **changing model provider**.
-Budget 80 sits close to the noise floor. Per-trait rationale length — the
-chain-of-thought the schema deliberately forces before each value — shortens
-monotonically as shards grow: 178 → 152 → 113 characters.
+Headline numbers, disagreeing traits out of 49:
 
-Neither variant is *wrong*: there is no ground truth in this experiment, so a
-divergence is a difference, not an error. What the data does establish is that
-budget 320 systematically shifts values while visibly gathering less evidence per
-trait, which is the wrong direction for a study whose validity rests on the
-rationale.
+| comparison | experiment A (n=1) | experiment B (n=10) |
+|---|---|---|
+| run-to-run noise, budget 40 | 5.0 | **7.00** (sd 1.49) |
+| run-to-run noise, budget 80 | 5.0 | **6.10** (sd 1.60) |
+| budget 40 → budget 80 | 6.5 | **8.22** (sd 2.30) |
+| budget 40 → budget 320 | 10.2 | *not re-tested* |
+| *switching provider* (Anthropic b40 → OpenAI b40) | 10.0 | *not re-tested* |
+
+**The single-plant run underestimated the noise floor.** `s0001` happened to be a
+quiet plant; across 10 plants a configuration disagrees with *itself* on 7 of 49
+traits on average, not 5. That reframes everything: budget 80's excess over noise
+is **+1.68 traits** (paired t(9) = 3.03, p = 0.014, 95% CI +0.42 … +2.93), which is
+real but modest — **re-running budget 40 already changes ~7 traits; switching to
+budget 80 changes ~8.2.**
+
+Per-trait rationale length — the chain-of-thought the schema deliberately forces
+before each value — shortens robustly: 180.6 → 152.9 characters (−15%, n = 490
+each). Completeness and the `not_assessable` rate are identical between budgets.
+
+Neither variant is *wrong*: there is no ground truth in either experiment, so a
+divergence is a difference, not an error. Which is more accurate needs the manual
+corrections.
+
+# Experiment A — one plant, three budgets
 
 ## Data provenance
 
@@ -232,34 +248,183 @@ least stable traits rather than a budget effect. The budget-320-only shifts add
 categorical calls (`heterophylly present → absent`, `root_hair sparse_or_absent →
 present`) — changes of kind, not degree.
 
-## Recommendation
+## Limitations of experiment A
+
+- **n = 1 plant, 2 runs per configuration.** Superseded by experiment B for
+  budgets 40 and 80: B measures a higher noise floor (7.0 vs 5.0) and shows the
+  "systematically shifted traits" of Result 4 do not concentrate across plants.
+  The budget-320 numbers above remain n = 1.
+- Only `s0001` was used (15 images, a complete set). Plants with fewer or poorer
+  images may behave differently.
+
+# Experiment B — budget 80 on 10 plants
+
+Experiment A's single plant could not separate a budget effect from run-to-run
+variation with any confidence, and its noise estimate turned out to be low. B
+repeats the budget 40 vs budget 80 comparison on 10 plants, two runs per
+configuration, so each plant contributes its own noise floor.
+
+## Data provenance
+
+| what | path |
+|---|---|
+| images | `/home/xavier/project/pxgpt/02_mature_v1/images/{s0001,s0002,s0003,s0004,s0006,s0007,s0008,s0009,s0010,s0011}` |
+| master schema | `/home/xavier/project/pxgpt/02_mature_v1/master_schema_v2.json` |
+| system prompt (override) | `/home/xavier/project/pxgpt/02_mature_v1/system_2_schema.txt` |
+| shard set, budget 40 | `/home/xavier/project/pxgpt/02_mature_v1/shard_master_schema` (frozen) |
+| shard set, budget 80 | `/home/xavier/project/pxgpt/02_mature_v1/Result_openai_shard_budget_pilot/shardset_budget_80` |
+| raw results + analysis output | `/home/xavier/project/pxgpt/02_mature_v1/Result_openai_shard_budget_pilot/tenplant/` |
+
+The 10 plants are the first ten by ID (note `s0005` does not exist in the image
+tree). Image counts vary 15–26 per plant, 199 images total — deliberately not
+uniform, so the result is not specific to one image count.
+
+Four `--dispatch batch` submissions, 280 requests total, **0 failures**:
+
+| run | shards | requests | JSONL | input tokens | output tokens |
+|---|---|---|---|---|---|
+| `b40-r1` | 10 | 100 | 1.5 MB | 4,035,060 | 26,641 |
+| `b40-r2` | 10 | 100 | 1.5 MB | 4,035,060 | 26,380 |
+| `b80-r1` | 4 | 40 | 597,932 B | 1,657,346 | 23,084 |
+| `b80-r2` | 4 | 40 | 597,932 B | 1,657,346 | 23,034 |
+
+The two runs of each configuration consumed **exactly** the same input tokens,
+which confirms they are two samples of one configuration rather than two different
+requests. All 199 images were uploaded once into a shared manifest and reused by
+`file_id` across all four runs.
+
+## Validity check: the two shard sets differ ONLY in partitioning
+
+The frozen budget-40 set was generated on 2026-07-30 and `master_schema_v2.json`
+was copied in on 2026-08-14, so a changed master would have confounded the whole
+comparison. Ruled out:
+
+- Regenerating budget 40 from today's master reproduces the frozen shard schemas
+  **byte-identically** (all 10 files, sha256).
+- The budget-80 set carries the same 49 traits with **0** differing value
+  constraints (enum member lists and types compared leaf by leaf).
+
+So the only variable between the two configurations is how the traits are packed
+into requests.
+
+## Result — per-plant disagreement (of 49 traits)
+
+| plant | images | b40 noise (r1 vs r2) | b80 noise (r1 vs r2) | b40 vs b80 (mean of 4 cross pairs) |
+|---|---|---|---|---|
+| `s0001` | 15 | 8 | 4 | 5.75 |
+| `s0002` | 16 | 5 | 8 | 6.00 |
+| `s0003` | 18 | 6 | 8 | 11.00 |
+| `s0004` | 17 | 7 | 6 | 10.50 |
+| `s0006` | 17 | 6 | 5 | 6.75 |
+| `s0007` | 21 | 6 | 7 | 9.75 |
+| `s0008` | 24 | 8 | 5 | 8.25 |
+| `s0009` | 22 | 10 | 8 | 11.50 |
+| `s0010` | 23 | 6 | 6 | 7.25 |
+| `s0011` | 26 | 8 | 4 | 5.50 |
+| **mean** | | **7.00** | **6.10** | **8.22** |
+| sd | | 1.49 | 1.60 | 2.30 |
+
+Pooled within-configuration noise floor: **6.55 / 49**. Budget 80 divergence:
+**8.22 / 49**.
+
+### Is that excess real?
+
+Paired per plant (each plant's cross-config divergence minus its own noise floor),
+so plants that are simply unstable cannot create the effect:
+
+```
+per-plant excess: -0.25, -0.50, +4.00, +4.00, +1.25, +3.25, +1.75, +2.50, +1.25, -0.50
+n = 10   mean = +1.68 traits   sd = 1.75   se = 0.55
+t(9) = 3.03   two-sided p = 0.0143   95% CI  +0.42 … +2.93
+7 of 10 plants diverged more than their own noise
+```
+
+So yes — detectable, and small. The confidence interval spans "half a trait" to
+"three traits" out of 49. Image count does not predict divergence
+(Pearson r = +0.03, n = 10).
+
+### The most important number is the noise floor itself
+
+A configuration disagrees with **itself** on 7 of 49 traits between two runs —
+about 86% run-to-run reproducibility at `TEMPERATURE=0.5`. That is a property of
+the current production setup, not of budget 80, and it is larger than the entire
+budget effect. Any downstream analysis that treats a single Stage 3 run as a fixed
+measurement is absorbing ~13% per-trait instability already.
+
+## Result — rationale length
+
+Pooled over 10 plants × 49 traits (n = 490 per run):
+
+| run | mean | median | min | max |
+|---|---|---|---|---|
+| `b40-r1` | 180.6 | 174 | 88 | 337 |
+| `b40-r2` | 177.8 | 173 | 90 | 350 |
+| `b80-r1` | **152.9** | 153 | 61 | 241 |
+| `b80-r2` | **153.2** | 151 | 71 | 268 |
+
+−15% at budget 80, reproducing experiment A's single-plant figure (178 → 152)
+almost exactly. This is the most robust effect in either experiment.
+
+## Result — completeness and `not_assessable`
+
+| run | traits | `not_assessable` |
+|---|---|---|
+| `b40-r1` / `b40-r2` | 490 / 490 | 10 (2.0%) / 11 (2.2%) |
+| `b80-r1` / `b80-r2` | 490 / 490 | 10 (2.0%) / 11 (2.2%) |
+
+Identical. No trait dropped, no gaps file written in any of the four runs, and no
+sign of the "gives up under load" failure mode.
+
+## Result — the shifts are diffuse, not trait-specific
+
+Cells where *both* budget-80 runs disagree with *both* budget-40 runs:
+**33 of 490 (6.7%)**, spread across **23 distinct traits**. Only one trait is hit
+in as many as 4 of 10 plants (`whole_plant_architecture.plant_canopy_spread`).
+
+This corrects experiment A. From one plant it looked as though budget 80 shifted a
+specific handful of traits; across ten it does not concentrate anywhere. Budget 80
+is diffusely slightly less stable, not biased on particular traits.
+
+---
+
+# Recommendation
 
 - **Keep budget 40 for anything compared against the human evaluation.** That
-  evaluation is running against the frozen budget-40 shard set; re-sharding makes
-  the results incomparable regardless of quality.
-- **Budget 80 is a reasonable cost/quality trade** if a new collection needs to be
-  cheaper: 2.3× cheaper, 4 systematic trait shifts, 1.5 traits above noise. Worth
-  confirming on more plants before committing.
-- **Do not use budget 320.** A 6.6× saving that moves the phenotype as much as
-  changing provider, while cutting per-trait reasoning by a third.
-- Keep provider and shard budget **fixed within a collection**. Both move results
-  by ~10/49 traits, so mixing configurations inside one dataset would be
-  indistinguishable from real biological variation.
+  evaluation runs against the frozen budget-40 shard set; re-sharding makes the
+  results incomparable regardless of quality. This is a blocker independent of the
+  measurements above.
+- **Budget 80 is defensible for a new collection**: 2.43× less input cost
+  ($11.91 → $5.10 per 142 plants sequentially, or $5.96 → $2.55 via
+  `--dispatch batch`) for +1.68 traits of divergence beyond noise. Note the honest
+  framing — re-running budget 40 already moves ~7 traits, so budget 80 moves ~1.7
+  more than a re-run would.
+- **Do not use budget 320.** On one plant it diverged 10.2 traits, as much as
+  changing provider, and cut rationale length by a third. Not re-tested on 10
+  plants because experiment A was already disqualifying.
+- **Fix provider and shard budget within a collection.** Both move results by
+  enough traits to be mistaken for biological variation if mixed.
+- **Consider whether one run per plant is enough at all.** The 7/49 noise floor is
+  the largest effect measured here. If per-trait reliability matters, two runs and
+  a disagreement flag would buy more than any budget change — and at budget 80,
+  two runs cost less than one run at budget 40.
 
-## Limitations
+# Limitations
 
-- **n = 1 plant, 2 runs per configuration.** The rationale-length effect is robust
-  (uniform across 4 runs, monotonic in budget). The value-shift magnitudes are a
-  clear signal but not statistically established; 5–10 plants would be needed to
-  put an interval on them.
-- **No ground truth.** All comparisons are between model configurations. Which
-  configuration is more *accurate* cannot be answered here — that needs the human
-  corrections. The full per-trait table below has an empty `human` column for
-  exactly that purpose.
-- Only `s0001` was used, and it is one of the plants with a complete image set (15
-  images). Plants with fewer or poorer images may behave differently.
-- Cost figures assume the measured ~30 k-token image payload, which scales with
-  image count per plant.
+- **No ground truth in either experiment.** Every comparison is between model
+  configurations, so "more divergent" is not "less accurate". Which configuration
+  is closer to truth needs the manual corrections; the per-trait table at the end
+  has an empty `human` column for exactly that.
+- **10 plants, 2 runs each.** Enough to establish the noise floor and to detect
+  the budget-80 excess (p = 0.014), not enough to characterise which *kinds* of
+  traits are affected — 23 traits with 1–4 hits each is too sparse for that.
+- **Budgets 160 and 320 were only compile-checked on 10 plants, not scored.** The
+  320 result is n = 1.
+- Cost figures scale with images per plant (15–26 here, mean 19.9). A collection
+  with more images per plant pays proportionally more, and the budget saving grows
+  in absolute terms.
+- All runs used `STAGE3_EFFORT` off (`reasoning.effort: "none"`) and
+  `TEMPERATURE=0.5`. Reasoning-enabled runs may behave differently — untested.
+
 
 ## `pxgpt json-to-table` verification on OpenAI output
 
@@ -325,11 +490,17 @@ pxgpt cleanup-files --manifest /tmp/manifest_pilot.json
 Separate `--output` directories are required: a second run pointed at the first
 one would adopt its `_partial/` shards and make no API calls at all.
 
-## Full per-trait results
+## Full per-trait results — `s0001` (experiment A)
 
 ⚠ marks a trait where both runs of that budget diverge from both budget-40 runs.
 The `human` column is intentionally empty — fill it from the manual corrections to
 turn this table into an accuracy comparison rather than a consistency one.
+
+This is one plant. For the same comparison across all 10 plants of experiment B,
+the raw records are at
+`02_mature_v1/Result_openai_shard_budget_pilot/tenplant/Result_b{40,80}_r{1,2}/<plant>.json`,
+and `pxgpt json-to-table` will flatten any of those directories into one row per
+plant for a bulk diff against the corrections.
 
 | group | trait | scale | A-b40 | O-b40-s | O-b40-b | O-b80-1 | O-b80-2 | O-b320-1 | O-b320-2 | human |
 |---|---|---|---|---|---|---|---|---|---|---|

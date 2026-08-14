@@ -294,16 +294,17 @@ Before raising it, weigh three things:
   you do this.
 - **Blast radius.** With 10 shards a failed request costs ~5 traits for that
   plant; with 1 shard it costs all 49.
-- **Quality does change.** More traits per request means less reasoning written per
-  trait. Measured on one plant, two runs per configuration
+- **Quality does change, but less than the run-to-run noise.** Measured over 10
+  plants, two runs per configuration
   ([`experiment_2026-08-14_shard_budget_openai.md`](experiment_2026-08-14_shard_budget_openai.md)):
-  every configuration disagrees with itself on 5 of 49 traits run to run, but
-  budget 320 disagrees with budget 40 on **10.2** — the same magnitude as
-  *changing provider* (Anthropic b40 vs OpenAI b40 is 10.0). Budget 80 sits at
-  6.5, close to noise. Per-trait rationale length falls monotonically
-  178 → 152 → 113 characters, and `trait_object()` puts `rationale` before `value`
-  precisely to force chain-of-thought, so that is a third less reasoning per
-  trait. Budget 80 looks like a fair trade; budget 320 does not.
+  a configuration disagrees with **itself** on 7.0 of 49 traits between runs, and
+  budget 80 disagrees with budget 40 on 8.2 — an excess of **+1.68 traits**
+  (paired t(9) = 3.03, p = 0.014). Real, and smaller than a re-run. Per-trait
+  rationale length drops 15% (180.6 → 152.9 chars), which matters because
+  `trait_object()` puts `rationale` before `value` precisely to force
+  chain-of-thought. Budget 80 is a fair trade for 2.43× less input cost; budget
+  320 is not — on one plant it diverged 10.2 traits, as much as changing provider,
+  and cut rationale length by a third.
 
 ## `--dispatch sequential` (OpenAI)
 
