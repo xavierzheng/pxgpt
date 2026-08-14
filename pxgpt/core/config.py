@@ -43,7 +43,7 @@ class Config:
 
     # Model names
     anthropic_model: str = "claude-sonnet-5"
-    openai_model: str = "gpt-5-2025-08-07"
+    openai_model: str = "gpt-5.6-luna"
     ollama_model: str = "gemma3:12b"
     lmstudio_model: str = "local-model"   # name as shown in LM Studio
     vllm_model: str = ""                   # the served model name (required for vllm)
@@ -137,7 +137,7 @@ class Config:
             lmstudio_api_key=os.getenv("LMSTUDIO_API_KEY", "lm-studio"),
             vllm_api_key=os.getenv("VLLM_API_KEY", "EMPTY"),
             anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5"),
-            openai_model=os.getenv("OPENAI_MODEL", "gpt-5-2025-08-07"),
+            openai_model=os.getenv("OPENAI_MODEL", "gpt-5.6-luna"),
             ollama_model=os.getenv("OLLAMA_MODEL", "gemma3:12b"),
             lmstudio_model=os.getenv("LMSTUDIO_MODEL", "local-model"),
             vllm_model=os.getenv("VLLM_MODEL", ""),
