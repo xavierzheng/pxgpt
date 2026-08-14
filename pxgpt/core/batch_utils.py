@@ -10,6 +10,7 @@ Both Stage 1 (describe-batch) and Stage 3 (phenotype-batch) use these to:
 import os
 import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -268,12 +269,95 @@ def write_phenotype_results(
     return totals
 
 
+# ---------------------------------------------------------------------------
+# _partial/ provenance
+# ---------------------------------------------------------------------------
+# Partial files are keyed by ``<line_id>__<shard_id>`` alone — no provider, no
+# model — and adoption is an unconditional glob.  So two runs pointed at the
+# same ``--output`` would silently merge each other's shards into both outputs.
+# ``.run.json`` stamps the store with whoever created it, and the guard below
+# refuses a run that does not match.  The dot prefix keeps it out of
+# ``glob("*.json")``, but every adoption loop skips it by name as well rather
+# than relying on that.
+_RUN_META_NAME = ".run.json"
+
+
+def _run_meta_path(partial_dir) -> Path:
+    """Return the path of the provenance stamp inside *partial_dir*."""
+    return Path(partial_dir) / _RUN_META_NAME
+
+
+def read_run_meta(partial_dir) -> Optional[Dict[str, Any]]:
+    """Return the parsed ``.run.json``, or None when absent or unreadable."""
+    try:
+        return json.loads(_run_meta_path(partial_dir).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def write_run_meta_if_absent(partial_dir, provider: str, model: str) -> None:
+    """Stamp *partial_dir* with *provider* / *model* unless already stamped.
+
+    Creates *partial_dir* when it does not exist yet, so the guard can be called
+    before the store has been laid down.
+    """
+    path = _run_meta_path(partial_dir)
+    if path.exists():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_json_atomic(path, {
+        "provider": provider,
+        "model": model,
+        "created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    })
+
+
+def assert_partial_provenance(partial_dir, provider: str, model: str) -> None:
+    """Refuse to reuse a ``_partial/`` store another provider/model created.
+
+    Stamps the store on first use.  An unstamped store that already holds
+    partials is a legacy one: it is adopted as before, with one warning.  Raises
+    ``RuntimeError`` when the stamp names a different provider or model, without
+    writing anything.
+    """
+    partial_dir = Path(partial_dir)
+    meta = read_run_meta(partial_dir)
+
+    if meta is None:
+        if partial_dir.is_dir() and any(
+            p.name != _RUN_META_NAME for p in partial_dir.glob("*.json")
+        ):
+            print(f"  WARNING: {partial_dir} holds shard partials but no "
+                  f"{_RUN_META_NAME} (legacy store).  Adopting them as "
+                  f"provider={provider!r} model={model!r} — if they came from a "
+                  f"different run, stop now and use a different --output.")
+        write_run_meta_if_absent(partial_dir, provider, model)
+        return
+
+    if meta.get("provider") == provider and meta.get("model") == model:
+        return
+
+    raise RuntimeError(
+        f"Refusing to reuse the shard partial store in {partial_dir}\n"
+        f"  it was created by : provider={meta.get('provider')!r} "
+        f"model={meta.get('model')!r}\n"
+        f"  this run is       : provider={provider!r} model={model!r}\n"
+        f"Adopting those partials would silently merge another run's results "
+        f"into this one's output.  Either:\n"
+        f"  - point --output at a different directory, or\n"
+        f"  - delete {_run_meta_path(partial_dir)} if you are certain the "
+        f"existing partials belong to this run."
+    )
+
+
 def write_phenotype_sharded_results(
     client,
     batch_id: str,
     line_ids: List[str],
     master_index,
     output_dir: str,
+    provider: str,
+    model: str,
 ) -> Dict[str, int]:
     """Retrieve a SHARDED phenotype batch, merge shards, write one JSON per plant.
 
@@ -307,6 +391,7 @@ def write_phenotype_sharded_results(
     out.mkdir(parents=True, exist_ok=True)
     partial_dir = out / "_partial"
     partial_dir.mkdir(parents=True, exist_ok=True)
+    assert_partial_provenance(partial_dir, provider, model)
     totals = {"input": 0, "output": 0, "cache_creation": 0, "cache_read": 0}
 
     # Per plant, keep one object per shard so a re-fetch overrides cleanly and
@@ -316,6 +401,8 @@ def write_phenotype_sharded_results(
 
     adopted = 0
     for p in sorted(partial_dir.glob("*.json")):
+        if p.name == _RUN_META_NAME:
+            continue  # provenance stamp, not a shard partial
         try:
             obj = json.loads(p.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):

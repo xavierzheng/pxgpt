@@ -123,7 +123,10 @@ def _partial(out, custom_id, text):
 def test_succeeded_shard_is_persisted_as_partial(tmp_path):
     client = _Client([_succeeded("p1__shard_a", SHARD_A),
                       _succeeded("p1__shard_b", SHARD_B)])
-    write_phenotype_sharded_results(client, "b", ["p1"], MASTER_INDEX, str(tmp_path))
+    write_phenotype_sharded_results(
+        client, "b", ["p1"], MASTER_INDEX, str(tmp_path),
+        "anthropic", "claude-sonnet-5",
+    )
 
     assert (tmp_path / "_partial" / "p1__shard_a.json").exists()
     assert (tmp_path / "_partial" / "p1__shard_b.json").exists()
@@ -138,7 +141,10 @@ def test_prior_partial_fills_gap_from_failed_shard(tmp_path):
     _partial(tmp_path, "p1__shard_a", SHARD_A)
     client = _Client([_succeeded("p1__shard_b", SHARD_B)])
 
-    write_phenotype_sharded_results(client, "b", ["p1"], MASTER_INDEX, str(tmp_path))
+    write_phenotype_sharded_results(
+        client, "b", ["p1"], MASTER_INDEX, str(tmp_path),
+        "anthropic", "claude-sonnet-5",
+    )
 
     record = json.loads((tmp_path / "p1.json").read_text())
     assert record["g1"]["t1"]["value"] == "A"   # from the adopted partial
@@ -150,7 +156,10 @@ def test_still_missing_shard_reports_gap(tmp_path):
     client = _Client([_succeeded("p1__shard_a", SHARD_A),
                       _errored("p1__shard_b")])
 
-    write_phenotype_sharded_results(client, "b", ["p1"], MASTER_INDEX, str(tmp_path))
+    write_phenotype_sharded_results(
+        client, "b", ["p1"], MASTER_INDEX, str(tmp_path),
+        "anthropic", "claude-sonnet-5",
+    )
 
     gaps = json.loads((tmp_path / "p1.gaps.json").read_text())
     assert {"group": "g2", "trait": "t2"} in gaps["missing_traits"]
@@ -167,6 +176,9 @@ def test_stale_gaps_removed_once_filled(tmp_path):
         encoding="utf-8")
 
     client = _Client([_succeeded("p1__shard_b", SHARD_B)])
-    write_phenotype_sharded_results(client, "b", ["p1"], MASTER_INDEX, str(tmp_path))
+    write_phenotype_sharded_results(
+        client, "b", ["p1"], MASTER_INDEX, str(tmp_path),
+        "anthropic", "claude-sonnet-5",
+    )
 
     assert not (tmp_path / "p1.gaps.json").exists()

@@ -80,8 +80,20 @@ def _fetch_anthropic(config, checkpoint, output):
         master_index = _sharded_master_index(checkpoint)
         if master_index is None:
             return 1
+        # The checkpoint records the provider/model the batch was submitted with;
+        # a pre-provenance checkpoint has neither, so fall back to the configured
+        # Anthropic model — this path is Anthropic-only.
+        ck_provider = checkpoint.get("provider")
+        ck_model = checkpoint.get("model")
+        if not ck_provider or not ck_model:
+            print(f"  WARNING: checkpoint has no provider/model; assuming "
+                  f"provider='anthropic' model={config.anthropic_model!r} for the "
+                  f"_partial/ provenance check.")
+            ck_provider = ck_provider or "anthropic"
+            ck_model = ck_model or config.anthropic_model
         totals = write_phenotype_sharded_results(
-            client, batch_id, line_ids, master_index, output
+            client, batch_id, line_ids, master_index, output,
+            ck_provider, ck_model,
         )
         print(f"Merged phenotype JSON files written to: {output}/")
     else:

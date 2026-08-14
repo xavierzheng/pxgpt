@@ -59,6 +59,8 @@ from ..core.batch_utils import (
     extract_text_content,
     strip_code_fence,
     temperature_guard_status,
+    assert_partial_provenance,
+    _RUN_META_NAME,
 )
 from ..core import sharding
 
@@ -373,7 +375,8 @@ def _dispatch_batch(args, config, client, requests, line_ids, shards, shard_dir,
     manifest, _ = sharding.load_shard_set(shard_dir)
     master_index, _ = _resolve_master_index(manifest, shard_dir, args.master_schema)
     totals = write_phenotype_sharded_results(
-        client, batch_id, line_ids, master_index, args.output
+        client, batch_id, line_ids, master_index, args.output,
+        "anthropic", config.anthropic_model,
     )
     print_token_summary(totals)
     print(f"\nMerged phenotype JSON files written to: {args.output}/")
@@ -441,6 +444,7 @@ def _dispatch_sequential(args, config, client, requests, line_ids, master_index,
     partial_dir = out / "_partial"
     out.mkdir(parents=True, exist_ok=True)
     partial_dir.mkdir(parents=True, exist_ok=True)
+    assert_partial_provenance(partial_dir, "anthropic", config.anthropic_model)
     progress_path = partial_dir / "progress.jsonl"
 
     # Expected shard count per plant (requests are built plant-contiguous).
@@ -489,6 +493,8 @@ def _dispatch_sequential(args, config, client, requests, line_ids, master_index,
         for req in requests:
             cid = req["custom_id"]
             p = _partial_path(cid)
+            if p.name == _RUN_META_NAME:
+                continue  # provenance stamp, not a shard partial
             if not p.exists():
                 continue
             try:
