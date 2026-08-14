@@ -21,9 +21,12 @@ Results come back as a JSONL file (one line per request) downloaded via
 
 import copy
 import json
+import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+import openai
 
 from .image_utils import get_base64_encoded_image, _MEDIA_TYPES
 from .batch_utils import strip_code_fence  # shared code-fence stripper
@@ -86,6 +89,22 @@ def _walk_openai(node: Any) -> None:
     for k in _OPENAI_STRIP_NODE_KEYS:
         node.pop(k, None)
 
+    # OpenAI strict mode wants each node to declare a type.  The frozen shard
+    # schemas write enum leaves as {"enum": [...]} with no "type", which
+    # Anthropic and xgrammar accept.  Adding "type": "string" to an all-string
+    # enum does not change which strings are accepted, so the effective
+    # constraint — and the constrained-decoding mask — stays identical across
+    # backends.  A mixed-type enum is left alone rather than guessed at, and so
+    # is a degenerate empty one; OpenAI can report those itself.
+    enum_members = node.get("enum")
+    if (
+        "type" not in node
+        and isinstance(enum_members, list)
+        and enum_members
+        and all(isinstance(m, str) for m in enum_members)
+    ):
+        node["type"] = "string"
+
     if node.get("type") == "object" or "properties" in node:
         node["additionalProperties"] = False
         if "properties" in node:
@@ -125,6 +144,20 @@ def openai_effort_status(model: str, effort: str) -> str:
     return "none — reasoning explicitly off; temperature sent"
 
 
+def schema_format_name(schema: Dict[str, Any], fallback: str = "structured_output") -> str:
+    """Return a Responses-API ``format.name`` derived from the schema's ``title``.
+
+    Shard schemas carry titles like ``stage3_shard_01``, which makes an API error
+    traceable to a shard.  The name is sanitised to ``[a-zA-Z0-9_-]``.
+
+    Call this BEFORE :func:`openai_normalize_schema`, which strips ``title``.
+    """
+    title = schema.get("title") if isinstance(schema, dict) else None
+    if not isinstance(title, str):
+        return fallback
+    return re.sub(r"[^a-zA-Z0-9_-]", "_", title) or fallback
+
+
 def build_text_format(schema: Dict[str, Any], name: str = "structured_output") -> Dict[str, Any]:
     """Return a Responses-API ``text`` value for strict structured output."""
     return {
@@ -135,6 +168,48 @@ def build_text_format(schema: Dict[str, Any], name: str = "structured_output") -
             "strict": True,
         }
     }
+
+
+def openai_compile_check_schema(
+    client,
+    model: str,
+    schema: Dict[str, Any],
+    name: str = "structured_output",
+) -> Tuple[bool, Optional[str]]:
+    """Pre-flight one schema against the Responses API.
+
+    Returns ``(ok, error_message)``, matching
+    :func:`pxgpt.core.sharding.compile_check_schema`'s contract.
+
+    Schema errors are per-request on the Batch API: one bad shard errors its own
+    requests while the rest of the batch succeeds and bills.  Without a
+    pre-flight that means paying for 7/8 of a run to discover 1/8 is missing.
+
+    Any 400 is read as a schema problem.  Nothing else in this request can be
+    invalid — a nonexistent model is a 404, the input is one short sentence, and
+    no optional parameters are sent — which is far sturdier than matching on
+    error text.  Every other exception propagates unchanged.
+    """
+    try:
+        client.responses.create(
+            model=model,
+            input=[{
+                "role": "user",
+                "content": [{
+                    "type": "input_text",
+                    "text": "Reply with any JSON object that satisfies the schema.",
+                }],
+            }],
+            max_output_tokens=16,
+            text=build_text_format(schema, name=name),
+        )
+        return True, None
+    except openai.BadRequestError as e:
+        return False, str(e)
+    except openai.APIStatusError as e:
+        if getattr(e, "status_code", None) == 400:
+            return False, str(e)
+        raise
 
 
 def build_responses_request_body(
