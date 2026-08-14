@@ -29,14 +29,16 @@ shards?" — `--shard-budget 40` (10 shards, current) vs `80` (4) vs `320` (1).
 
 Facts worth keeping in mind:
 
-- **Method reproducibility is trait-dependent, and the average flatters it.** Two
-  runs of the production config agree on 87.6% of *informative* categorical traits,
-  but chance-corrected that is only **Cohen's kappa 0.59 mean / 0.64 median**: ~23 of
-  37 traits are at kappa > 0.6 (usable from a single run) with a tail of ~8 near
-  kappa 0. Two failure modes: near-invariant traits where the lone deviation *is*
-  the noise, and rare-category positives that land on different plants each run.
-  n=10 cannot identify *which* traits are unreliable (the b40 and b80 worst-8 lists
-  overlap on 3). Numbers and script: `analysis/reproducibility.py` in the pilot dir.
+- **"Reproducibility" is two questions; do not answer them with one number.**
+  *Stability* (run it twice, same output?) counts EVERY trait: the production config
+  scores **89.8% raw agreement, Gwet's AC1 0.88** over all 45 categorical traits.
+  *Discrimination* (can a trait separate genotypes?) needs Cohen's kappa on the
+  varying traits only: **0.59 mean / 0.64 median**, with 23 of 37 above 0.6 and a
+  tail of 8 at kappa <= 0.20 — but those 8 have AC1 0.79-0.90, so they are stable
+  yet non-discriminating in this sample, not unstable. Kappa alone is a trap here
+  (kappa paradox on skewed marginals). n=10 cannot identify *which* traits are
+  weak: the b40 and b80 worst-8 lists overlap on only 3. Script and numbers:
+  `analysis/reproducibility.py` in the pilot dir.
 - **`TEMPERATURE=0` is untested and is the obvious lever** — every run so far used
   0.5. It is settable on the OpenAI path (effort `none` accepts a temperature) but
   **not on Anthropic `claude-sonnet-5`, which rejects a custom temperature**, so the
