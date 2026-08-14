@@ -52,7 +52,7 @@ ANTHROPIC_API_KEY=your_key_here
 DEFAULT_PROVIDER=anthropic
 
 # Model (default already set to the current recommended model)
-ANTHROPIC_MODEL=claude-sonnet-4-6
+ANTHROPIC_MODEL=claude-sonnet-5
 
 # Batch token budgets
 STAGE1_MAX_TOKENS=16384   # raise to 65536 for long descriptions
