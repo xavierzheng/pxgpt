@@ -217,6 +217,22 @@ compile check verifies each shard and auto-reshards at a smaller budget if one
 still trips the limit. Only the shared system block is marked for prompt caching.
 Images remain ordinary input and stay before the per-shard text prompt.
 
+**OpenAI.** `pxgpt phenotype-batch-openai` takes the same `--shard-dir`,
+`--master-schema`, `--allow-reshard`, `--dispatch` and `--resume/--no-resume`
+flags, writes the same `<output>/_partial/` store and produces the same
+`{line_id}.json` / `{line_id}.gaps.json`, so one shard set can be scored by both
+providers and compared trait-for-trait. Note that sharding is an *Anthropic*
+constraint: `gpt-5.6-luna` accepts the full unsharded master schema. Sharding for
+OpenAI anyway is what keeps the comparison like-for-like. Two things differ in
+practice — with `--no-files-api` the images are repeated once per shard (1 plant ×
+15 images × 10 shards is a 200 MB batch input file, versus 94 KB through the Files
+API; pxGPT estimates this before encoding and refuses to upload over 190 MB), and
+OpenAI's automatic prompt caching recovers only the ~1 k-token system prompt
+across a plant's shards — not the ~30 k of images — so a sharded OpenAI run pays
+close to full input price per shard. Both are detailed in
+[`user_manual.md`](user_manual.md) →
+*`pxgpt describe-batch-openai` / `pxgpt phenotype-batch-openai` → Sharded mode*.
+
 `--dispatch sequential` is **crash-safe and resumable**: each shard is written to
 `<output>/_partial/` as it returns, so a SLURM kill / crash loses nothing. Just
 re-run the same command — completed `(plant, shard)` calls are skipped (not
@@ -293,12 +309,12 @@ pxgpt schema \
 | `pxgpt describe-batch` | Stage 1 (Anthropic): upload images via Files API, submit batch for descriptions |
 | `pxgpt phenotype-batch` | Stage 3 (Anthropic): reuse file_ids, submit batch with structured output |
 | `pxgpt describe-batch-openai` | Stage 1 (OpenAI): same as describe-batch on the OpenAI Batch API |
-| `pxgpt phenotype-batch-openai` | Stage 3 (OpenAI): strict structured output on the OpenAI Batch API |
+| `pxgpt phenotype-batch-openai` | Stage 3 (OpenAI): strict structured output on the OpenAI Batch API (single `--schema` or a `--shard-dir` shard set) |
 | `pxgpt fetch-results` | Retrieve results for any pending batch (Anthropic or OpenAI) from a checkpoint |
 | `pxgpt cleanup-files` | Delete Files-API uploads from a manifest (both providers); OpenAI bills for storage |
 | `pxgpt extract-report` | Extract `<report>` from `<think>`/`<report>` output (single or grouped); back-compat for non-native reasoning |
 | `pxgpt normalize-schema` | Add `additionalProperties: false` + `required` to all objects in a schema |
-| `pxgpt shard-schema` | Split a master schema into compilable Stage 3 shards (+ per-shard prompts) for `phenotype-batch --shard-dir` |
+| `pxgpt shard-schema` | Split a master schema into compilable Stage 3 shards (+ per-shard prompts) for `phenotype-batch --shard-dir` / `phenotype-batch-openai --shard-dir` |
 | `pxgpt json-to-table` | Flatten Stage 3 per-plant JSON results into a wide, typed CSV + feather table (with column-name collision detection/resolution) |
 | `pxgpt analyze` | Single-folder text description (sync, all providers) |
 | `pxgpt schema` | Single-folder structured JSON (sync, all providers) |

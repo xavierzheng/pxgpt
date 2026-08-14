@@ -648,10 +648,16 @@ pxgpt describe-batch-openai \
 
 pxgpt phenotype-batch-openai \
   --input-dir PATH \
-  --schema FILE \
   --output DIR \
-  --system-prompt FILE \
-  --prompt FILE \
+  (--schema FILE | --shard-dir DIR)   # mutually exclusive; exactly one is required
+  [--system-prompt FILE]   # required with --schema; with --shard-dir it OVERRIDES
+                           #   the shard set's shared system preamble
+  [--prompt FILE]          # required with --schema; ignored with --shard-dir
+                           #   (per-shard prompts come from the shard set)
+  [--master-schema FILE]   # sharded: defaults to the path in shards_manifest.json
+  [--allow-reshard]        # sharded: OVERWRITES the files in --shard-dir (see below)
+  [--dispatch {batch,sequential}]   # sharded; default: batch
+  [--resume | --no-resume]          # sequential dispatch only; default: --resume
   [--manifest FILE]
   [--no-files-api]
   [--wait]
@@ -661,13 +667,37 @@ Key differences from the Anthropic stages:
 
 - **Model**: uses `OPENAI_MODEL` (default `gpt-5.6-luna`).
 - **Files API**: images are uploaded with OpenAI's `purpose="vision"` and referenced by `file_id`. Because OpenAI and Anthropic file_ids are different namespaces, the OpenAI manifest defaults to a **separate file** (`openai_file_manifest.json`) — do not point it at the Anthropic `file_manifest.json`.
-- **Structured output** (`phenotype-batch-openai`): the schema is normalized in memory for OpenAI **strict** mode — every property is forced into `required` and `additionalProperties: false` is set on every object (stricter than `pxgpt normalize-schema`, which targets Anthropic). The file on disk is not modified.
+- **Structured output** (`phenotype-batch-openai`): the schema is normalized in memory for OpenAI **strict** mode — every property is forced into `required`, `additionalProperties: false` is set on every object, and an all-string `enum` with no `"type"` gets `"type": "string"` (stricter than `pxgpt normalize-schema`, which targets Anthropic). The file on disk is not modified. With `--shard-dir` the same normalization is applied to each shard schema — see **Sharded mode** below.
 - **Reasoning effort**: the same knobs as the Anthropic stages — `DESCRIBE_EFFORT` for Stage 1 (with `--effort` to override per run) and `STAGE3_EFFORT` for Stage 3 (no flag; the variable is the only control). Levels `low`/`medium`/`high`/`xhigh`/`max`; empty/`off`/`none` means reasoning **off**. There is no OpenAI-specific effort variable.
 - **Reasoning off is explicit**: "off" is sent as `reasoning: {"effort": "none"}`. Omitting the parameter would *not* disable reasoning — the model falls back to its own default (`medium` on gpt-5.6) — so pxGPT always sends a level. Verified: `effort=none` returns `reasoning_tokens=0`.
 - **Temperature**: `TEMPERATURE` is sent **only** when effort is `none`; any other level rejects it with `400 Unsupported parameter: 'temperature' is not supported with this model.`, so pxGPT omits it there. The run banner prints the effort and what happened to temperature.
 - **Completion window**: `OPENAI_BATCH_COMPLETION_WINDOW` (default `24h`).
 
-Checkpoints are tagged with `"provider": "openai"`, so `pxgpt fetch-results` retrieves them the same way as Anthropic batches.
+Checkpoints are tagged with `"provider": "openai"`, so `pxgpt fetch-results` retrieves them the same way as Anthropic batches — including the sharded stage, which merges the shards into one record per plant.
+
+#### Sharded mode (`--shard-dir`)
+
+Same shard set, same flags and same output layout as `phenotype-batch`: one request per (plant × shard), merged into one `{line_id}.json` per plant with `{line_id}.gaps.json` for anything still missing. So a single shard set can be scored by both providers and compared trait-for-trait — which is the point of running it this way.
+
+`--dispatch batch` and `--dispatch sequential` send **identical request bodies** (the batch JSONL only adds the `custom_id` / `method` / `url` envelope), and both write the same `<output>/_partial/<line_id>__<shard_id>.json` store. So a batch that left gaps is recovered by a sequential resume to the same `--output`, exactly as on the Anthropic side, and a resume re-bills only the missing shards.
+
+Four things are OpenAI-specific:
+
+- **Sharding is not technically required here.** `gpt-5.6-luna` accepts the *full unsharded* master schema — measured at 159 object properties, 165 enum values and depth 4, against OpenAI's limits of 5,000 / 1,000 / 10. The grammar-size limit that forces sharding is Anthropic's. Sharding for OpenAI anyway is what keeps a cross-provider comparison like-for-like.
+- **The pre-flight is per shard and named.** Every shard schema is checked against the live API *before any image is uploaded*, and the schema's `title` becomes the response-format name (`stage3_shard_04`), so a rejection names the shard that caused it. A schema error is per-request on the Batch API, so without this one bad shard would bill 9/10 of a run to deliver 9/10 of the traits.
+- **`--allow-reshard` only fires on a size limit.** A shard rejected with `... exceeds limit of ...` (nesting depth or parameter count) can be resharded at a halved budget — that is the one failure a smaller budget fixes. Any *other* schema rejection (an unresolved `$ref`, an invalid type, an array without `items`) aborts the run and leaves `--shard-dir` byte-for-byte untouched **even when `--allow-reshard` is given**, because resharding would not fix it.
+- **`--no-files-api` does not scale with shards.** Inline base64 repeats every image once per shard: 1 plant × 15 images × 10 shards is a **200 MB** batch input file (209,301,506 bytes) against OpenAI's 200 MB cap — the same run is **94 KB** (93,686 bytes) through the Files API. pxGPT estimates the size from the images on disk *before* encoding anything, warns, and then refuses to upload a JSONL over 190 MB rather than failing after the transfer. That cap applies to the batch input file (`purpose="batch"`) only; it has nothing to do with image uploads (`purpose="vision"`).
+
+**Prompt caching differs, and it costs money.** The Anthropic path marks the shared system block with `cache_control` explicitly. OpenAI's caching is automatic, and measured against `gpt-5.6-luna` it recovers only the **shared system prompt** across a plant's shards — not the images:
+
+| request | input tokens | `cache_read` |
+|---|---|---|
+| 10 consecutive shards of one plant | ~31 k each | 1,055–1,281 (one 0) |
+| the *same* shard body re-sent later | ~31 k | 30,672–31,196 |
+
+The system prompt alone is ~1 k tokens, which is the whole of that first row. Because the images sit *before* the per-shard text prompt in the request, a differing text tail alone could not have excluded them — the per-shard response-format schema evidently breaks the cacheable prefix ahead of the image blocks.
+
+Practical consequence: **a sharded OpenAI run pays close to full input price on every shard** (~30 k tokens × shards × plants), and the cache only pays off when an *identical* shard request is re-sent — a resume or a gap recovery. Do not assume the two providers' per-plant input costs scale the same way; the Anthropic path's explicit `cache_control` on the system block behaves differently.
 
 > **Cost reminder:** OpenAI bills for stored files. After fetching results, delete the uploaded images (and the batch's input/output/error files) with `pxgpt cleanup-files --manifest openai_file_manifest.json --checkpoint checkpoint_<batch_id>.json`. See [`pxgpt cleanup-files`](#pxgpt-cleanup-files).
 
