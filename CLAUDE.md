@@ -18,6 +18,15 @@ Rules that must hold regardless of the task:
   Their run-to-run inconsistency is **expected and accepted** — never fold them
   into a trait-agreement rate.
 - No drive-by changes: do what was asked, then report anything else you found.
-- `03_mature_v2/` is **not usable yet** — the images on this machine are the wrong
-  ones (a copy of `02_mature_v1`) and its master schema is missing. Verify both
-  before running anything against it; see `HANDOFF.md`.
+- `03_mature_v2/` is **usable** as of 2026-08-19: the correct later-stage images
+  are in place (277 lines / 5208 files) and `master_schema.json` reproduces the
+  frozen shard set byte-identically. Its numbers do NOT carry over from
+  `02_mature_v1` — different schema, 50 traits / 13 groups / 7 quantitative
+  against v1's 49 / 12 / 4, only 4 trait names shared. See `HANDOFF.md`.
+- `03_mature_v2/images/` and `03_mature_v2/shard_master_schema/` are read-only
+  (`dr-xr-x---`). Treat them like the v1 frozen set: never write there.
+- The local vLLM server reaches images through `file://`, gated by `MEDIA_ROOT`
+  in `ops/local-vllm/.env` — it is both the bind mount and
+  `--allowed-local-media-path`. It is set to `/home/xavier/project/pxgpt`, so
+  both datasets resolve. A path outside that tree fails with a 400; changing it
+  needs `down.sh` + `up.sh`. pxGPT itself never reads `MEDIA_ROOT`.

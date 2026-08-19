@@ -1103,3 +1103,8 @@ measured cost.) Four unavoidable departures:
 runs, `03_mature_v2/shard_master_schema` is still `dr-xr-x---` with every file's
 mtime at `2026-07-30 11:32`, and `03_mature_v2/images` is unchanged at
 `2026-07-13 18:17`.
+
+> Superseded 2026-08-19: the user replaced `03_mature_v2/images` with the correct
+> later-stage set (277 lines / 5208 files), so the image mtime above no longer
+> matches on disk. The shard-set mtime still does. This paragraph records what
+> the benchmark runs did, not the present state of the tree.

@@ -1,7 +1,8 @@
 # Handoff — OpenAI Stage 3 support and the shard-budget benchmarks
 
-Written 2026-08-14 for whoever picks this up next. Read this before opening the
-long documents; it is meant to save you from re-deriving anything.
+Written 2026-08-14 for whoever picks this up next; updated 2026-08-19. Read this
+before opening the long documents; it is meant to save you from re-deriving
+anything.
 
 ---
 
@@ -12,7 +13,19 @@ long documents; it is meant to save you from re-deriving anything.
 `--dispatch {batch,sequential}`, `--resume/--no-resume`, and `fetch-results`
 handles the OpenAI sharded stage. Both providers share one merge core
 (`batch_utils.merge_sharded_results`) so their gap rule and recovery behaviour
-cannot drift apart. 93 tests pass.
+cannot drift apart.
+
+Since then (2026-08-19) the local vLLM path got real constrained decoding:
+`OpenAICompatProvider` sends `response_format` `json_schema` (strict) instead of
+pasting the schema into the system prompt, with no fallback if the backend
+refuses — a silent downgrade there would produce output that looks fine and is
+completely unconstrained. `pxgpt schema --shard-dir` runs one plant through a
+whole shard set as the cheap rehearsal before a full run, printing each shard's
+`cached_tokens` so the prefix-cache premise is visible rather than assumed
+(measured on `02_mature_v1`/s0019: shard_01 at 0, shards 2-10 at 20096). Both
+`schema` and `analyze` take `--image-transport file` for `file://` delivery.
+`analyze --effort <level>` turns thinking on for the local backends and still
+saves only the final text; Stage 3 stays pinned to thinking off. 146 tests pass.
 
 Then two benchmarks answered "can we cut OpenAI cost by using fewer, bigger
 shards?" — `--shard-budget 40` (10 shards, current) vs `80` (4) vs `320` (1).
@@ -121,47 +134,65 @@ annotations; the recipe is in LAB_NOTEBOOK §5.
 
 ---
 
-## Next study: discrimination, on `03_mature_v2` — BLOCKED on a re-scp
+## Next study: discrimination, on `03_mature_v2` — UNBLOCKED
 
 `02_mature_v1` cannot answer whether the method separates lines (all Chinese kale,
-photographed too early). `03_mature_v2` is the intended dataset for that: the same
-142 line IDs at a **later growth stage**, where variety differences are expressed.
+photographed too early). `03_mature_v2` is the intended dataset for that: a
+**later growth stage**, where variety differences are expressed.
 
-### ⚠ As of 2026-08-14 the files on this machine are the WRONG ones
+### ✅ As of 2026-08-19 the data is correct — both gates passed
 
-The user scp'd the wrong images. `03_mature_v2/images` is currently a byte-identical
-copy of `02_mature_v1/images`, verified:
+The earlier blocker (the user had scp'd a byte-identical copy of
+`02_mature_v1/images`, and `master_schema.json` was absent) is resolved. Both
+checks the previous handoff demanded were run, not assumed:
 
-- all **2784** paths and byte-sizes match between the two trees;
-- 12 of 12 sampled files across 6 different lines have identical sha256;
-- different inodes, so they are genuine duplicate copies, not hardlinks.
+1. **Images are their own dataset.** `03_mature_v2/images` now holds **277 lines /
+   5208 files** dated `2025-04-01`, against v1's 142 / 2784 dated `2025-01-26`.
+   The two trees no longer share a filename set.
+2. **The master reproduces the frozen shard set byte-identically.**
+   `master_schema.json` (a symlink to `master_schema_opus4-8_v2.json`) re-sharded
+   at `--shard-budget 40` gives all **9 of 9** `shard_*.schema.json` files
+   `cmp`-identical to the frozen ones. This is the same check that validated v1.
 
-**Running a discrimination study on it today would silently re-measure the same
-too-early photographs.** The user will scp the correct mature-stage images later.
+The shard set also loads clean end to end: 9 shards, 50 traits / 13 groups, and
+`master_index_from_manifest()` agrees with `load_master_index()` field for field.
 
-Also missing: `shards_manifest.json` records `master_schema: ../master_schema.json`,
-which does **not exist** here. `master_schema_opus4-8_v2.json` is present but has NOT
-been shown to be the file the shard set was generated from. That one is also pending
-a re-scp.
+`03_mature_v2/images/` and `03_mature_v2/shard_master_schema/` are `dr-xr-x---`.
+Treat them exactly like the v1 frozen set: **never write there.**
 
-### Verification gate — run BOTH before trusting anything in `03_mature_v2`
+### Re-running the gates
+
+Only needed if the files are re-scp'd again. Both take seconds:
 
 ```bash
 cd /home/xavier/project/pxgpt
 # 1. are the images actually the later timepoint, not the 02 copies?
 diff <(cd 02_mature_v1/images && find . -type f -printf '%p %s\n' | sort) \
      <(cd 03_mature_v2/images && find . -type f -printf '%p %s\n' | sort) >/dev/null \
-  && echo "STILL THE WRONG IMAGES — stop" || echo "trees differ, proceed to check 2"
+  && echo "WRONG IMAGES — stop" || echo "trees differ, proceed to check 2"
 
-# 2. does the scp'd master reproduce the frozen 03 shard set byte-identically?
-#    (this is the check that validated 02_mature_v1; do not skip it)
-pxgpt shard-schema --master 03_mature_v2/<the scp'd master>.json \
+# 2. does the master reproduce the frozen 03 shard set byte-identically?
+pxgpt shard-schema --master 03_mature_v2/master_schema.json \
     --shard-dir /tmp/v2check --shard-budget 40
 for f in 03_mature_v2/shard_master_schema/shard_*.schema.json; do
   cmp -s "$f" "/tmp/v2check/$(basename $f)" && echo "$(basename $f) OK" \
     || echo "$(basename $f) DIFFERS -> wrong master, stop"
 done
 ```
+
+### Reaching the images from the local vLLM server
+
+`file://` transport is gated by `MEDIA_ROOT` in `ops/local-vllm/.env`, which
+`up.sh` uses **twice**: as the bind mount (`$MEDIA_ROOT:$MEDIA_ROOT:ro`) and as
+`--allowed-local-media-path`. Both are needed, which is why one variable feeds
+both. pxGPT itself never reads it.
+
+It is now `/home/xavier/project/pxgpt` — the project root, not one dataset's
+images — so **both** `02_mature_v1` and `03_mature_v2` resolve without a restart.
+It is a prefix, baked into the running container; changing it means `down.sh` +
+`up.sh`. Two distinct failures tell you which gate bit: **400** "must be a subpath
+of `--allowed-local-media-path`" means outside the tree, **500** "No such file or
+directory" means inside the tree but absent.
 
 ### What does NOT carry over from `02_mature_v1`
 
@@ -177,8 +208,9 @@ new traits (`leaf_count`, `canopy_spread`, `bolting_status`, `storage_organ`,
   input and will work unchanged — but the quantitative/categorical split becomes
   43 + 7, not 45 + 4.
 
-`03_mature_v2` has never been run: no `file_manifest.json`, no
-`openai_file_manifest.json`, no `Result_Stage3/`. Its `step_04_phenotyping.sh` is an
+`03_mature_v2` has still never been run: no `file_manifest.json`, no
+`openai_file_manifest.json`, no `Result_Stage3/` — so there is nothing to
+recover or reconcile, and the first run starts clean. Its `step_04_phenotyping.sh` is an
 Anthropic manifest-only invocation, so it needs `--input-dir` on the OpenAI path.
 
 ### Study design, once the data is right

@@ -69,7 +69,9 @@ cd ops/local-vllm
 cp env.example .env
 
 # Set MEDIA_ROOT to the absolute path of your photo root, e.g.
-#   MEDIA_ROOT=/home/xavier/project/pxgpt/03_mature_v2/images
+#   MEDIA_ROOT=/home/xavier/project/pxgpt
+# It is a prefix, so point it at the project root rather than one dataset's
+# images -- then 02_mature_v1 and 03_mature_v2 both resolve without a restart.
 $EDITOR .env
 
 export HF_TOKEN=hf_...
@@ -133,7 +135,7 @@ written by `pull.sh` or by you.
 | `MODEL_REPO` | `unsloth/gemma-4-26B-A4B-it-NVFP4` |
 | `MODEL_REVISION` | HF commit sha, e.g. `20df0542b1a86ce19f495ac2eca2c7c12bce82f9` |
 | `SERVED_MODEL_NAME` | `gemma4-26b-a4b-nvfp4` — what clients pass as `model` |
-| `MEDIA_ROOT` | Absolute photo root. Mounted read-only at the **same path** inside the container. |
+| `MEDIA_ROOT` | Absolute photo root. Mounted read-only at the **same path** inside the container, and passed as `--allowed-local-media-path`. A **prefix**, so any subfolder resolves — point it at the project root to cover every dataset. |
 | `MAX_MODEL_LEN` | 65536 |
 | `MAX_NUM_SEQS` | 16 — free *for KV cache* (that pool is sized by `GPU_MEM_UTIL`, not by sequence count). It is not a licence to run many plants' cold prefills at once: see the depth limit under [Concurrency](#concurrency-how-to-dispatch). |
 | `GPU_MEM_UTIL` | 0.80 — see the warning below |
