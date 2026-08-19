@@ -4,7 +4,7 @@ import argparse
 from typing import Optional
 
 from ..core.config import Config
-from ..core.image_utils import create_multi_image_message
+from ..core.image_utils import create_multi_image_message, IMAGE_TRANSPORTS
 from ..core.file_utils import read_file_safely, write_file_safely
 from ..providers.anthropic_provider import AnthropicProvider
 from ..providers.openai_compat_provider import OpenAICompatProvider
@@ -46,7 +46,9 @@ def analyze_command(args):
     
     # Create messages
     try:
-        messages = create_multi_image_message(args.input_folder, prompt_text)
+        messages = create_multi_image_message(
+            args.input_folder, prompt_text, args.image_transport
+        )
     except Exception as e:
         print(f"Error processing images: {e}")
         return 1
@@ -73,6 +75,7 @@ def analyze_command(args):
     try:
         provider = create_provider(provider_name, config)
         print(f"Using provider: {provider.provider_name}")
+        print(f"Image transport: {args.image_transport}")
 
         response = provider.send_request_with_retry(
             messages=messages,
@@ -127,6 +130,17 @@ def setup_analyze_parser(subparsers):
         '--provider',
         choices=['anthropic', 'openai', 'ollama', 'lmstudio', 'vllm'],
         help='LLM provider to use (overrides config/env)'
+    )
+
+    parser.add_argument(
+        '--image-transport',
+        choices=list(IMAGE_TRANSPORTS),
+        default='base64',
+        help="How images reach the model.  'base64' embeds the bytes in the "
+             "request and works everywhere (default).  'file' sends file:// "
+             "URIs and is the recommended path for a local vLLM server, which "
+             "must have the image directory mounted at the very same path.  "
+             "(default: base64)"
     )
 
     parser.add_argument(

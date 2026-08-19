@@ -112,3 +112,22 @@ def test_unknown_transport_is_rejected(tmp_path):
 
     with pytest.raises(ValueError, match="Unknown image transport"):
         create_image_content_list(str(folder), "http")
+
+
+def test_analyze_offers_the_same_transport_choice_and_defaults_to_base64():
+    """The flag has to exist on `analyze` too, not just `schema`.
+
+    Stage 1 sends a whole plant line's photos in one request, so base64 there is
+    the expensive path -- megabytes on the wire for files the local server can
+    already read off its own mount.
+    """
+    import argparse
+    from pxgpt.commands.analyze import setup_analyze_parser
+
+    parser = argparse.ArgumentParser()
+    setup_analyze_parser(parser.add_subparsers(dest="command", required=True))
+    base = ["analyze", "--input-folder", "f", "--output", "o",
+            "--system-prompt", "s", "--prompt", "p"]
+
+    assert parser.parse_args(base).image_transport == "base64"
+    assert parser.parse_args(base + ["--image-transport", "file"]).image_transport == "file"
