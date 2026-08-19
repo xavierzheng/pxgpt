@@ -61,6 +61,14 @@ class Config:
     # earlier). Newer tiers (Sonnet 5, Opus 4.7/4.8, Fable 5) reject a custom
     # temperature unconditionally — see batch_utils.build_request_params.
     temperature: float = 0.5
+    # Nucleus / top-k sampling for the OpenAI-compatible backends.  Defaults are
+    # the Gemma 4 checkpoint's own generation_config.json values.  The local
+    # server is started with the same numbers via --override-generation-config;
+    # sending them from the client too is deliberate duplication, because only
+    # what the client sends appears in the request record.  Anthropic ignores
+    # both (its batch path builds its own params).
+    top_p: float = 0.95
+    top_k: int = 64
     max_tokens: int = 16384  # sync API; current models support up to 128 k with streaming
 
     # Batch-specific token budgets
@@ -147,6 +155,8 @@ class Config:
             max_retries=int(os.getenv("MAX_RETRIES", "3")),
             timeout=int(os.getenv("TIMEOUT", "300")),
             temperature=float(os.getenv("TEMPERATURE", "0.5")),
+            top_p=float(os.getenv("TOP_P", "0.95")),
+            top_k=int(os.getenv("TOP_K", "64")),
             max_tokens=int(os.getenv("MAX_TOKENS", "16384")),
             stage1_max_tokens=int(os.getenv("STAGE1_MAX_TOKENS", "16384")),
             stage3_max_tokens=int(os.getenv("STAGE3_MAX_TOKENS", "16384")),

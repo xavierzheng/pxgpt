@@ -21,6 +21,10 @@ class APIResponse:
     usage: TokenUsage
     request_id: Optional[str] = None
     model: Optional[str] = None
+    # Why the backend stopped ("stop", "length", ...).  Reported so a caller can
+    # tell a complete answer from a truncated one instead of guessing from the
+    # text.  None when the provider does not expose it.
+    finish_reason: Optional[str] = None
 
 
 class BaseProvider(ABC):
@@ -65,14 +69,26 @@ class BaseProvider(ABC):
         system_prompt: str,
         schema: Optional[str] = None,
         output_config: Optional[Dict[str, Any]] = None,
+        json_schema: Optional[Dict[str, Any]] = None,
     ) -> APIResponse:
-        """Send request with unified error-handling and retry logic."""
+        """Send request with unified error-handling and retry logic.
+
+        *json_schema* is the OpenAI-wire native structured-output path and is
+        forwarded only when set, so providers that do not implement it (the
+        Anthropic one, which uses *output_config* instead) never see the keyword.
+        """
         max_retries = self.config.max_retries
         base_delay = 1
 
+        def _call():
+            if json_schema is not None:
+                return self._send_request(messages, system_prompt, schema,
+                                          output_config, json_schema=json_schema)
+            return self._send_request(messages, system_prompt, schema, output_config)
+
         for attempt in range(max_retries + 1):
             try:
-                return self._send_request(messages, system_prompt, schema, output_config)
+                return _call()
             except Exception as e:
                 if attempt == max_retries:
                     raise

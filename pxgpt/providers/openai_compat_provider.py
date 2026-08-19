@@ -4,7 +4,43 @@ from typing import Dict, Any, List, Optional
 import openai
 from openai import OpenAI
 
+from ..core.openai_batch_utils import schema_format_name
 from .base import BaseProvider, APIResponse, TokenUsage
+
+
+def _cached_prompt_tokens(usage) -> int:
+    """Return ``prompt_tokens_details.cached_tokens``, or 0 when absent.
+
+    This is the prefix-cache hit count.  It is the number that shows whether a
+    plant's 9 shards really pay one cold prefill between them, so it is read off
+    every response rather than inferred from wall-clock timing.
+    """
+    details = getattr(usage, "prompt_tokens_details", None)
+    if details is None:
+        return 0
+    value = getattr(details, "cached_tokens", None)
+    if value is None and isinstance(details, dict):
+        value = details.get("cached_tokens")
+    return value or 0
+
+
+class ThinkingLeakError(RuntimeError):
+    """The backend returned reasoning text although thinking was disabled.
+
+    Raised, never swallowed: stripping the field would turn a server/chat-template
+    misconfiguration into an invisible data-cleaning step, and the run would look
+    healthy while the model was spending its budget somewhere the paper cannot
+    account for.
+    """
+
+
+class OutputLengthError(RuntimeError):
+    """The response stopped at ``finish_reason == "length"``.
+
+    A grammar constrains the *shape* of the output, not its length, so a runaway
+    ``rationale`` string can hit the cap mid-object.  What comes back is not a
+    partial result worth keeping -- it is unparseable -- so it is an error.
+    """
 
 
 class OpenAICompatProvider(BaseProvider):
@@ -98,15 +134,24 @@ class OpenAICompatProvider(BaseProvider):
                             "text": item["text"]
                         })
                     elif item["type"] == "image":
-                        # Convert Anthropic base64 format to OpenAI format
-                        image_data = item["source"]["data"]
-                        media_type = item["source"]["media_type"]
-                        content.append({
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{media_type};base64,{image_data}"
-                            }
-                        })
+                        source = item["source"]
+                        if source["type"] == "url":
+                            # file:// (or http) URI — the server fetches the
+                            # bytes itself; nothing is embedded in the request.
+                            content.append({
+                                "type": "image_url",
+                                "image_url": {"url": source["url"]},
+                            })
+                        else:
+                            # Convert Anthropic base64 format to OpenAI format
+                            image_data = source["data"]
+                            media_type = source["media_type"]
+                            content.append({
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{media_type};base64,{image_data}"
+                                }
+                            })
 
                 converted_messages.append({
                     "role": "user",
@@ -115,20 +160,91 @@ class OpenAICompatProvider(BaseProvider):
 
         return converted_messages
 
+    def _build_extra_body(self) -> Dict[str, Any]:
+        """Return the non-OpenAI request fields for the local backends.
+
+        The ONLY place ``extra_body`` is assembled, and it can therefore be read
+        as a guarantee about what is never sent:
+
+        * **no** ``mm_processor_kwargs`` — the vision token budget is pinned
+          server-side.  Passing it per request puts the images in a different
+          prefix-cache namespace: identical tokenization, but the cached entry is
+          not reused.  Measured on one 26-photo line: 14.8 s when the key
+          matched, 71.6 s when it did not.  No error, just a silent ~57 s penalty
+          on every request.
+        * **no** ``seed`` — the consistency study measures run-to-run variation on
+          the same plant.  A fixed seed returns byte-identical output, collapses
+          the variance to zero, and reports no error while doing it.
+
+        ``top_k`` rides here because the OpenAI wire protocol has no field for it,
+        and ``enable_thinking`` is spelled out rather than left to the chat
+        template's default: a default does not appear in the request record, and
+        it is a default somebody else can change.
+        """
+        return {
+            "chat_template_kwargs": {"enable_thinking": False},
+            "top_k": self.config.top_k,
+        }
+
+    def _assert_no_reasoning(self, message) -> None:
+        """Fail the call if the backend returned reasoning text.
+
+        vLLM 0.24 puts it in ``message.reasoning``; other builds use
+        ``reasoning_content``.  Neither is modelled by the OpenAI SDK, so both
+        land in ``model_extra``.  Both names are checked.
+        """
+        extra = getattr(message, "model_extra", None) or {}
+        for field in ("reasoning", "reasoning_content"):
+            value = getattr(message, field, None)
+            if value is None:
+                value = extra.get(field)
+            if value:
+                head = str(value)[:200]
+                raise ThinkingLeakError(
+                    f"backend returned non-empty {field!r} although "
+                    f"chat_template_kwargs.enable_thinking=False was sent; "
+                    f"first 200 chars: {head!r}"
+                )
+
     def _send_request(
         self,
         messages: List[Dict[str, Any]],
         system_prompt: str,
         schema: Optional[str] = None,
         output_config: Optional[Dict[str, Any]] = None,
+        json_schema: Optional[Dict[str, Any]] = None,
     ) -> APIResponse:
         """Send request via the OpenAI SDK.
+
+        Two mutually exclusive schema paths:
+
+        * *json_schema* — a schema dict sent as native structured output
+          (``response_format``), i.e. real constrained decoding.  The schema is
+          sent verbatim; it is NOT run through ``openai_normalize_schema``,
+          because vLLM's xgrammar backend takes standard JSON Schema and the
+          frozen shard schemas already carry ``additionalProperties: false`` and
+          full ``required`` lists.
+        * *schema* — the legacy path: schema text appended to the system prompt,
+          with no decoding constraint at all.
+
+        They never combine.  When *json_schema* is given the schema is kept out
+        of the system prompt entirely, so the prompt stays byte-identical to what
+        the other providers see and the run remains cross-provider comparable.
+        If the backend rejects ``response_format`` the error is raised: there is
+        deliberately no fallback to the legacy path, because a silent downgrade
+        produces output that looks fine and is in fact completely unconstrained.
 
         Only ``output_config["effort"]`` is honoured here, and only for OpenAI
         reasoning models, where it becomes ``reasoning_effort``.  The Anthropic
         ``format`` key has no equivalent on this wire protocol and is ignored;
         the local backends ignore effort as well.
         """
+        if json_schema is not None and schema:
+            raise ValueError(
+                "json_schema (native structured output) and schema (legacy "
+                "system-prompt text) are mutually exclusive; the schema must "
+                "appear in exactly one place."
+            )
 
         # Build combined system prompt (no caching support)
         combined_system = self._build_system_prompt(system_prompt, schema)
@@ -145,6 +261,26 @@ class OpenAICompatProvider(BaseProvider):
             "messages": full_messages,
             "max_tokens": self.config.max_tokens,
         }
+
+        if json_schema is not None:
+            params["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": schema_format_name(json_schema),
+                    "schema": json_schema,
+                    "strict": True,
+                },
+            }
+
+        if self.llm_provider != "openai":
+            # Sampling knobs the local servers understand.  temperature/top_p go
+            # in the body below; top_k and the thinking switch have no OpenAI
+            # field, so they ride in extra_body.  The server's
+            # --override-generation-config already sets the same values -- that
+            # is deliberate redundancy, because only the client-side copy shows
+            # up in the request record the paper has to cite.
+            params["top_p"] = self.config.top_p
+            params["extra_body"] = self._build_extra_body()
 
         if self.llm_provider == "openai" and self._is_openai_reasoning_model():
             # These models reject `max_tokens` outright, and omitting
@@ -168,10 +304,13 @@ class OpenAICompatProvider(BaseProvider):
         # Send request
         response = self.client.chat.completions.create(**params)
 
+        choice = response.choices[0]
+
         # Extract usage information
         usage = TokenUsage(
             input_tokens=getattr(response.usage, 'prompt_tokens', 0),
-            output_tokens=getattr(response.usage, 'completion_tokens', 0)
+            output_tokens=getattr(response.usage, 'completion_tokens', 0),
+            cache_read_tokens=_cached_prompt_tokens(response.usage),
         )
 
         # Print usage stats
@@ -182,11 +321,25 @@ class OpenAICompatProvider(BaseProvider):
         print(f"## Input tokens: {usage.input_tokens}")
         print(f"## Output tokens: {usage.output_tokens}")
 
+        finish_reason = getattr(choice, "finish_reason", None)
+
+        # A truncated response is an error, not a partial result: the grammar
+        # constrains shape, not length, so what came back cannot be parsed.
+        if finish_reason == "length":
+            raise OutputLengthError(
+                f"response stopped at finish_reason='length' after "
+                f"{usage.output_tokens} completion token(s) (max_tokens="
+                f"{self.config.max_tokens}); treat this call as failed"
+            )
+
+        self._assert_no_reasoning(choice.message)
+
         return APIResponse(
-            content=response.choices[0].message.content,
+            content=choice.message.content,
             usage=usage,
             request_id=request_id,
-            model=self.model
+            model=self.model,
+            finish_reason=finish_reason,
         )
 
     def _is_rate_limit_error(self, error: Exception) -> bool:
