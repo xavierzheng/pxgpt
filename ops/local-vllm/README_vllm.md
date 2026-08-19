@@ -183,7 +183,17 @@ Thinking *on* also produces schema-valid JSON (with
 `--reasoning-parser gemma4`, which `up.sh` passes so the path stays available),
 but takes **73–85 s** against **9–13 s** for the same result, and its reasoning
 text duplicates the `rationale` field the Stage 3 schema already requires. Off is
-the default for good reason.
+the default for good reason, and `schema` pins it off: a stray `STAGE3_EFFORT`
+prints a note and is ignored, because the setting has to be identical across all
+267 plants for the results to be comparable.
+
+`analyze` can turn it on with `--effort <level>` (the local models have no
+reasoning *levels*, so any level simply means on; no server restart or `.env`
+change is needed — `--reasoning-parser gemma4` is already running). The parser
+keeps the thinking in the response's own `reasoning` field and leaves `content`
+holding the final answer alone, so **only the answer is written to `--output`**;
+the reasoning is never saved. Measured on one plant line, one-sentence prompt:
+2506 completion tokens / 94 s with thinking on, against 36 tokens / 1.7 s off.
 
 ### 2. Visual token budget: 1120 tokens per image
 

@@ -327,3 +327,45 @@ def test_base64_source_conversion_is_unchanged():
 
     content = p.client.calls[0]["messages"][1]["content"]
     assert content[0]["image_url"]["url"] == "data:image/png;base64,QUJD"
+
+
+# --------------------------------------------------------------------------
+# thinking, deliberately ON (analyze only — Stage 3 stays pinned off)
+# --------------------------------------------------------------------------
+
+def test_an_effort_level_turns_thinking_on_for_a_local_backend():
+    p = _provider()
+
+    _send(p, output_config={"effort": "high"})
+
+    # Local models have no reasoning levels, only on/off, so any level means on.
+    assert p.client.calls[0]["extra_body"]["chat_template_kwargs"] == {
+        "enable_thinking": True
+    }
+
+
+def test_reasoning_is_allowed_through_but_kept_out_of_the_content():
+    thoughts = "Thinking Process: the leaves are ruffled, so..."
+    p = _provider(response=_Response("A young kale plant.",
+                                     extra={"reasoning": thoughts}))
+
+    resp = _send(p, output_config={"effort": "high"})
+
+    # The server's reasoning parser already split them.  content is the answer
+    # alone, so a caller writing response.content never saves the reasoning.
+    assert resp.content == "A young kale plant."
+    assert thoughts not in resp.content
+
+
+def test_reasoning_still_fails_the_call_when_thinking_was_not_asked_for():
+    p = _provider(response=_Response("answer", extra={"reasoning": "leaked"}))
+
+    with pytest.raises(ThinkingLeakError):
+        _send(p, output_config={"effort": ""})
+
+
+def test_truncation_is_still_an_error_with_thinking_on():
+    p = _provider(response=_Response("half", finish_reason="length"))
+
+    with pytest.raises(OutputLengthError):
+        _send(p, output_config={"effort": "high"})

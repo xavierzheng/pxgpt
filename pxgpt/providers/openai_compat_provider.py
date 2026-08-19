@@ -160,7 +160,7 @@ class OpenAICompatProvider(BaseProvider):
 
         return converted_messages
 
-    def _build_extra_body(self) -> Dict[str, Any]:
+    def _build_extra_body(self, enable_thinking: bool = False) -> Dict[str, Any]:
         """Return the non-OpenAI request fields for the local backends.
 
         The ONLY place ``extra_body`` is assembled, and it can therefore be read
@@ -177,12 +177,12 @@ class OpenAICompatProvider(BaseProvider):
           the variance to zero, and reports no error while doing it.
 
         ``top_k`` rides here because the OpenAI wire protocol has no field for it,
-        and ``enable_thinking`` is spelled out rather than left to the chat
-        template's default: a default does not appear in the request record, and
-        it is a default somebody else can change.
+        and ``enable_thinking`` is spelled out either way rather than left to the
+        chat template's default: a default does not appear in the request record,
+        and it is a default somebody else can change.
         """
         return {
-            "chat_template_kwargs": {"enable_thinking": False},
+            "chat_template_kwargs": {"enable_thinking": bool(enable_thinking)},
             "top_k": self.config.top_k,
         }
 
@@ -272,6 +272,11 @@ class OpenAICompatProvider(BaseProvider):
                 },
             }
 
+        # Gemma-class local models have no reasoning *levels*, only on/off, so
+        # any effort at all means on.  Stage 3 never sets one; `analyze` may.
+        thinking_on = bool((output_config or {}).get("effort")) \
+            and self.llm_provider != "openai"
+
         if self.llm_provider != "openai":
             # Sampling knobs the local servers understand.  temperature/top_p go
             # in the body below; top_k and the thinking switch have no OpenAI
@@ -280,7 +285,9 @@ class OpenAICompatProvider(BaseProvider):
             # is deliberate redundancy, because only the client-side copy shows
             # up in the request record the paper has to cite.
             params["top_p"] = self.config.top_p
-            params["extra_body"] = self._build_extra_body()
+            params["extra_body"] = self._build_extra_body(thinking_on)
+            print(f"## Thinking: {'on' if thinking_on else 'off'} "
+                  f"(chat_template_kwargs.enable_thinking)")
 
         if self.llm_provider == "openai" and self._is_openai_reasoning_model():
             # These models reject `max_tokens` outright, and omitting
@@ -332,7 +339,12 @@ class OpenAICompatProvider(BaseProvider):
                 f"{self.config.max_tokens}); treat this call as failed"
             )
 
-        self._assert_no_reasoning(choice.message)
+        if not thinking_on:
+            # Only an assertion while thinking is meant to be off.  With it on,
+            # reasoning is expected: the server's reasoning parser keeps it in
+            # its own field, `content` holds the final answer alone, and the
+            # caller simply never writes the reasoning anywhere.
+            self._assert_no_reasoning(choice.message)
 
         return APIResponse(
             content=choice.message.content,

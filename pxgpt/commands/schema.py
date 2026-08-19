@@ -48,6 +48,13 @@ from ..providers.openai_compat_provider import (
 
 OPENAI_COMPAT_PROVIDERS = {"openai", "ollama", "lmstudio", "vllm"}
 
+# Backends whose thinking switch is a chat-template flag rather than a hosted
+# reasoning setting.  Stage 3 pins them to thinking OFF: the shard schemas
+# already require a `rationale` field, so reasoning text would only restate it
+# at several times the cost, and the setting has to stay identical across the
+# 267-plant run for the results to be comparable.  `analyze` may turn it on.
+LOCAL_BACKENDS = {"ollama", "lmstudio", "vllm"}
+
 # Per-shard output cap.  Observed p90 for a shard answer is 607 completion
 # tokens, so 2048 cannot truncate a sane response; what it does cut short is the
 # runaway case (a `rationale` string that will not stop), which was measured at
@@ -58,6 +65,24 @@ SHARD_MAX_TOKENS = 2048
 
 # How much of the first good response to echo for eyeballing.
 RAW_PREVIEW_CHARS = 2000
+
+
+def _resolve_effort(args, config, provider_name: str) -> str:
+    """Return the reasoning effort for this run; "" means off.
+
+    ``--effort`` overrides ``STAGE3_EFFORT``, and "off" means off.  On the local
+    backends the answer is always "" -- see LOCAL_BACKENDS for why Stage 3 keeps
+    thinking pinned off there.
+    """
+    effort = config.stage3_effort if args.effort is None else args.effort
+    if effort == "off":
+        effort = ""
+    if effort and provider_name in LOCAL_BACKENDS:
+        print(f"Note: effort {effort!r} ignored — Stage 3 runs with thinking off "
+              f"on '{provider_name}'; the shard schemas already require a "
+              f"rationale field.  Use `pxgpt analyze --effort` if you want it.")
+        return ""
+    return effort
 
 
 def create_provider(provider_name: str, config: Config):
@@ -114,10 +139,7 @@ def _run_single(args, config, provider_name):
     print(f"Using provider: {provider.provider_name}")
     print(f"Image transport: {args.image_transport}")
 
-    # --effort overrides STAGE3_EFFORT; "off" disables reasoning.
-    effort = config.stage3_effort if args.effort is None else args.effort
-    if effort == "off":
-        effort = ""
+    effort = _resolve_effort(args, config, provider_name)
 
     try:
         if provider_name == "anthropic":
@@ -241,10 +263,7 @@ def _run_sharded(args, config, provider_name):
         print(f"Error: {e}")
         return 1
 
-    # --effort overrides STAGE3_EFFORT; "off" disables reasoning.
-    effort = config.stage3_effort if args.effort is None else args.effort
-    if effort == "off":
-        effort = ""
+    effort = _resolve_effort(args, config, provider_name)
 
     fresh = {}
     shard_errors = {line_id: []}

@@ -345,3 +345,16 @@ def test_image_transport_defaults_to_base64():
     args = parser.parse_args(["schema", "--input-folder", "f", "--output", "o",
                               "--schema", "s.json"])
     assert args.image_transport == "base64"
+
+
+def test_stage3_pins_thinking_off_on_a_local_backend(run, capsys):
+    """A stray STAGE3_EFFORT must not change what the 267-plant run sends.
+
+    The shard schemas already require a `rationale` field, so reasoning text
+    would restate it at several times the cost — and the setting has to be
+    identical across every plant for the results to be comparable.
+    """
+    _, provider, _ = run(effort="high")
+
+    assert all(c["output_config"] is None for c in provider.calls)
+    assert "ignored" in capsys.readouterr().out

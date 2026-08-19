@@ -60,16 +60,21 @@ def analyze_command(args):
 
     output_config = None
     if effort:
+        output_config = config.build_output_config(effort)
         if provider_name == "anthropic":
-            output_config = config.build_output_config(effort)
             print(f"Thinking effort: {effort} (temperature omitted while thinking)")
         elif provider_name == "openai":
             # The provider turns this into reasoning_effort; off is sent as "none".
-            output_config = config.build_output_config(effort)
             print(f"Reasoning effort: {effort}")
         else:
-            print(f"Note: --effort is only supported for the anthropic and openai "
-                  f"providers; ignoring for '{provider_name}'")
+            # Gemma-class local models have no reasoning levels, only on/off, so
+            # every level means the same thing here.  The server's reasoning
+            # parser keeps the thinking in its own response field and leaves
+            # `content` holding the final answer alone, so only the answer is
+            # written to --output -- the reasoning is never saved.
+            print(f"Thinking: on ('{effort}' -> on; local models have no levels). "
+                  f"Reasoning stays in the response's own field and is NOT "
+                  f"written to --output.")
 
     # Create provider and send request
     try:
@@ -148,10 +153,11 @@ def setup_analyze_parser(subparsers):
         choices=['off', 'low', 'medium', 'high', 'xhigh', 'max'],
         default=None,
         help='Reasoning effort (overrides ANALYZE_EFFORT). default = off = none '
-             '= no reasoning; a level enables it. Anthropic adaptive thinking or '
-             'OpenAI reasoning_effort, depending on the provider; whether a '
-             'custom temperature is sent when off depends on the model. '
-             'Ignored by the local providers.'
+             '= no reasoning; a level enables it. Anthropic adaptive thinking, '
+             'OpenAI reasoning_effort, or enable_thinking on the local backends '
+             '-- those have no levels, so any level simply means on. Either way '
+             'only the final text is written to --output; the reasoning stays in '
+             'its own response field. Expect it to be several times slower.'
     )
 
     parser.set_defaults(func=analyze_command)
