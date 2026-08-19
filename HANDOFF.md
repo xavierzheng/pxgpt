@@ -208,10 +208,17 @@ new traits (`leaf_count`, `canopy_spread`, `bolting_status`, `storage_organ`,
   input and will work unchanged — but the quantitative/categorical split becomes
   43 + 7, not 45 + 4.
 
-`03_mature_v2` has still never been run: no `file_manifest.json`, no
-`openai_file_manifest.json`, no `Result_Stage3/` — so there is nothing to
-recover or reconcile, and the first run starts clean. Its `step_04_phenotyping.sh` is an
-Anthropic manifest-only invocation, so it needs `--input-dir` on the OpenAI path.
+`03_mature_v2` has never been run **on this machine**: no `file_manifest.json`,
+no `openai_file_manifest.json`, no `Result_Stage3/` — so there is nothing here to
+recover or reconcile, and a first local run starts clean.
+
+`03_mature_v2/step_04_phenotyping.sh` is **a reference copy, not a runnable
+script here.** The Anthropic `describe-batch` / `phenotype-batch` for v2 were
+already run on a different HPC; the file was scp'd over only to record which
+system prompt and shard schema that run used. It will not execute here (it points
+at a `file_manifest.json` that does not exist on this machine) and it is not
+meant to — do not "fix" it, and do not re-run Stage 3 through Anthropic to make
+it work. That would re-buy results the user already owns.
 
 ### Study design, once the data is right
 
