@@ -97,10 +97,29 @@ def list_images(folder_path: str) -> List[Path]:
     same order every time or the server's prefix cache misses from the first
     differing block onward.
     """
-    return sorted(
-        p for p in Path(folder_path).iterdir()
+    folder = Path(folder_path)
+    images = sorted(
+        p for p in folder.iterdir()
         if p.suffix.lower() in IMAGE_EXTENSIONS
     )
+    if not images:
+        # Never return an empty list.  A request built from zero images is still
+        # a valid request: the model answers the prompt from nothing, every shard
+        # still validates against its schema, and the run looks perfectly
+        # healthy while the data is invented.  The usual cause is pointing at the
+        # tree of plant folders instead of one plant, so say so.
+        subdirs = sorted(d.name for d in folder.iterdir() if d.is_dir())
+        hint = ""
+        if subdirs:
+            hint = (f"  It holds {len(subdirs)} subdirector(y/ies) "
+                    f"({', '.join(subdirs[:3])}{', ...' if len(subdirs) > 3 else ''})"
+                    f" — this looks like a tree of plant folders, so point at one "
+                    f"of them instead.")
+        raise ValueError(
+            f"No images ({', '.join(sorted(IMAGE_EXTENSIONS))}) directly inside "
+            f"{folder}.{hint}"
+        )
+    return images
 
 
 def create_image_content_list(folder_path: str,

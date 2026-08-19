@@ -131,3 +131,32 @@ def test_analyze_offers_the_same_transport_choice_and_defaults_to_base64():
 
     assert parser.parse_args(base).image_transport == "base64"
     assert parser.parse_args(base + ["--image-transport", "file"]).image_transport == "file"
+
+
+def test_a_folder_with_no_images_is_an_error_not_an_empty_request(tmp_path):
+    """Zero images must never reach the model.
+
+    A request built from an empty image list is still a well-formed request: the
+    model answers the prompt from nothing, every shard still validates against
+    its schema, and the run looks healthy while the values are invented.
+    """
+    empty = tmp_path / "empty"
+    empty.mkdir()
+
+    with pytest.raises(ValueError, match="No images"):
+        list_images(str(empty))
+
+
+def test_pointing_at_the_plant_tree_says_so(tmp_path):
+    """The likely mistake -- --input-folder given the tree, not one plant."""
+    tree = tmp_path / "images"
+    for line in ("s0001", "s0002", "s0003", "s0004"):
+        (tree / line).mkdir(parents=True)
+        (tree / line / "a.jpg").write_bytes(b"\xff\xd8\xff")
+
+    with pytest.raises(ValueError) as exc:
+        create_multi_image_message(str(tree), "score this plant")
+
+    msg = str(exc.value)
+    assert "tree of plant folders" in msg
+    assert "s0001" in msg          # names what it actually found
