@@ -1,17 +1,18 @@
-"""Single-request structured JSON analysis (Stage 3, non-batch).
+"""Structured JSON analysis (Stage 3, non-batch).
 
-Two modes, one command:
+Two axes, chosen independently:
 
-``--schema``
-    One folder of images against one schema, written to one output FILE.  This
-    is the original behaviour.
+*What the model is asked for* — ``--schema`` (one schema) or ``--shard-dir``
+(a whole shard set, one request per shard, merged into one record per plant).
 
-``--shard-dir``
-    One folder of images against a whole shard set, written to an output
-    DIRECTORY laid out exactly like ``phenotype-batch``'s (``_partial/`` store
-    plus a merged ``<line_id>.json``).  This is the cheap rehearsal: before
-    committing hours of GPU time to 267 plants, run one plant through every
-    shard and see whether the frozen shard set actually works on this model.
+*How many plants* — ``--input-folder`` (one plant; its images sit directly
+inside) or ``--input-dir`` (a tree with one subfolder per plant).  The two names
+match the batch stages: ``describe-batch`` / ``phenotype-batch`` also take the
+tree as ``--input-dir``.
+
+``--shard-dir --input-dir`` is the local production path: without the providers'
+Batch APIs, which a local server does not offer, it is the only way to run a
+whole dataset through a shard set.
 
 Either way the schema reaches the model as a real decoding constraint, never as
 prose: Anthropic gets ``output_config.format``, the OpenAI-wire backends get
@@ -20,12 +21,14 @@ prompt" path still exists in the provider but this command no longer selects it.
 """
 
 import json
+import time
 from pathlib import Path
 
 from ..core.config import Config
 from ..core.image_utils import (
     create_image_content_list,
     create_multi_image_message,
+    IMAGE_EXTENSIONS,
     IMAGE_TRANSPORTS,
 )
 from ..core.file_utils import read_file_safely, write_file_safely
@@ -52,7 +55,7 @@ OPENAI_COMPAT_PROVIDERS = {"openai", "ollama", "lmstudio", "vllm"}
 # reasoning setting.  Stage 3 pins them to thinking OFF: the shard schemas
 # already require a `rationale` field, so reasoning text would only restate it
 # at several times the cost, and the setting has to stay identical across the
-# 267-plant run for the results to be comparable.  `analyze` may turn it on.
+# whole run for the results to be comparable.  `analyze` may turn it on.
 LOCAL_BACKENDS = {"ollama", "lmstudio", "vllm"}
 
 # Per-shard output cap.  Observed p90 for a shard answer is 607 completion
@@ -93,6 +96,43 @@ def create_provider(provider_name: str, config: Config):
     raise ValueError(f"Unsupported provider: {provider_name}")
 
 
+def resolve_plants(args):
+    """Return the plant folders to run, in a stable order.
+
+    ``--input-folder`` is one plant and is returned as-is.  ``--input-dir`` is a
+    tree: every immediate subdirectory that actually holds images, sorted by
+    name.  Subdirectories without images are reported and skipped rather than
+    failing the whole run, but a tree with no usable plant at all is an error —
+    that almost always means the wrong level was given.
+    """
+    if args.input_folder:
+        return [Path(args.input_folder)]
+
+    root = Path(args.input_dir)
+    if not root.is_dir():
+        raise ValueError(f"--input-dir is not a directory: {root}")
+
+    plants, empty = [], []
+    for d in sorted(p for p in root.iterdir() if p.is_dir()):
+        if any(f.suffix.lower() in IMAGE_EXTENSIONS for f in d.iterdir()):
+            plants.append(d)
+        else:
+            empty.append(d.name)
+
+    if empty:
+        print(f"Note: {len(empty)} subdirector(y/ies) hold no images and are "
+              f"skipped: {', '.join(empty[:5])}"
+              f"{', ...' if len(empty) > 5 else ''}")
+    if not plants:
+        raise ValueError(
+            f"No plant folder under {root} holds any images "
+            f"({', '.join(sorted(IMAGE_EXTENSIONS))}).  --input-dir wants a tree "
+            f"with one subfolder per plant; for a single plant whose images sit "
+            f"directly inside, use --input-folder."
+        )
+    return plants
+
+
 def schema_command(args):
     config = Config.from_env()
     provider_name = args.provider or config.provider
@@ -103,16 +143,33 @@ def schema_command(args):
             "Check your API keys."
         )
 
+    # --output is a directory whenever this run can produce more than one file:
+    # any sharded run (it owns a _partial/ store beside the merged records) or
+    # any multi-plant run (one result per plant).
+    out = Path(args.output)
+    if (args.shard_dir or args.input_dir) and out.exists() and not out.is_dir():
+        why = ("--shard-dir keeps a _partial/ store beside the merged records"
+               if args.shard_dir else "--input-dir writes one file per plant")
+        print(f"Error: --output must be a DIRECTORY here ({why}), but {out} is "
+              f"an existing file.")
+        return 1
+
+    try:
+        plants = resolve_plants(args)
+    except ValueError as e:
+        print(f"Error: {e}")
+        return 1
+
     if args.shard_dir:
-        return _run_sharded(args, config, provider_name)
-    return _run_single(args, config, provider_name)
+        return _run_sharded(args, config, provider_name, plants)
+    return _run_single(args, config, provider_name, plants)
 
 
 # ---------------------------------------------------------------------------
-# --schema : one folder, one schema, one output file  (unchanged behaviour)
+# --schema : one schema per plant
 # ---------------------------------------------------------------------------
 
-def _run_single(args, config, provider_name):
+def _run_single(args, config, provider_name, plants):
     if not args.system_prompt or not args.prompt:
         print("Error: --system-prompt and --prompt are required with --schema.")
         return 1
@@ -127,14 +184,6 @@ def _run_single(args, config, provider_name):
         print(f"File error: {e}")
         return 1
 
-    try:
-        messages = create_multi_image_message(
-            args.input_folder, user_prompt, args.image_transport
-        )
-    except Exception as e:
-        print(f"Error processing images: {e}")
-        return 1
-
     provider = create_provider(provider_name, config)
     print(f"Using provider: {provider.provider_name}")
     print(f"Image transport: {args.image_transport}")
@@ -143,18 +192,11 @@ def _run_single(args, config, provider_name):
 
     try:
         if provider_name == "anthropic":
-            # Native structured output — schema is NOT in the system prompt
             schema_dict = load_normalized(args.schema)
-            output_config = config.build_output_config(effort, schema=schema_dict)
             print(f"Structured output: native (output_config.format)")
-            print(f"Thinking effort:   {output_config.get('effort', 'off')}")
-            print(f"Temperature:       {temperature_guard_status(config.anthropic_model, effort)}")
-
-            response = provider.send_request_with_retry(
-                messages=messages,
-                system_prompt=system_prompt,
-                output_config=output_config,
-            )
+            print(f"Thinking effort:   {effort or 'off'}")
+            print(f"Temperature:       "
+                  f"{temperature_guard_status(config.anthropic_model, effort)}")
         else:
             # Native structured output on the OpenAI wire too: response_format
             # json_schema, i.e. constrained decoding.  The schema goes in exactly
@@ -162,43 +204,79 @@ def _run_single(args, config, provider_name):
             with open(args.schema, encoding="utf-8") as f:
                 schema_dict = json.load(f)
             print(f"Structured output: native (response_format json_schema, strict)")
-            # OpenAI reasoning models read the effort off output_config; the local
-            # backends ignore it.
-            legacy_output_config = config.build_output_config(effort) if effort else None
-            response = provider.send_request_with_retry(
-                messages=messages,
-                system_prompt=system_prompt,
-                output_config=legacy_output_config,
-                json_schema=schema_dict,
-            )
-    except Exception as e:
-        print(f"Error during schema analysis: {e}")
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        print(f"Schema error: {e}")
         return 1
 
-    write_file_safely(args.output, response.content, "output")
-    print(f"Results written to: {args.output}")
-    return 0
+    multi = bool(args.input_dir)
+    out = Path(args.output)
+    if multi:
+        out.mkdir(parents=True, exist_ok=True)
+        print(f"Plants:          {len(plants)}")
+
+    failures = 0
+    for i, plant in enumerate(plants, 1):
+        dest = (out / f"{plant.name}.json") if multi else out
+        if multi:
+            if args.resume and dest.exists():
+                print(f"[{i}/{len(plants)}] {plant.name}  skip (cached)", flush=True)
+                continue
+            print(f"[{i}/{len(plants)}] {plant.name}", flush=True)
+
+        try:
+            messages = create_multi_image_message(
+                str(plant), user_prompt, args.image_transport
+            )
+            if provider_name == "anthropic":
+                response = provider.send_request_with_retry(
+                    messages=messages,
+                    system_prompt=system_prompt,
+                    output_config=config.build_output_config(effort, schema=schema_dict),
+                )
+            else:
+                response = provider.send_request_with_retry(
+                    messages=messages,
+                    system_prompt=system_prompt,
+                    output_config=config.build_output_config(effort) if effort else None,
+                    json_schema=schema_dict,
+                )
+        except Exception as e:  # noqa: BLE001
+            print(f"Error during schema analysis ({plant.name}): {e}")
+            failures += 1
+            if not multi:
+                return 1
+            continue
+
+        write_file_safely(str(dest), response.content, "output")
+        if not multi:
+            print(f"Results written to: {dest}")
+
+    if multi:
+        print(f"\nWrote {len(plants) - failures} of {len(plants)} plant(s) to {out}/")
+        if failures:
+            print(f"{failures} plant(s) failed; re-run to retry only those.")
+    return 1 if failures else 0
 
 
 # ---------------------------------------------------------------------------
-# --shard-dir : one plant, every shard, an output directory
+# --shard-dir : every shard of a shard set, per plant
 # ---------------------------------------------------------------------------
 
-def _run_sharded(args, config, provider_name):
-    """Run one plant through every shard of a shard set, sequentially.
+def _run_sharded(args, config, provider_name, plants):
+    """Run each plant through every shard of a shard set, sequentially.
 
     Sequential on purpose, not for simplicity.  The whole economic premise of
     the local run is that a plant's first shard pays the cold prefill and the
-    remaining eight ride the prefix cache; running them in order is what makes
-    that visible in the printed ``cached_tokens`` column instead of something you
-    have to take on trust.
+    rest ride the prefix cache; running them in order is what makes that visible
+    in the reported ``cached_tokens`` instead of something taken on trust.
+
+    Crash-safe by the mechanism the batch stages already use: each shard's parsed
+    JSON is written to ``<output>/_partial/<line_id>__<shard_id>.json`` the
+    moment it succeeds, so a kill loses at most the shard in flight.  The merged
+    per-plant records are written once at the end — a re-run re-reads the
+    partials, issues no API call for what is already done, and merges again.
     """
     out = Path(args.output)
-    if out.exists() and not out.is_dir():
-        print(f"Error: --output must be a DIRECTORY in --shard-dir mode "
-              f"(it holds _partial/ plus one merged file per plant), but "
-              f"{out} is an existing file.")
-        return 1
 
     if args.prompt:
         print("Note: --prompt is ignored in --shard-dir mode; each shard brings "
@@ -230,24 +308,16 @@ def _run_sharded(args, config, provider_name):
     # real answer.  See SHARD_MAX_TOKENS.
     config.max_tokens = args.max_tokens if args.max_tokens is not None else SHARD_MAX_TOKENS
 
-    line_id = Path(args.input_folder).name
-
-    try:
-        image_blocks = create_image_content_list(
-            args.input_folder, args.image_transport
-        )
-    except Exception as e:
-        print(f"Error processing images: {e}")
-        return 1
-
     provider = create_provider(provider_name, config)
     model = config.get_model(provider_name)
+    effort = _resolve_effort(args, config, provider_name)
 
     print(f"Using provider: {provider.provider_name}")
     print(f"Model:           {model}")
-    print(f"Image transport: {args.image_transport}  ({len(image_blocks)} image(s))")
+    print(f"Image transport: {args.image_transport}")
     print(f"Shard set:       {len(shards)} shard(s) from {args.shard_dir}")
-    print(f"Plant line:      {line_id}")
+    print(f"Plants:          {len(plants)}"
+          f"{'' if args.input_folder else f' (from {args.input_dir})'}")
     print(f"max_tokens:      {config.max_tokens}")
     print(f"timeout:         {config.timeout}s")
     print(f"Resume:          {'on' if args.resume else 'off'}")
@@ -263,14 +333,83 @@ def _run_sharded(args, config, provider_name):
         print(f"Error: {e}")
         return 1
 
-    effort = _resolve_effort(args, config, provider_name)
-
+    single = len(plants) == 1
     fresh = {}
-    shard_errors = {line_id: []}
+    shard_errors = {}
     first_raw = None
-    rows = []
+    failed_total = 0
+    started = time.time()
 
-    print(f"\n--- Running {len(shards)} shard(s) sequentially ---", flush=True)
+    print(f"\n--- Running {len(shards)} shard(s) x {len(plants)} plant(s), "
+          f"sequentially ---", flush=True)
+
+    for i, plant in enumerate(plants, 1):
+        line_id = plant.name
+        shard_errors.setdefault(line_id, [])
+        t0 = time.time()
+
+        try:
+            image_blocks = create_image_content_list(str(plant), args.image_transport)
+        except Exception as e:  # noqa: BLE001
+            print(f"[{i}/{len(plants)}] {line_id}  image error: {e}", flush=True)
+            shard_errors[line_id].append(f"(all shards): {e}")
+            failed_total += len(shards)
+            continue
+
+        if not single:
+            print(f"[{i}/{len(plants)}] {line_id}  ({len(image_blocks)} images)",
+                  flush=True)
+
+        rows, raw = _run_plant_shards(
+            args, config, provider, provider_name, effort, system_prompt,
+            shards, line_id, image_blocks, partial_dir, fresh, shard_errors,
+            verbose=single,
+        )
+        if first_raw is None and raw is not None:
+            first_raw = raw
+
+        ok = sum(1 for r in rows if r[1] == "ok")
+        cached = sum(1 for r in rows if r[1] == "skip (cached)")
+        bad = len(rows) - ok - cached
+        failed_total += bad
+
+        if single:
+            _print_shard_table(rows)
+        else:
+            print(f"           {ok} ok, {cached} cached, {bad} failed"
+                  f"   [{time.time() - t0:.1f}s]", flush=True)
+
+    if first_raw is not None:
+        line_id, shard_id, raw = first_raw
+        print(f"\n--- Raw response text, {line_id} {shard_id} "
+              f"(first {RAW_PREVIEW_CHARS} chars) ---")
+        print("Check by eye for: a ``` code fence, prose around the JSON, or a "
+              "cut-off tail.  Leaked reasoning is asserted on, not eyeballed.")
+        print(raw[:RAW_PREVIEW_CHARS])
+        if len(raw) > RAW_PREVIEW_CHARS:
+            print(f"... [{len(raw) - RAW_PREVIEW_CHARS} more chars]")
+
+    print("\n--- Merging ---")
+    stats = merge_sharded_results(
+        fresh, shard_errors, [p.name for p in plants], master_index, str(out),
+        provider.provider_name, model,
+    )
+
+    print(f"\nPartial store:  {partial_dir}")
+    print(f"Merged records: {out}/<line_id>.json")
+    print(f"Shards ok this run: {len(fresh)}   failed: {failed_total}   "
+          f"merged files written: {stats.get('written', 0)}   "
+          f"elapsed: {time.time() - started:.0f}s")
+    return 1 if failed_total else 0
+
+
+def _run_plant_shards(args, config, provider, provider_name, effort, system_prompt,
+                      shards, line_id, image_blocks, partial_dir, fresh,
+                      shard_errors, verbose):
+    """Run one plant's shards in manifest order.  Returns ``(rows, first_raw)``."""
+    rows = []
+    first_raw = None
+
     for s in shards:
         shard_id = s["shard_id"]
         custom_id = sharding.shard_custom_id(line_id, shard_id)
@@ -283,7 +422,8 @@ def _run_sharded(args, config, provider_name):
                 pass  # corrupt partial -> re-run this shard
             else:
                 rows.append((shard_id, "skip (cached)", "-", "-"))
-                print(f"  {shard_id:<12} skip (cached)", flush=True)
+                if verbose:
+                    print(f"  {shard_id:<12} skip (cached)", flush=True)
                 continue
 
         messages = [{
@@ -293,13 +433,11 @@ def _run_sharded(args, config, provider_name):
 
         try:
             if provider_name == "anthropic":
-                output_config = config.build_output_config(
-                    effort, schema=normalize_schema(s["schema"])
-                )
                 response = provider.send_request_with_retry(
                     messages=messages,
                     system_prompt=system_prompt,
-                    output_config=output_config,
+                    output_config=config.build_output_config(
+                        effort, schema=normalize_schema(s["schema"])),
                 )
             else:
                 # Raw shard schema, deliberately un-normalized: xgrammar takes
@@ -312,13 +450,13 @@ def _run_sharded(args, config, provider_name):
                     json_schema=s["schema"],
                 )
         except OutputLengthError as e:
-            _fail(rows, shard_errors, line_id, shard_id, "length", str(e))
+            _fail(rows, shard_errors, line_id, shard_id, "length", str(e), verbose)
             continue
         except ThinkingLeakError as e:
-            _fail(rows, shard_errors, line_id, shard_id, "reasoning leak", str(e))
+            _fail(rows, shard_errors, line_id, shard_id, "reasoning leak", str(e), verbose)
             continue
         except Exception as e:  # noqa: BLE001
-            _fail(rows, shard_errors, line_id, shard_id, "api error", str(e))
+            _fail(rows, shard_errors, line_id, shard_id, "api error", str(e), verbose)
             continue
 
         completion = response.usage.output_tokens
@@ -329,57 +467,34 @@ def _run_sharded(args, config, provider_name):
             obj = json.loads(strip_code_fence(raw))
         except json.JSONDecodeError as e:
             _fail(rows, shard_errors, line_id, shard_id, "parse error", str(e),
-                  completion, cached)
+                  verbose, completion, cached)
             continue
 
         # Persist immediately: a kill after this point loses nothing.
         write_json_atomic(partial_path, obj)
         fresh[custom_id] = obj
         if first_raw is None:
-            first_raw = (shard_id, raw)
+            first_raw = (line_id, shard_id, raw)
 
         rows.append((shard_id, "ok", completion, cached))
-        print(f"  {shard_id:<12} ok             "
-              f"completion={completion:<6} cached_tokens={cached}", flush=True)
+        if verbose:
+            print(f"  {shard_id:<12} ok             "
+                  f"completion={completion:<6} cached_tokens={cached}", flush=True)
 
-    _print_shard_table(rows)
-
-    if first_raw is not None:
-        shard_id, raw = first_raw
-        print(f"\n--- Raw response text, {shard_id} (first {RAW_PREVIEW_CHARS} chars) ---")
-        print("Check by eye for: a ``` code fence, prose around the JSON, or a "
-              "cut-off tail.  Leaked reasoning is asserted on, not eyeballed.")
-        print(raw[:RAW_PREVIEW_CHARS])
-        if len(raw) > RAW_PREVIEW_CHARS:
-            print(f"... [{len(raw) - RAW_PREVIEW_CHARS} more chars]")
-
-    print("\n--- Merging ---")
-    stats = merge_sharded_results(
-        fresh, shard_errors, [line_id], master_index, str(out),
-        provider.provider_name, model,
-    )
-
-    print(f"\nPartial store:  {partial_dir}")
-    print(f"Merged record:  {out / (line_id + '.json')}")
-    gaps = out / f"{line_id}.gaps.json"
-    if gaps.exists():
-        print(f"Gaps:           {gaps}")
-    failed = len(shard_errors[line_id])
-    print(f"Shards ok this run: {len(fresh)}   failed: {failed}   "
-          f"merged files written: {stats.get('written', 0)}")
-    return 1 if failed else 0
+    return rows, first_raw
 
 
-def _fail(rows, shard_errors, line_id, shard_id, status, detail,
+def _fail(rows, shard_errors, line_id, shard_id, status, detail, verbose,
           completion="-", cached="-"):
     """Record a failed shard: no partial written, run continues.
 
-    Not aborting is the point — this command exists to show the state of EVERY
-    shard in one pass, and stopping at the first failure hides the rest.
+    Not aborting is the point — a run exists to surface the state of every shard,
+    and stopping at the first failure hides the rest.
     """
-    shard_errors[line_id].append(f"{shard_id}: {detail}")
+    shard_errors.setdefault(line_id, []).append(f"{shard_id}: {detail}")
     rows.append((shard_id, status, completion, cached))
-    print(f"  {shard_id:<12} {status:<14} {detail}", flush=True)
+    prefix = "  " if verbose else f"           {line_id} "
+    print(f"{prefix}{shard_id:<12} {status:<14} {detail}", flush=True)
 
 
 def _print_shard_table(rows):
@@ -396,26 +511,45 @@ def _print_shard_table(rows):
 # CLI
 # ---------------------------------------------------------------------------
 
+def add_image_source_args(parser):
+    """Add the mutually exclusive ``--input-folder`` / ``--input-dir`` pair.
+
+    Shared with ``analyze`` so the two commands cannot drift: one plant or a
+    tree, never a guess about which was meant.  The names match the batch
+    stages, where ``--input-dir`` is already the tree.
+    """
+    src = parser.add_mutually_exclusive_group(required=True)
+    src.add_argument(
+        "--input-folder",
+        help="ONE plant's folder — the images sit directly inside it.",
+    )
+    src.add_argument(
+        "--input-dir",
+        help="A TREE of plant folders — one subfolder per plant, images inside "
+             "each.  Same meaning as --input-dir on describe-batch / "
+             "phenotype-batch.  Plants run in sorted order and --output becomes "
+             "a directory holding one result per plant.",
+    )
+    return src
+
+
 def setup_schema_parser(subparsers):
     parser = subparsers.add_parser(
         "schema",
-        help="Single-request structured JSON analysis (Stage 3, non-batch)",
+        help="Structured JSON analysis (Stage 3, non-batch)",
         description=(
-            "Analyze one folder of images against a JSON schema (--schema) or "
-            "against a whole shard set (--shard-dir).  The schema is always sent "
-            "as native structured output: output_config.format for Anthropic, "
-            "response_format json_schema for the OpenAI-wire backends."
+            "Analyze one plant (--input-folder) or a whole tree of plants "
+            "(--input-dir) against a JSON schema (--schema) or a shard set "
+            "(--shard-dir).  The schema is always sent as native structured "
+            "output: output_config.format for Anthropic, response_format "
+            "json_schema for the OpenAI-wire backends."
         ),
     )
-    parser.add_argument(
-        "--input-folder", required=True,
-        help="Path to folder containing images (its basename is the line_id "
-             "in --shard-dir mode)",
-    )
+    add_image_source_args(parser)
     parser.add_argument(
         "--output", required=True,
-        help="Output FILE with --schema; output DIRECTORY with --shard-dir "
-             "(holding _partial/ and the merged <line_id>.json)",
+        help="Output FILE for a single plant with --schema; otherwise a "
+             "DIRECTORY (one result per plant, plus _partial/ when sharded)",
     )
     parser.add_argument(
         "--system-prompt",
@@ -463,12 +597,13 @@ def setup_schema_parser(subparsers):
     )
     parser.add_argument(
         "--resume", dest="resume", action="store_true", default=True,
-        help="Skip shards whose _partial/<line_id>__<shard_id>.json already "
-             "parses, without re-billing them (default)",
+        help="Skip work already on disk without re-billing it: shards whose "
+             "_partial/<line_id>__<shard_id>.json parses, or plants whose "
+             "output file already exists (default)",
     )
     parser.add_argument(
         "--no-resume", dest="resume", action="store_false",
-        help="Re-run every shard even if a partial already exists",
+        help="Re-run everything even if results already exist",
     )
     parser.add_argument(
         "--effort",
@@ -478,7 +613,6 @@ def setup_schema_parser(subparsers):
              "= no reasoning; a level enables it. Anthropic adaptive thinking or "
              "OpenAI reasoning_effort, depending on the provider; whether a "
              "custom temperature is sent when off depends on the model. "
-             "Ignored by the local providers, which are always sent "
-             "enable_thinking=False and fail the shard if reasoning comes back.",
+             "Ignored on the local backends, which Stage 3 pins to thinking off.",
     )
     parser.set_defaults(func=schema_command)

@@ -358,3 +358,124 @@ def test_stage3_pins_thinking_off_on_a_local_backend(run, capsys):
 
     assert all(c["output_config"] is None for c in provider.calls)
     assert "ignored" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------
+# --input-dir : a tree of plants
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def tree(tmp_path):
+    """Three plant folders, plus one empty dir and one stray file."""
+    root = tmp_path / "tree"
+    for line in ("s0003", "s0001", "s0002"):        # created out of order
+        (root / line).mkdir(parents=True)
+        for n in ("b.jpg", "a.jpg"):
+            (root / line / n).write_bytes(b"\xff\xd8\xff")
+    (root / "s9999_empty").mkdir()
+    (root / "README.txt").write_text("not a plant", encoding="utf-8")
+    return root
+
+
+def _tree_args(shard_dir, tree, out, **over):
+    parser = create_parser()
+    args = parser.parse_args([
+        "schema", "--provider", "vllm", "--shard-dir", str(shard_dir),
+        "--input-dir", str(tree), "--output", str(out),
+        "--image-transport", "file"])
+    for k, v in over.items():
+        setattr(args, k, v)
+    return args
+
+
+@pytest.fixture
+def run_tree(monkeypatch, shard_dir, tree, tmp_path):
+    monkeypatch.setenv("VLLM_MODEL", "gemma4-26b")
+
+    def _run(outcomes=None, out=None, **over):
+        out = out or (tmp_path / "many")
+        provider = FakeProvider(outcomes)
+        monkeypatch.setattr(schema_cmd, "create_provider",
+                            lambda name, config: provider)
+        code = schema_cmd.schema_command(_tree_args(shard_dir, tree, out, **over))
+        return code, provider, Path(out)
+
+    return _run
+
+
+def test_every_plant_runs_every_shard_in_sorted_order(run_tree):
+    code, provider, out = run_tree()
+
+    assert code == 0
+    assert len(provider.calls) == 6                      # 3 plants x 2 shards
+    merged = sorted(p.name for p in out.glob("s*.json"))
+    assert merged == ["s0001.json", "s0002.json", "s0003.json"]
+
+
+def test_partial_store_is_shared_across_plants(run_tree):
+    _, _, out = run_tree()
+
+    partials = sorted(p.name for p in (out / "_partial").glob("*.json")
+                      if p.name != _RUN_META_NAME)
+    assert partials == [
+        "s0001__shard_01.json", "s0001__shard_02.json",
+        "s0002__shard_01.json", "s0002__shard_02.json",
+        "s0003__shard_01.json", "s0003__shard_02.json",
+    ]
+
+
+def test_resume_across_a_whole_tree_issues_no_api_call(run_tree, tmp_path):
+    out = tmp_path / "many"
+    run_tree(out=out)
+
+    code, provider, _ = run_tree(out=out)
+
+    assert code == 0
+    assert provider.calls == []
+
+
+def test_a_folder_with_no_images_is_skipped_not_fatal(run_tree, capsys):
+    code, _, out = run_tree()
+
+    assert code == 0
+    assert not (out / "s9999_empty.json").exists()
+    assert "hold no images" in capsys.readouterr().out
+
+
+def test_one_plants_failure_does_not_stop_the_others(run_tree):
+    code, provider, out = run_tree(outcomes={"shard_01": RuntimeError("boom")})
+
+    assert code == 1                                     # reported
+    assert len(provider.calls) == 6                      # all plants attempted
+    for line in ("s0001", "s0002", "s0003"):
+        assert (out / f"{line}.json").exists()            # partial records kept
+        assert (out / f"{line}.gaps.json").exists()       # gaps recorded
+
+
+def test_input_dir_and_input_folder_are_mutually_exclusive():
+    parser = create_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["schema", "--output", "o", "--shard-dir", "d",
+                           "--input-folder", "f", "--input-dir", "t"])
+
+
+def test_an_image_source_is_required():
+    parser = create_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["schema", "--output", "o", "--shard-dir", "d"])
+
+
+def test_input_dir_pointed_at_a_single_plant_says_use_input_folder(
+        run_tree, shard_dir, tree, tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("VLLM_MODEL", "gemma4-26b")
+    monkeypatch.setattr(schema_cmd, "create_provider",
+                        lambda name, config: FakeProvider())
+
+    # tree/s0001 IS a plant: images directly inside, no subfolders.
+    code = schema_cmd.schema_command(
+        _tree_args(shard_dir, tree / "s0001", tmp_path / "o"))
+
+    assert code == 1
+    assert "use --input-folder" in capsys.readouterr().out

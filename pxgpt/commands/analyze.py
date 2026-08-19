@@ -4,7 +4,10 @@ import argparse
 from typing import Optional
 
 from ..core.config import Config
+from pathlib import Path
+
 from ..core.image_utils import create_multi_image_message, IMAGE_TRANSPORTS
+from .schema import add_image_source_args, resolve_plants
 from ..core.file_utils import read_file_safely, write_file_safely
 from ..providers.anthropic_provider import AnthropicProvider
 from ..providers.openai_compat_provider import OpenAICompatProvider
@@ -44,15 +47,20 @@ def analyze_command(args):
         print(f"File error: {e}")
         return 1
     
-    # Create messages
+    # One plant (--input-folder) or a tree of them (--input-dir).
     try:
-        messages = create_multi_image_message(
-            args.input_folder, prompt_text, args.image_transport
-        )
-    except Exception as e:
-        print(f"Error processing images: {e}")
+        plants = resolve_plants(args)
+    except ValueError as e:
+        print(f"Error: {e}")
         return 1
-    
+
+    multi = bool(args.input_dir)
+    out = Path(args.output)
+    if multi and out.exists() and not out.is_dir():
+        print(f"Error: --output must be a DIRECTORY with --input-dir (one "
+              f"description per plant), but {out} is an existing file.")
+        return 1
+
     # Resolve thinking effort: --effort overrides ANALYZE_EFFORT; "off" disables.
     effort = config.analyze_effort if args.effort is None else args.effort
     if effort == "off":
@@ -79,24 +87,53 @@ def analyze_command(args):
     # Create provider and send request
     try:
         provider = create_provider(provider_name, config)
-        print(f"Using provider: {provider.provider_name}")
-        print(f"Image transport: {args.image_transport}")
-
-        response = provider.send_request_with_retry(
-            messages=messages,
-            system_prompt=system_prompt,
-            output_config=output_config,
-        )
-
-        # Write output
-        write_file_safely(args.output, response.content, "output")
-        print(f"Results successfully written to file: {args.output}")
-
-        return 0
-
     except Exception as e:
-        print(f"Error during analysis: {e}")
+        print(f"Error creating provider: {e}")
         return 1
+    print(f"Using provider: {provider.provider_name}")
+    print(f"Image transport: {args.image_transport}")
+
+    if multi:
+        out.mkdir(parents=True, exist_ok=True)
+        print(f"Plants: {len(plants)}")
+
+    failures = 0
+    for i, plant in enumerate(plants, 1):
+        dest = (out / f"{plant.name}.txt") if multi else out
+        if multi:
+            # Resume is the default: a description already on disk is not
+            # re-billed.  A 277-plant run that dies at plant 200 restarts cheap.
+            if args.resume and dest.exists():
+                print(f"[{i}/{len(plants)}] {plant.name}  skip (cached)", flush=True)
+                continue
+            print(f"[{i}/{len(plants)}] {plant.name}", flush=True)
+
+        try:
+            messages = create_multi_image_message(
+                str(plant), prompt_text, args.image_transport
+            )
+            response = provider.send_request_with_retry(
+                messages=messages,
+                system_prompt=system_prompt,
+                output_config=output_config,
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"Error during analysis ({plant.name}): {e}")
+            failures += 1
+            if not multi:
+                return 1
+            continue
+
+        write_file_safely(str(dest), response.content, "output")
+        if not multi:
+            print(f"Results successfully written to file: {dest}")
+
+    if multi:
+        print(f"\nWrote {len(plants) - failures} of {len(plants)} description(s) "
+              f"to {out}/")
+        if failures:
+            print(f"{failures} plant(s) failed; re-run to retry only those.")
+    return 1 if failures else 0
 
 
 def setup_analyze_parser(subparsers):
@@ -107,16 +144,13 @@ def setup_analyze_parser(subparsers):
         description='Analyze images using AI and generate text descriptions'
     )
     
-    parser.add_argument(
-        '--input-folder', 
-        required=True,
-        help='Path to folder containing images'
-    )
-    
+    add_image_source_args(parser)
+
     parser.add_argument(
         '--output',
-        required=True, 
-        help='Output file path'
+        required=True,
+        help='Output FILE for a single plant; a DIRECTORY with --input-dir '
+             '(one <line_id>.txt per plant)'
     )
     
     parser.add_argument(
@@ -158,6 +192,17 @@ def setup_analyze_parser(subparsers):
              '-- those have no levels, so any level simply means on. Either way '
              'only the final text is written to --output; the reasoning stays in '
              'its own response field. Expect it to be several times slower.'
+    )
+
+    parser.add_argument(
+        '--resume', dest='resume', action='store_true', default=True,
+        help='With --input-dir, skip plants whose output file already exists '
+             'without re-billing them (default)'
+    )
+
+    parser.add_argument(
+        '--no-resume', dest='resume', action='store_false',
+        help='Re-run every plant even if its output file exists'
     )
 
     parser.set_defaults(func=analyze_command)
