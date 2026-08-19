@@ -57,23 +57,81 @@ def build_base64_content_list(image_paths: Iterable) -> List[Dict[str, Any]]:
     return blocks
 
 
-def create_image_content_list(folder_path: str) -> List[Dict[str, Any]]:
-    """Return base64 image content blocks for every supported image in *folder_path*.
+def build_file_uri_content_list(image_paths: Iterable) -> List[Dict[str, Any]]:
+    """Return ``file://`` URI image content blocks for the given image paths.
 
-    Uses the same IMAGE_EXTENSIONS filter and per-file media_type as the batch
-    stages, so the sync ``analyze`` / ``schema`` commands accept exactly the same
-    formats. Sorted by filename for a stable image order.
+    Shaped as an Anthropic url source block (Anthropic natively supports
+    ``source.type == "url"``), which ``OpenAICompatProvider._to_openai_messages``
+    turns into an OpenAI ``image_url``.  This is the transport the local vLLM
+    server wants: the bytes are never sent, the server reads them off the same
+    mount, so a whole plant line costs one path per photo instead of megabytes
+    of base64.
+
+    Paths are resolved to absolute.  Whether the path is readable by the server
+    is deliberately NOT checked here -- pxGPT does not know the server's mount
+    layout, and guessing wrong is worse than letting the server say so.  Input
+    order is preserved, so callers should pass an already-sorted list.
     """
-    image_paths = sorted(
+    return [
+        {
+            "type": "image",
+            "source": {"type": "url", "url": f"file://{Path(p).resolve()}"},
+        }
+        for p in image_paths
+    ]
+
+
+IMAGE_TRANSPORTS = ("base64", "file")
+
+_TRANSPORT_BUILDERS = {
+    "base64": build_base64_content_list,
+    "file": build_file_uri_content_list,
+}
+
+
+def list_images(folder_path: str) -> List[Path]:
+    """Return every supported image in *folder_path*, sorted by filename.
+
+    The single image-discovery point for the sync commands.  Sorting matters
+    beyond tidiness: the same plant's shards must present their photos in the
+    same order every time or the server's prefix cache misses from the first
+    differing block onward.
+    """
+    return sorted(
         p for p in Path(folder_path).iterdir()
         if p.suffix.lower() in IMAGE_EXTENSIONS
     )
-    return build_base64_content_list(image_paths)
 
 
-def create_multi_image_message(folder_path: str, prompt_text: str) -> List[Dict[str, Any]]:
-    """Return a messages list with base64 images followed by the text prompt."""
-    content = create_image_content_list(folder_path)
+def create_image_content_list(folder_path: str,
+                              transport: str = "base64") -> List[Dict[str, Any]]:
+    """Return image content blocks for every supported image in *folder_path*.
+
+    Uses the same IMAGE_EXTENSIONS filter and per-file media_type as the batch
+    stages, so the sync ``analyze`` / ``schema`` commands accept exactly the same
+    formats. Sorted by filename for a stable image order.  *transport* selects
+    the block builder: ``base64`` (inline bytes, works everywhere) or ``file``
+    (``file://`` URI, local vLLM only).
+    """
+    try:
+        builder = _TRANSPORT_BUILDERS[transport]
+    except KeyError:
+        raise ValueError(
+            f"Unknown image transport {transport!r}; expected one of "
+            f"{', '.join(IMAGE_TRANSPORTS)}"
+        ) from None
+    return builder(list_images(folder_path))
+
+
+def create_multi_image_message(folder_path: str, prompt_text: str,
+                               transport: str = "base64") -> List[Dict[str, Any]]:
+    """Return a messages list with the images followed by the text prompt.
+
+    Image blocks come first: both the Gemma model card and Anthropic's own
+    guidance want image-then-text, and the batch stages already lay requests out
+    this way.
+    """
+    content = create_image_content_list(folder_path, transport)
     content.append({"type": "text", "text": prompt_text})
     return [{"role": "user", "content": content}]
 
