@@ -309,10 +309,40 @@ pxgpt analyze --provider vllm \
 
 `analyze` and `schema` support vLLM. The batch stages (`describe-batch*`,
 `phenotype-batch*`) are Anthropic/OpenAI-only — they depend on the providers'
-Batch and Files APIs, which a local server does not offer. For `schema`, the JSON
-schema is appended to the system prompt rather than sent as native structured
-output, so the user prompt must ask for JSON-only output (the bundled
-`prompts/extract_traits.txt` does).
+Batch and Files APIs, which a local server does not offer.
+
+`schema` sends the JSON schema as **native structured output** —
+`response_format` `{"type": "json_schema", …, "strict": true}`, i.e. real
+constrained decoding through xgrammar — not as prose in the system prompt. The
+schema therefore appears in exactly one place, so the prompt stays byte-identical
+to what the other providers see and the runs remain comparable. If the server
+rejects `response_format` the command fails; it never quietly falls back to the
+prompt-text path, because that produces output that looks fine and is completely
+unconstrained. The user prompt does not need to ask for JSON.
+
+`schema --shard-dir` runs one plant through a whole shard set — the cheap
+rehearsal before committing hours of GPU time to all 267:
+
+```bash
+pxgpt schema --provider vllm \
+  --shard-dir  ../02_mature_v1/shard_master_schema \
+  --input-folder path/to/images/s0019 \
+  --output      /tmp/smoke \
+  --image-transport file
+```
+
+`--image-transport file` sends `file://` URIs instead of base64 and is the
+production path here; the server must have that directory mounted at the very
+same path (`MEDIA_ROOT`, `--allowed-local-media-path`). Test with `file`, not
+base64: base64 passes with no mount at all, so a base64 smoke test tells you
+nothing about whether the real run will start.
+
+Shards run one at a time and each one prints its `cached_tokens`. `shard_01`
+should be ~0 and every shard after it 97-99 %; if they are all ~0 the prefix
+cache is not being reused. Set `TIMEOUT=1800` for local runs — a cold prefill
+measures 75-86 s and the 300 s default leaves little headroom on a busy box.
+Each shard's result lands in `<output>/_partial/` as it succeeds, so a re-run
+skips what already worked (`--no-resume` to force everything).
 
 See [../../user_manual.md](../../user_manual.md) for the full command reference.
 
