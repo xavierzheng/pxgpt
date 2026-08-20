@@ -82,7 +82,9 @@ export HF_TOKEN=hf_...
 Then verify against your real data:
 
 ```bash
-pip install -r requirements.txt
+# still in ops/local-vllm/ -- this is the ops requirements file,
+# separate from the repo root's, and smoke.py lives here too
+pip install -r ops/local-vllm/requirements.txt   # or: -r requirements.txt from here
 set -a; source .env; set +a
 python smoke.py                       # acceptance A-H, exits non-zero on failure
 ```
@@ -260,7 +262,7 @@ client = OpenAI(base_url="http://localhost:8000/v1", api_key="local",
 resp = client.chat.completions.create(
     model="gemma4-26b-a4b-nvfp4",
     max_tokens=8192,
-    temperature=1.0, top_p=0.95,        # from .env; top_k rides in extra_body
+    temperature=0.5, top_p=0.95,        # from .env; top_k rides in extra_body
     # NO seed -- see the note under Configuration
     messages=[
         {"role": "system", "content": system_prompt},
@@ -524,7 +526,8 @@ subcommand must not be repeated; the NGC image needs it spelled out. `up.sh` and
 **A request takes ~190 s and returns 8192 completion tokens** — runaway
 generation. The grammar keeps output well-formed but nothing bounds length, so the
 model can pad `rationale` strings indefinitely. Set a per-request timeout, cap
-`max_tokens` at 2048 (3.4x the observed p90 of 607), and treat
+`max_tokens` at 2048 (5.4x the p90 of 381 measured at temperature 0.5; the
+607 figure was taken at temperature 1.0 — see the sampling note below), and treat
 `finish_reason == "length"` as a **failed** shard, not a partial result. Rate:
 0 in 30 requests across 10 plants, which bounds it at ~10 % rather than
 measuring it — do not assume it will not happen.

@@ -29,7 +29,7 @@ flags actually work.
 | **Thinking** | **off** (`enable_thinking: false` per request) |
 | **Visual token budget** | **1120 tokens/image** (`--mm-processor-kwargs '{"max_soft_tokens": 1120}'`) |
 | **MoE backend** | **pinned** — `MOE_BACKEND=cutlass` → `--moe-backend cutlass`, which the log calls `VLLM_CUTLASS` |
-| **Sampling** | **temperature 1.0 / top_p 0.95 / top_k 64**, set on both the server and every request. **No seed.** |
+| **Sampling** | **top_p 0.95 / top_k 64**, set on both the server and every request. **No seed.** Temperature was 1.0 when the measurements below were taken (the checkpoint's own `generation_config.json` default); `env.example` now ships **0.5**. Every latency, completion-token and runaway-generation number in this document is therefore at 1.0 — re-confirm from a run summary before quoting them for the shipped config. The one figure already re-measured at 0.5 is the per-shard completion-token p90: **381**, against 607 at 1.0. |
 
 ## Image selection
 

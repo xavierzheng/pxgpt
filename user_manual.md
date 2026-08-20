@@ -853,19 +853,23 @@ Writes `<prefix>.csv` (ordinal traits as label strings) and `<prefix>.feather` (
 
 ### `pxgpt analyze`
 
-Single-folder text description (sync, all providers). Useful for testing prompts on one plant line.
+Text description (sync, all providers). One plant line, or a whole tree of them.
 
 ```
 pxgpt analyze \
-  --input-folder PATH \
-  --output FILE \
+  (--input-folder PATH | --input-dir PATH)     # one plant, or a tree of plants
+  --output PATH                                # FILE for one plant; DIRECTORY with --input-dir
   --system-prompt FILE \
   --prompt FILE \
-  [--provider {anthropic,openai,google,ollama}]
-  [--effort {off,low,medium,high,xhigh,max}]   # Anthropic adaptive thinking; default off
+  [--provider {anthropic,openai,ollama,lmstudio,vllm}]
+  [--image-transport {base64,file}]            # default base64; 'file' = file:// URIs
+  [--resume | --no-resume]                     # default --resume (skips plants already written)
+  [--effort {off,low,medium,high,xhigh,max}]   # default off
 ```
 
-`--effort` enables reasoning (overrides `ANALYZE_EFFORT`; default **off**, preserving the original non-thinking behavior). On Anthropic it becomes adaptive thinking and the thinking blocks are stripped from the output; on OpenAI it becomes `reasoning_effort`, with "off" sent as the explicit level `none`. Either way `temperature` is omitted whenever the model will not accept a custom value. Ignored by the local providers (Ollama / LM Studio / vLLM).
+`--effort` enables reasoning (overrides `ANALYZE_EFFORT`; default **off**, preserving the original non-thinking behavior). On Anthropic it becomes adaptive thinking and the thinking blocks are stripped from the output; on OpenAI it becomes `reasoning_effort`, with "off" sent as the explicit level `none`. Either way `temperature` is omitted whenever the model will not accept a custom value.
+
+**On the local backends (Ollama / LM Studio / vLLM) `--effort` is NOT ignored** — it switches the chat template's `enable_thinking` on. Those models have no reasoning *levels*, so any level simply means on and `off` means off. Only the final answer is written to `--output`: the server's reasoning parser keeps the thinking in its own response field, which pxGPT never saves. Expect it to be several times slower — measured on one plant line, 2506 completion tokens / 94 s with thinking on against 36 tokens / 1.7 s off.
 
 #### Recipe: gather descriptions from `analyze` (single-folder mode)
 
@@ -918,18 +922,33 @@ done
 
 ### `pxgpt schema`
 
-Single-folder structured JSON output (sync, all providers). For Anthropic, uses native `output_config.format`; for other providers, appends the schema to the system prompt.
+Structured JSON output (sync, all providers). The schema always reaches the model as a real decoding constraint: Anthropic gets native `output_config.format`, the OpenAI-wire providers get `response_format` `json_schema` (strict). It is never pasted into the system prompt.
+
+Two independent choices — one schema or a whole shard set, and one plant or a whole tree:
 
 ```
 pxgpt schema \
-  --input-folder PATH \
-  --output FILE \
-  --system-prompt FILE \
-  --schema FILE \
-  --prompt FILE \
-  [--provider {anthropic,openai,google,ollama}]
+  (--schema FILE | --shard-dir PATH)           # one schema, or a shard set
+  (--input-folder PATH | --input-dir PATH)     # one plant, or a tree of plants
+  --output PATH                                # FILE only for --schema + --input-folder;
+                                               #   DIRECTORY otherwise
+  [--system-prompt FILE]                       # required with --schema; overrides the
+                                               #   shard set's own with --shard-dir
+  [--prompt FILE]                              # required with --schema; ignored with
+                                               #   --shard-dir (each shard carries its own)
+  [--provider {anthropic,openai,ollama,lmstudio,vllm}]
+  [--image-transport {base64,file}]            # default base64; 'file' = file:// URIs
+  [--max-tokens N]                             # default 2048 with --shard-dir, else MAX_TOKENS
+  [--resume | --no-resume]                     # default --resume
   [--effort {off,low,medium,high,xhigh,max}]   # overrides STAGE3_EFFORT
+  # --shard-dir dispatch (local runs; see "Local / self-hosted providers"):
+  [--concurrency N]                            # default 8   requests within one plant
+  [--pipeline-depth {1,2}]                     # default 2   plants in flight
+  [--mem-floor-gib X]                          # default 5   pause overlap below this
+  [--limit N]                                  # first N plants only, for timing
 ```
+
+`--resume` means different things per mode: with `--shard-dir` it is per **shard** (anything in `<output>/_partial/` is skipped, so a plant missing three shards re-runs only those); with `--schema` it is per **plant** (a plant whose output file exists is skipped).
 
 For Anthropic, `schema` runs **without reasoning by default**; a custom `temperature` is sent only on Sonnet 4.6 and earlier. Enable adaptive thinking with `--effort` (e.g. `--effort medium`) or by setting `STAGE3_EFFORT`.
 
@@ -1093,8 +1112,21 @@ exactly the server's `MAX_NUM_SEQS`.
 
 Every default above was measured on one machine (GB10, 128 GB unified memory) and
 none is portable. Before raising anything on new hardware, run `--limit 4` and
-watch the `MemAvailable` column. Measured there: **60.6 s per plant**, 2.67x an
-all-serial baseline, warm shards at 96.8 % prefix-cache hit.
+watch the `MemAvailable` column.
+
+Measured on 4 plants of `03_mature_v2` (9 shards, 14-20 photos each), restarted
+container, same plants both ways:
+
+| dispatch | per plant | warm hit |
+|---|---|---|
+| `--concurrency 1 --pipeline-depth 1` (serial) | 111.8 s | 96.8 % |
+| defaults (`8` / `2`) | **60.6 s** | 96.8 % |
+
+**1.85x**, measured against a serial baseline on the *same plants*. Beware
+comparing across datasets: the 161.6 s/plant serial figure in
+[RUNBOOK.md](ops/local-vllm/RUNBOOK.md) was measured on `02_mature_v1`, which has
+10 shards and 26-32 photos per plant, so dividing by it would overstate the gain.
+Get your own baseline with `--concurrency 1 --pipeline-depth 1 --limit 4`.
 
 **Reading the progress line.**
 

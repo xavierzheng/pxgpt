@@ -120,9 +120,14 @@ WARM_HIT_WARN_PCT = 50.0
 # Hard ceiling on plants in flight.  See _pipeline_depth for why.
 MAX_PIPELINE_DEPTH = 2
 
-# All-serial reference for one plant, measured on this box, used only to report
-# the speed-up actually achieved.
-SERIAL_SECONDS_PER_PLANT = 161.6
+# No all-serial constant here on purpose.  A speed-up ratio is only meaningful
+# against a baseline on the SAME plants: per-plant cost scales with photo count
+# and shard count, so dividing 03_mature_v2 (9 shards, 14-20 photos, measured
+# 111.8 s serial) by a figure taken on 02_mature_v1 (10 shards, 26-32 photos,
+# 161.6 s) overstated the gain as 2.67x when it is 1.85x.  Worse, a genuinely
+# serial run then reported "1.44x the all-serial reference" -- a serial run
+# claiming a speed-up over serial.  The summary now prints seconds per plant and
+# says how to obtain a comparable baseline.
 
 # How much of the first good response to echo for eyeballing.
 RAW_PREVIEW_CHARS = 2000
@@ -921,15 +926,12 @@ def _print_run_summary(plants, plants_done, stats, status_counts, completions,
           f"{f'{warm_mean:.1f}%' if warm_mean is not None else '-'}  "
           f"(n={len(warm_hits)})")
     per_plant = elapsed / plants_done if plants_done else 0
-    # Only quote a speed-up when requests were actually issued.  A fully resumed
-    # run finishes in milliseconds and would otherwise report a meaningless
-    # thousand-fold "speed-up" against the serial reference.
-    speedup = ""
+    print(f"Wall clock:        {elapsed:.0f}s total, {per_plant:.1f}s per plant")
     if per_plant > 1.0 and completions:
-        speedup = (f"   ({SERIAL_SECONDS_PER_PLANT / per_plant:.2f}x the "
-                   f"{SERIAL_SECONDS_PER_PLANT:.1f}s all-serial reference "
-                   f"measured on this box)")
-    print(f"Wall clock:        {elapsed:.0f}s total, {per_plant:.1f}s per plant{speedup}")
+        print("                   for a comparable speed-up, measure the same "
+              "plants with --concurrency 1 --pipeline-depth 1; per-plant cost "
+              "scales with photo and shard count, so a baseline from another "
+              "dataset is not a valid divisor")
     print(f"Memory:            MemAvailable low-water "
           f"{f'{mem_low:.1f} GiB' if mem_low is not None else 'n/a'}; "
           f"guard withheld a plant {guard_trips} time(s)")
@@ -1036,8 +1038,9 @@ def setup_schema_parser(subparsers):
     parser.add_argument(
         "--max-tokens", type=int, default=None,
         help=f"Output token cap.  Default: {SHARD_MAX_TOKENS} with --shard-dir "
-             f"(bounds a runaway rationale; a normal shard answer is ~600 "
-             f"tokens), MAX_TOKENS otherwise.  A response that stops at "
+             f"(bounds a runaway rationale; measured p90 for a real shard answer "
+             f"is 381 tokens at temperature 0.5, so this is ~5x headroom), "
+             f"MAX_TOKENS otherwise.  A response that stops at "
              f"finish_reason 'length' counts as a failed shard, not a partial "
              f"result.",
     )

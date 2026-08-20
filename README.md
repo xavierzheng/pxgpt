@@ -380,7 +380,7 @@ Run `pxgpt <command> --help` for full argument details.
 | **LM Studio** | — | — | ✅ | OpenAI-compatible (`LMSTUDIO_*`); use a vision model |
 | **vLLM** | — | — | ✅ | OpenAI-compatible (`VLLM_*`, model required); use a vision model — [hosting guide](ops/local-vllm/README_vllm.md) |
 
-For `analyze` / `schema`, structured output on non-Anthropic providers is delivered by appending the schema to the system prompt — make the prompt request JSON-only output (the bundled `prompts/extract_traits.txt` does this).
+For `schema`, the JSON schema always reaches the model as a real decoding constraint, on every provider: Anthropic gets native `output_config.format`, the OpenAI-wire providers (OpenAI, Ollama, LM Studio, vLLM) get `response_format` `json_schema` with `strict: true`. It is **not** pasted into the system prompt, so the user prompt does **not** need to ask for JSON-only output. If a backend rejects `response_format` the command fails rather than silently falling back to prompt text.
 
 ---
 
