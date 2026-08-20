@@ -7,3 +7,11 @@ __pycache__/
 .env.*
 !.env.example
 .superpowers/
+
+# Session hand-off notes, deliberately NOT part of the package.
+# CLAUDE.md carries the working rules for an AI session in this checkout and
+# HANDOFF.md carries conclusions already measured, so the next session does not
+# re-derive them. Both are local to this machine's workflow, not something a user
+# of pxGPT installs or needs. Kept on disk, out of the repo.
+CLAUDE.md
+HANDOFF.md
