@@ -1079,6 +1079,37 @@ measured cost.) Four unavoidable departures:
   and `smoke.py` never did. Mixing the two forms costs ~57 s on every request
   that lands on the wrong side — silently, with no error.
 
+  > **Re-confirmed 2026-08-20 on `nvcr.io/nvidia/vllm@sha256:95c498a4…` /
+  > vLLM 0.24**, restarted container, `03_mature_v2`/s0100 (19 photos, 21 988
+  > prompt tokens every request, `max_soft_tokens: 1120` — the server's own
+  > value, so the tokenization is byte-identical):
+  >
+  > | request | total | cached | hit |
+  > |---|---|---|---|
+  > | 0. no kwargs, cold | 53.9 s | 0 | 0.0 % |
+  > | 1. **with** kwargs, prefix already prefilled by 0 | **50.7 s** | 544 | **2.5 %** |
+  > | 2. with kwargs, repeat | 8.2 s | 21 984 | 100.0 % |
+  > | 3. without kwargs again | 8.6 s | 21 984 | 100.0 % |
+  >
+  > Request 1 re-paid a full prefill for a prompt already in the cache, so the
+  > two namespaces are still separate on this build. The penalty is ~42 s here
+  > against the ~57 s above — same order, and the difference is just the shorter
+  > prompt (19 photos vs 26).
+  >
+  > Row 3 hits where the original table missed, and that is not a contradiction:
+  > this sequence began with request 0, which populated the *no-kwargs*
+  > namespace, so row 3 found its own entry waiting. The original sequence
+  > started with a with-kwargs cold request, so no no-kwargs entry existed yet.
+  > Either way the finding is the same one: **two namespaces, and whichever form
+  > you have not sent before pays full price.**
+  >
+  > **The cache-hit canary in `schema --shard-dir` cannot catch this.** A client
+  > that sends the kwargs on *every* request is internally consistent, so its
+  > warm shards report 97-100 % hit (row 2) and nothing looks wrong; only the
+  > first shard of each plant quietly pays. The guards that actually hold are the
+  > single `_build_extra_body()` assembly point and the tests asserting the key
+  > never appears — not the hit-rate warning.
+
 - **Prefix cache lives as long as the container.** A second `bench.sh` against a
   running server measures cache hits, not prefills (its "cold" probe reported
   TTFT 0.20 s and the projection collapsed to a meaningless 8.0 h lower bound).

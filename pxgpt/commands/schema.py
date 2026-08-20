@@ -107,6 +107,14 @@ CIRCUIT_BREAKER_PLANTS = 3
 
 # Warn when a plant's warm shards average less than this prefix-cache hit rate.
 # Healthy is 97-99 %, so 50 % is unambiguous rather than borderline.
+#
+# Known blind spot: this does NOT detect a client that sends
+# mm_processor_kwargs.  Doing so puts the images in a separate prefix-cache
+# namespace, but a client that sends it on every request is consistent with
+# itself, so its warm shards still report 97-100 % and only each plant's first
+# shard silently re-pays the prefill (measured 50.7 s vs 8.2 s on vLLM 0.24; see
+# ops/local-vllm/RUNBOOK.md).  What guards that is _build_extra_body() being the
+# only assembly point, plus the tests asserting the key never appears.
 WARM_HIT_WARN_PCT = 50.0
 
 # Hard ceiling on plants in flight.  See _pipeline_depth for why.

@@ -299,6 +299,12 @@ Four things to get right:
 > entry is not reused. Measured on the same 26-photo line: 14.8 s when the key
 > matched, 71.6 s when it did not. There is no error, just a silent ~57 s penalty
 > on every mismatched request. Rely on the server default and stay consistent.
+>
+> Re-confirmed on vLLM 0.24 (2026-08-20): a byte-identical prompt already in the
+> cache re-paid a full 50.7 s prefill at 2.5 % hit the first time the kwargs were
+> attached. Note that a client sending them on *every* request looks healthy —
+> its warm requests hit 100 % — so the hit-rate warning in `schema --shard-dir`
+> does not detect this. See RUNBOOK.md for the table.
 
 ---
 
