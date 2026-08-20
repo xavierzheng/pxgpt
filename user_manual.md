@@ -994,25 +994,124 @@ Note: GPT-5 / o-series reasoning models only accept the default `temperature`; p
 ```bash
 # Ollama — pxgpt analyze --provider ollama ...
 OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=gemma4:12b           # a vision model, e.g. gemma4 / gemma3 / llava
+OLLAMA_MODEL=gemma3:12b           # an Ollama tag; must be a VISION model
 
 # LM Studio (OpenAI-compatible) — pxgpt analyze --provider lmstudio ...
 LMSTUDIO_BASE_URL=http://localhost:1234/v1
-LMSTUDIO_MODEL=gemma4:12b         # name as shown in LM Studio
+LMSTUDIO_MODEL=local-model        # exactly the name LM Studio shows
 LMSTUDIO_API_KEY=lm-studio        # any non-empty placeholder
 
 # vLLM (OpenAI-compatible) — pxgpt schema --provider vllm ...
 VLLM_BASE_URL=http://localhost:8000/v1
-VLLM_MODEL=gemma4:12b            # REQUIRED: the served model name
+VLLM_MODEL=gemma4-26b-a4b-nvfp4   # REQUIRED: the SERVED name, not the HF repo
 VLLM_API_KEY=EMPTY                # match the server's --api-key if set
 ```
 
+> **`VLLM_MODEL` is the served name, not the checkpoint name.** These are two
+> different strings and mixing them up is the most common local-setup failure:
+>
+> | | value |
+> |---|---|
+> | HF repo (what the server downloads) | `unsloth/gemma-4-26B-A4B-it-NVFP4` |
+> | served name (what requests must say) | `gemma4-26b-a4b-nvfp4` |
+>
+> `up.sh` sets the served name from `SERVED_MODEL_NAME` in
+> `ops/local-vllm/.env`; `VLLM_MODEL` must equal it exactly. Ollama-style tags
+> such as `gemma4:12b` are **not** valid here — vLLM has no tag syntax. Confirm
+> what is actually served with:
+>
+> ```bash
+> curl -s http://localhost:8000/v1/models | python -m json.tool | grep '"id"'
+> ```
+
 How each is routed: all three speak the OpenAI wire protocol, so pxGPT sends them through one `openai.OpenAI` client with the appropriate `base_url` (`OpenAICompatProvider`). Model names are sent verbatim — there are no route prefixes. `base_url`/`api_key` are per client, so several providers can be configured at once without clashing. Ollama's `/v1` suffix is appended automatically if `OLLAMA_BASE_URL` omits it. A parameter a backend rejects now raises an error rather than being silently dropped.
 
-For `schema` on these providers, the JSON schema is appended to the system prompt (Anthropic-style native structured output is not used). Make the user prompt request **JSON-only** output — the bundled `prompts/extract_traits.txt` already does this.
+For `schema` on these providers the JSON schema is sent as **native structured output** — `response_format {"type": "json_schema", …, "strict": true}`, i.e. real constrained decoding via the server's grammar backend. The schema therefore appears in exactly one place, so the prompt stays byte-identical to what Anthropic and OpenAI receive and the runs remain comparable. The user prompt does **not** need to ask for JSON. If the backend rejects `response_format` the command fails rather than falling back to prompt text, because a silent downgrade produces output that looks fine and is in fact completely unconstrained.
 
-- Ollama: ensure `ollama serve` is running and the model is pulled (`ollama pull gemma4:26b`).
-- vLLM: start with e.g. `vllm serve google/gemma-4-12b-it --port 8000`; set `VLLM_MODEL` to the same served name.
+- Ollama: ensure `ollama serve` is running and the model is pulled (`ollama pull gemma3:12b`). Ollama's grammar support is weaker than vLLM's; prefer vLLM for `schema`.
+- vLLM: start it with the scripted deployment below, then set `VLLM_MODEL` to the served name.
+
+#### Running a whole dataset locally (the production path)
+
+The batch stages need the providers' Batch APIs, which no local server offers, so `schema --shard-dir --input-dir` **is** the local Stage 3 runner:
+
+```bash
+export VLLM_MODEL=gemma4-26b-a4b-nvfp4
+export TIMEOUT=1800                      # a cold prefill measures 75-95 s
+
+pxgpt schema --provider vllm \
+  --shard-dir  /abs/path/to/shard_master_schema \
+  --input-dir  /abs/path/to/images \
+  --output     /abs/path/to/writable/results \
+  --image-transport file
+```
+
+**Image transport, and how `MEDIA_ROOT` gates it.** `--image-transport base64`
+(the default) embeds the bytes in every request and needs no server
+configuration at all. `--image-transport file` sends `file://` URIs instead —
+the server reads the files off its own mount, so a plant line costs a few
+hundred bytes of paths instead of megabytes of base64. That is the recommended
+local path, and it is the one `MEDIA_ROOT` controls.
+
+`MEDIA_ROOT` is set in `ops/local-vllm/.env` and used **twice** by `up.sh`, both
+of which are required:
+
+| use | effect if missing |
+|---|---|
+| `-v "$MEDIA_ROOT:$MEDIA_ROOT:ro"` | the container cannot see the file at all |
+| `--allowed-local-media-path "$MEDIA_ROOT"` | vLLM refuses the path even when mounted |
+
+Three consequences worth knowing:
+
+- **`--input-dir` is an absolute host path, not a path relative to
+  `MEDIA_ROOT`.** It must *sit under* `MEDIA_ROOT`, and because the mount uses
+  the same path on both sides, the string is identical inside and outside the
+  container. pxGPT itself never reads `MEDIA_ROOT`.
+- **`MEDIA_ROOT` is a prefix**, so point it at a parent directory (e.g. the
+  project root) and every dataset beneath it works. It is baked into the running
+  container: changing it means `./down.sh && ./up.sh`.
+- **The two failure modes are distinguishable.** `400 … must be a subpath of
+  --allowed-local-media-path` means the path is outside the tree; `500 … No such
+  file or directory` means it is inside the tree but the file is not there.
+
+**Dispatch flags.** Each plant sends one shard alone — all its shards share a
+prefix of system prompt plus every image, and only the first arrival pays to
+build it — then fans the rest onto the warm prefix.
+
+| flag | default | what it does |
+|---|---|---|
+| `--concurrency` | 8 | cap on concurrent requests *within* one plant, after its cold shard. A hardware-pressure limit, **not** `n_shards - 1`: effective width is `min(--concurrency, n_shards - 1)`, so a 30-shard set still fans out 8. `1` = fully serial. |
+| `--pipeline-depth` | 2 | plants in flight, so one's cold prefill overlaps another's warm group. Refused above 2. |
+| `--mem-floor-gib` | 5 | do not *start* another plant below this host `MemAvailable`; recovers automatically. |
+| `--limit` | — | run only the first N plants, for timing. |
+| `--max-tokens` | 2048 | per-shard output cap. `finish_reason == "length"` fails that shard rather than storing a truncated result. |
+
+A separate global ceiling of `--concurrency + 1` requests applies across all
+in-flight plants. Depth alone would not bound this: depth 2 with width 8 could
+put two plants in their warm phase at once, which is 16 concurrent requests and
+exactly the server's `MAX_NUM_SEQS`.
+
+Every default above was measured on one machine (GB10, 128 GB unified memory) and
+none is portable. Before raising anything on new hardware, run `--limit 4` and
+watch the `MemAvailable` column. Measured there: **60.6 s per plant**, 2.67x an
+all-serial baseline, warm shards at 96.8 % prefix-cache hit.
+
+**Reading the progress line.**
+
+```
+[ 12/277] s0019  9/9 ok  cold 87.0s (hit 0.0%)  warm 8x 21.4s (hit 98.4%)  total 108.4s  depth 2  ETA 5h52m  MemAvail 11.2G
+```
+
+`hit` is `cached_tokens / prompt_tokens`. The cold shard should be near 0 % and
+the warm group 97-99 %. If warm hits fall below 50 % pxGPT prints a WARNING —
+that is the only immediate signal the prefix cache has stopped working, and you
+want it at plant 3, not plant 277.
+
+**Resuming.** Every shard's JSON is written to `<output>/_partial/` the moment it
+succeeds, so re-running the identical command skips whatever is already there
+without re-billing it; `--no-resume` forces everything. Ctrl-C finishes the
+plants in flight, merges what completed, and exits — it does not discard the run.
+`--output` must be a writable directory, and never inside a frozen dataset tree.
 
 > **Self-hosting Gemma 4 26B A4B (NVFP4) on a DGX Spark?** Use the tested,
 > reproducible deployment in **[ops/local-vllm/README_vllm.md](ops/local-vllm/README_vllm.md)**

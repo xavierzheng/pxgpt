@@ -109,18 +109,58 @@ OLLAMA_MODEL=gemma3:12b
 
 # LM Studio (OpenAI-compatible)
 LMSTUDIO_BASE_URL=http://localhost:1234/v1
-LMSTUDIO_MODEL=gemma4:12b
+LMSTUDIO_MODEL=local-model          # exactly the name LM Studio shows
 LMSTUDIO_API_KEY=lm-studio          # any non-empty placeholder
 
-# vLLM (OpenAI-compatible) — VLLM_MODEL is required (the served model name)
+# vLLM (OpenAI-compatible) — VLLM_MODEL is required
 VLLM_BASE_URL=http://localhost:8000/v1
-VLLM_MODEL=gemma4:12b
+VLLM_MODEL=gemma4-26b-a4b-nvfp4     # the SERVED name, not the HF repo
 VLLM_API_KEY=EMPTY                  # match --api-key if the server sets one
 ```
+
+`VLLM_MODEL` must equal the server's `--served-model-name`, which is **not** the
+checkpoint path (`unsloth/gemma-4-26B-A4B-it-NVFP4`) and has no Ollama-style tag
+syntax. Check what is actually served:
+`curl -s localhost:8000/v1/models | grep -o '"id":"[^"]*"' | head -1`.
 
 Then, e.g.: `pxgpt analyze --provider vllm ...` or `pxgpt schema --provider lmstudio ...`.
 
 > Batch stages (`describe-batch*`, `phenotype-batch*`) are Anthropic/OpenAI-only; the local providers apply to the sync `analyze` and `schema` commands.
+
+### Quick start: a whole dataset on local vLLM
+
+No local server offers a Batch API, so `schema --shard-dir --input-dir` is the
+local Stage 3 runner. Four steps:
+
+```bash
+# 1. Start the server (once). MEDIA_ROOT must be a PARENT of your images.
+cd ops/local-vllm && cp env.example .env    # set MEDIA_ROOT + SERVED_MODEL_NAME
+./pull.sh && ./up.sh
+
+# 2. Point pxGPT at it. TIMEOUT matters: a cold prefill takes 75-95 s.
+export VLLM_MODEL=gemma4-26b-a4b-nvfp4 TIMEOUT=1800
+
+# 3. Rehearse on ONE plant before committing hours of GPU time.
+pxgpt schema --provider vllm --image-transport file \
+  --shard-dir shard_master_schema --input-folder images/s0019 --output /tmp/smoke
+
+# 4. Run the dataset. Re-run the same command to resume; Ctrl-C still merges.
+pxgpt schema --provider vllm --image-transport file \
+  --shard-dir shard_master_schema --input-dir images --output results
+```
+
+`--image-transport file` sends `file://` URIs instead of base64, so the server
+reads the images off its own mount. That needs `MEDIA_ROOT` in
+`ops/local-vllm/.env` to be a **parent directory** of the images: `up.sh` uses it
+both as the bind mount and as `--allowed-local-media-path`. `--input-dir` is an
+absolute host path *under* that root — not a path relative to it — and it is
+identical inside and outside the container. Outside the tree you get a `400`;
+inside it but missing, a `500`. Plain `base64` needs no mount at all.
+
+Dispatch defaults (`--concurrency 8`, `--pipeline-depth 2`, `--mem-floor-gib 5`)
+were measured on one GB10 box and are **not** portable — run `--limit 4` first on
+new hardware and watch the reported `MemAvail`. Full explanation of every flag:
+[user_manual.md](user_manual.md#local--self-hosted-providers-analyze--schema-only).
 
 **Self-hosting a local model?** See [ops/local-vllm/README_vllm.md](ops/local-vllm/README_vllm.md) for a tested, reproducible vLLM deployment of Gemma 4 26B A4B (NVFP4) on a DGX Spark — including the vLLM version constraint that decides whether the checkpoint loads at all.
 
