@@ -987,6 +987,7 @@ earlier requests gives a point estimate nearer **0.5 %**. The honest statement
 is: rare enough not to appear in 30 requests, not rare enough to ignore.
 
 **Suggested cap: `max_tokens = 2048`** — about 3.4x the observed p90 (607) and
+<!-- p90 607 is at temperature 1.0, as is everything in this document; re-measured at the shipped 0.5 it is 381, making 2048 ~5.4x. The cap is unchanged either way. -->
 3x the observed max (681), so it cannot truncate a legitimate answer, while
 bounding a runaway at ~50 s instead of ~190 s. This is a recommendation only;
 the ticket puts the retry/timeout decision at the provider layer.
@@ -1034,7 +1035,8 @@ measured cost.) Four unavoidable departures:
   A 30-request probe over 10 plants at temperature 1.0 produced **none**, which
   bounds the rate at ~10 % (95 %, rule of three) rather than measuring it; the
   point estimate including the earlier sighting is ~0.5 %. Suggested cap
-  `max_tokens=2048` — 3.4x the observed p90 of 607. The #1 provider still needs
+  `max_tokens=2048` — 3.4x the observed p90 of 607 at temperature 1.0 (5.4x the
+  381 measured at the shipped 0.5). The #1 provider still needs
   a per-request timeout and should treat `finish_reason == "length"` as a failed
   shard rather than a partial result. Not worked around here: that is a
   provider-layer decision. Numbers in "Pipeline depth, memory, and runaway

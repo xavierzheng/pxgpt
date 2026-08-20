@@ -427,7 +427,8 @@ The rule, for any client driving this server:
 3. Overlap the *next* plant's cold `shard_01` with the current plant's warm set,
    and keep **two plants in flight**. Measured 75.1 s per plant; three in flight
    is 5 % faster and lands past the memory stop line.
-4. Bound the output. `max_tokens=2048` is 3.4x the observed p90 of 607 tokens,
+4. Bound the output. `max_tokens=2048` is 5.4x the p90 of 381 tokens measured
+   at the shipped temperature 0.5 (3.4x the 607 measured at temperature 1.0),
    so it cannot truncate a real answer, and it caps a runaway at ~50 s instead
    of ~190 s.
 
