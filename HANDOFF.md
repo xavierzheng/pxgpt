@@ -21,11 +21,28 @@ pasting the schema into the system prompt, with no fallback if the backend
 refuses — a silent downgrade there would produce output that looks fine and is
 completely unconstrained. `pxgpt schema --shard-dir` runs one plant through a
 whole shard set as the cheap rehearsal before a full run, printing each shard's
-`cached_tokens` so the prefix-cache premise is visible rather than assumed
-(measured on `02_mature_v1`/s0019: shard_01 at 0, shards 2-10 at 20096). Both
-`schema` and `analyze` take `--image-transport file` for `file://` delivery.
-`analyze --effort <level>` turns thinking on for the local backends and still
-saves only the final text; Stage 3 stays pinned to thinking off. 146 tests pass.
+`cached_tokens` so the prefix-cache premise is visible rather than assumed. Both
+`schema` and `analyze` take `--image-transport file` for `file://` delivery, and
+`--input-dir` to run a whole tree of plants. `analyze --effort <level>` turns
+thinking on for the local backends and still saves only the final text; Stage 3
+stays pinned to thinking off. 184 tests pass.
+
+`schema --shard-dir` dispatches concurrently: one cold shard alone, then the rest
+fanned out (`--concurrency`, cap 8), with two plants in flight
+(`--pipeline-depth`, cap 2) under a global ceiling of `concurrency + 1` requests.
+Measured on a freshly restarted container, 4 plants of `03_mature_v2`:
+**60.6 s per plant, 2.67x** the 161.6 s all-serial reference; warm shards 96.8 %
+prefix-cache hit, `MemAvailable` low-water 9.8 GiB.
+
+**Correction (2026-08-20).** An earlier note here cited "shard_01 at 0, shards
+2-10 at 20096" for `02_mature_v1`/s0019. The shard set was right but the images
+were not: that run used `03_mature_v2/images/s0019` (18 photos) instead of
+`02_mature_v1/images/s0019` (32 photos). Re-measured with the correct pairing on
+a clean container: **cached_tokens 36096, hit 97.8-99.6 %, one plant 154.9 s
+serial**, which matches the RUNBOOK's 36448 to within a system-prompt difference.
+Per-shard `completion_tokens` p90 is **381 at TEMPERATURE=0.5** (n=10), not the
+607 recorded at temperature 1.0; across 72 shards of `03_mature_v2` p90 is 441,
+max 565. `SHARD_MAX_TOKENS = 2048` is therefore ~4.5x p90, not 3.4x.
 
 Then two benchmarks answered "can we cut OpenAI cost by using fewer, bigger
 shards?" — `--shard-budget 40` (10 shards, current) vs `80` (4) vs `320` (1).
