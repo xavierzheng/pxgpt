@@ -1050,6 +1050,97 @@ For `schema` on these providers the JSON schema is sent as **native structured o
 - Ollama: ensure `ollama serve` is running and the model is pulled (`ollama pull gemma3:12b`). Ollama's grammar support is weaker than vLLM's; prefer vLLM for `schema`.
 - vLLM: start it with the scripted deployment below, then set `VLLM_MODEL` to the served name.
 
+### Two `.env` files, and they are not interchangeable
+
+There are two of them, they use **different variable names**, and neither one
+feeds the other:
+
+| | `ops/local-vllm/.env` | your shell (or `project_A.env`) |
+|---|---|---|
+| configures | the **server** | **pxGPT**, the client |
+| read by | `up.sh` | pxGPT |
+| model name | `SERVED_MODEL_NAME` | `VLLM_MODEL` |
+| endpoint | `PORT` | `VLLM_BASE_URL` |
+| image root | `MEDIA_ROOT` | *(not read at all)* |
+
+Starting the server does **not** configure pxGPT. `up.sh` sources its `.env`
+inside its own process, and a child process cannot export variables back to the
+shell that launched it. pxGPT also never loads a `.env` of its own — it reads the
+process environment only. So `VLLM_MODEL`, `VLLM_BASE_URL` and `VLLM_API_KEY`
+must always be set by you.
+
+**Best practice: derive the client values from the server file, so they cannot
+drift apart.**
+
+```bash
+# One source of truth: the file that started the server.
+set -a; source ops/local-vllm/.env; set +a
+
+export VLLM_MODEL="$SERVED_MODEL_NAME"            # guaranteed to match
+export VLLM_BASE_URL="http://localhost:${PORT}/v1"
+export VLLM_API_KEY=EMPTY                         # any non-empty string; the
+                                                  # server does not check it
+export TIMEOUT=1800                               # local runs need this, the
+                                                  # 300 s default is too tight
+
+pxgpt schema --provider vllm ...
+```
+
+That also carries `TEMPERATURE`, `TOP_P` and `TOP_K` across, which is the one
+overlap between the two files — so the client sends exactly the sampling the
+server was started with, instead of a second copy you have to remember to update.
+
+Typing the model name by hand works too, but then two files hold the same string
+and nothing checks them. If they disagree, the server returns a 404 for a model
+it is not serving.
+#### The trap
+
+`ops/local-vllm/README_vllm.md` tells you to run this before `smoke.py`:
+
+```bash
+set -a; source .env; set +a
+python smoke.py
+```
+
+That genuinely does load the server file into your shell — but it gives you
+`SERVED_MODEL_NAME`, never `VLLM_MODEL`. `smoke.py` reads the server names;
+pxGPT reads the client names. Running that line and then expecting
+`pxgpt --provider vllm` to work is the most natural wrong assumption here, and it
+fails with:
+
+```
+Provider 'vllm' is not properly configured.  Check your API keys.
+```
+
+which is a confusing message for a missing model name. The two-line `export`
+above is what fixes it.
+
+#### Put it in the run script, not your interactive shell
+
+A long unattended run should not depend on what happened to be exported in the
+terminal that launched it. Set the variables inside the script that runs the job,
+so the run is reproducible from the script alone:
+
+```bash
+#!/bin/bash
+set -uo pipefail
+source /home/xavier/miniconda3/etc/profile.d/conda.sh   # conda activate is a
+conda activate pxgpt                                    # shell function
+
+set -a; source /path/to/pxgpt/ops/local-vllm/.env; set +a
+export VLLM_MODEL="$SERVED_MODEL_NAME"
+export VLLM_BASE_URL="http://localhost:${PORT}/v1"
+export VLLM_API_KEY=EMPTY
+export TIMEOUT=1800
+
+# Fail now, not in three hours, if the server is not serving what we expect.
+served=$(curl -s -m 5 "localhost:${PORT}/v1/models" \
+         | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+[[ "$served" == "$VLLM_MODEL" ]] || { echo "FATAL: server has '$served'" >&2; exit 1; }
+
+pxgpt schema --provider vllm --shard-dir ... --input-dir ... --output ...
+```
+
 #### Running a whole dataset locally (the production path)
 
 The batch stages need the providers' Batch APIs, which no local server offers, so `schema --shard-dir --input-dir` **is** the local Stage 3 runner:

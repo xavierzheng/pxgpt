@@ -127,6 +127,50 @@ Then, e.g.: `pxgpt analyze --provider vllm ...` or `pxgpt schema --provider lmst
 
 > Batch stages (`describe-batch*`, `phenotype-batch*`) are Anthropic/OpenAI-only; the local providers apply to the sync `analyze` and `schema` commands.
 
+### Two `.env` files, and they are not interchangeable
+
+There are two of them, they use **different variable names**, and neither one
+feeds the other:
+
+| | `ops/local-vllm/.env` | your shell (or `project_A.env`) |
+|---|---|---|
+| configures | the **server** | **pxGPT**, the client |
+| read by | `up.sh` | pxGPT |
+| model name | `SERVED_MODEL_NAME` | `VLLM_MODEL` |
+| endpoint | `PORT` | `VLLM_BASE_URL` |
+| image root | `MEDIA_ROOT` | *(not read at all)* |
+
+Starting the server does **not** configure pxGPT. `up.sh` sources its `.env`
+inside its own process, and a child process cannot export variables back to the
+shell that launched it. pxGPT also never loads a `.env` of its own — it reads the
+process environment only. So `VLLM_MODEL`, `VLLM_BASE_URL` and `VLLM_API_KEY`
+must always be set by you.
+
+**Best practice: derive the client values from the server file, so they cannot
+drift apart.**
+
+```bash
+# One source of truth: the file that started the server.
+set -a; source ops/local-vllm/.env; set +a
+
+export VLLM_MODEL="$SERVED_MODEL_NAME"            # guaranteed to match
+export VLLM_BASE_URL="http://localhost:${PORT}/v1"
+export VLLM_API_KEY=EMPTY                         # any non-empty string; the
+                                                  # server does not check it
+export TIMEOUT=1800                               # local runs need this, the
+                                                  # 300 s default is too tight
+
+pxgpt schema --provider vllm ...
+```
+
+That also carries `TEMPERATURE`, `TOP_P` and `TOP_K` across, which is the one
+overlap between the two files — so the client sends exactly the sampling the
+server was started with, instead of a second copy you have to remember to update.
+
+Typing the model name by hand works too, but then two files hold the same string
+and nothing checks them. If they disagree, the server returns a 404 for a model
+it is not serving.
+
 ### Quick start: a whole dataset on local vLLM
 
 No local server offers a Batch API, so `schema --shard-dir --input-dir` is the

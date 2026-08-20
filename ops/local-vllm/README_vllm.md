@@ -85,7 +85,9 @@ Then verify against your real data:
 # still in ops/local-vllm/ -- this is the ops requirements file,
 # separate from the repo root's, and smoke.py lives here too
 pip install -r ops/local-vllm/requirements.txt   # or: -r requirements.txt from here
-set -a; source .env; set +a
+set -a; source .env; set +a          # loads the SERVER names for smoke.py.
+                                     # This does NOT configure pxgpt -- see
+                                     # "Pointing pxGPT at the server" below.
 python smoke.py                       # acceptance A-H, exits non-zero on failure
 ```
 
@@ -312,14 +314,49 @@ Four things to get right:
 
 ## Pointing pxGPT at the server
 
-pxGPT reaches vLLM through `OpenAICompatProvider`. `VLLM_MODEL` must equal
-`SERVED_MODEL_NAME`:
+**This `.env` configures the server. It does not configure pxGPT.** The two use
+different variable names and neither feeds the other:
+
+| | here (`ops/local-vllm/.env`) | pxGPT's environment |
+|---|---|---|
+| model name | `SERVED_MODEL_NAME` | `VLLM_MODEL` |
+| endpoint | `PORT` | `VLLM_BASE_URL` |
+| image root | `MEDIA_ROOT` | *(never read by pxGPT)* |
+
+`up.sh` sources this file inside its own process, so nothing it sets survives
+into the shell you later run `pxgpt` from — a child process cannot export back to
+its parent. pxGPT also never loads a `.env` itself; it reads the process
+environment only. Both facts point the same way: **you always set the client
+variables yourself.**
+
+The safest way is to derive them from this file, so the two cannot drift:
+
+```bash
+set -a; source ops/local-vllm/.env; set +a        # one source of truth
+
+export VLLM_MODEL="$SERVED_MODEL_NAME"            # cannot disagree
+export VLLM_BASE_URL="http://localhost:${PORT}/v1"
+export VLLM_API_KEY=EMPTY                         # any non-empty string; up.sh
+                                                  # passes no --api-key, so the
+                                                  # server never checks it
+export TIMEOUT=1800                               # 300 s default is too tight
+```
+
+This also carries `TEMPERATURE` / `TOP_P` / `TOP_K` over — the only three names
+the two files share — so the client sends exactly the sampling the server was
+started with.
+
+Writing the literals out works too, and is what the rest of this guide shows:
 
 ```bash
 VLLM_BASE_URL=http://localhost:8000/v1    # already the default
 VLLM_MODEL=gemma4-26b-a4b-nvfp4           # REQUIRED — the served name
 VLLM_API_KEY=EMPTY                        # any non-empty placeholder
 ```
+
+If `VLLM_MODEL` and `SERVED_MODEL_NAME` disagree the server 404s on a model it is
+not serving, so check with
+`curl -s localhost:8000/v1/models | grep -o '"id":"[^"]*"' | head -1`.
 
 ```bash
 pxgpt analyze --provider vllm \
