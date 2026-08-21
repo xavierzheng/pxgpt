@@ -2,6 +2,156 @@
 
 ## Unreleased
 
+### New features
+- **Local Stage 3: `pxgpt schema --shard-dir --input-dir` runs a whole dataset.**
+  The batch stages need the providers' Batch APIs, which no local server offers, so
+  until now a self-hosted Stage 3 was not possible at all. `schema` gained a second
+  axis: `--schema` (one schema) or `--shard-dir` (a whole shard set, one request per
+  shard, merged into one record per plant), crossed with `--input-folder` (one plant)
+  or `--input-dir` (a tree, one subfolder per plant — the same meaning the batch
+  stages give it). `--output` becomes a directory whenever more than one file can
+  come out, and the sharded path reuses `merge_sharded_results` and the
+  `_partial/<line_id>__<shard_id>.json` store, so its merge rule, gap rule and
+  recovery behaviour cannot drift from the cloud paths.
+  - **Resume covers plants as well as shards**: a 277-plant run killed at plant 200
+    restarts without re-issuing the first 199, and a plant missing three shards
+    re-runs only those three.
+  - Single-plant mode prints the full per-shard table (used as a cheap rehearsal
+    before committing GPU hours); multi-plant mode prints one line per plant.
+- **Native structured output on every OpenAI-wire backend.**
+  `OpenAICompatProvider` previously had one schema path: paste the schema into the
+  system prompt as prose and hope. Pointed at vLLM that means the model reads a
+  *description* of a schema and then generates freely — survivable for one request,
+  not for thousands. It now sends `response_format {"type": "json_schema", …,
+  "strict": true}`, i.e. real constrained decoding, with the schema passed verbatim
+  (the frozen shard schemas already carry `additionalProperties: false` and full
+  `required` lists, which grammar backends take as-is). The legacy path still exists
+  in the provider but no command selects it, and the two never combine — with a
+  schema constraint in force the system prompt is left byte-identical to what the
+  other providers see, so runs stay comparable. **A backend that rejects
+  `response_format` raises**; there is deliberately no fallback, because a silent
+  downgrade yields output that looks fine and is completely unconstrained.
+- **`--image-transport {base64,file}` on `schema` and `analyze`.** `base64` (default,
+  unchanged) embeds the bytes in every request. `file` sends `file://` URIs so a
+  local server reads the images off its own mount — a plant line costs a few hundred
+  bytes of paths instead of megabytes. This is also the only transport that exercises
+  the failure modes that matter locally (mount path differing inside and outside the
+  container, `--allowed-local-media-path` not covering the tree), so a base64 smoke
+  test proves nothing about whether the real run will start.
+- **Concurrent shard dispatch, measured rather than guessed.** A plant's shards share
+  a prefix of system prompt plus every image, and only the first request to arrive
+  pays to build it. Each plant therefore sends **one shard alone**, waits, then fans
+  the remainder onto the warm prefix; with two plants in flight one's cold prefill
+  overlaps another's warm group. Measured on 4 plants of `03_mature_v2`, same plants
+  both ways on a restarted container: **111.8 s/plant serial → 60.6 s/plant, 1.85x**,
+  warm shards at 96.8 % prefix-cache hit.
+  - `--concurrency` (default 8) caps requests *within* one plant. It is a
+    hardware-pressure limit, **not** `n_shards - 1`: effective width is
+    `min(--concurrency, n_shards - 1)`, so a 30-shard set still fans out 8, never 29.
+  - `--pipeline-depth` (default 2, refused above 2) caps plants in flight. A
+    **separate** global ceiling of `--concurrency + 1` requests applies across all of
+    them; depth alone would not bound this, since depth 2 × width 8 could put two
+    plants in their warm phase at once — 16 concurrent requests, exactly the server's
+    `MAX_NUM_SEQS`. The gate reports its own observed peak.
+  - `--mem-floor-gib` (default 5) refuses to *start* a new plant below that host
+    `MemAvailable` and recovers automatically, because exhausting a unified memory
+    pool hard-locks the machine rather than raising an error.
+  - `--limit N` runs the first N plants, for timing on new hardware.
+  - The head is *the first pending shard*, not `shard_01`: a partial on disk says
+    nothing about the server's KV cache, and a restarted container has an empty one.
+    A failed head still lets the rest fan out, since `length`, `reasoning leak` and
+    `parse error` all happen after the prefill.
+  - **Circuit breaker**: three consecutive plants with no usable shard aborts the
+    run. A constant, deliberately not a flag — a tunable safety net gets tuned off.
+  - **Merge on abort**: the breaker and `Ctrl-C` both finish the plants in flight,
+    merge what completed, and exit. Losing 200 plants' merged records to an
+    interrupt would mean re-running a command just to read work already paid for.
+  - **Run summary** reports status counts, the real `completion_tokens` distribution,
+    cold vs warm cache-hit means, `MemAvailable` low-water, guard trips and peak
+    in-flight requests — the numbers needed to decide whether the defaults suit the
+    next machine.
+- **Cache-hit canary.** Warm shards averaging under 50 % prefix-cache hit print a
+  warning naming the likely causes. This is the only immediate signal the prefix
+  cache has stopped working, and it needs to be seen at plant 3 rather than plant 277.
+  Its one known blind spot is documented next to the threshold: a client that sends
+  `mm_processor_kwargs` on *every* request is internally consistent, so its warm
+  shards still report 97-100 % while each plant's first shard silently re-pays a full
+  prefill.
+- **`analyze --effort` now works on the local backends.** Any level switches the chat
+  template's `enable_thinking` on (those models have no reasoning *levels*, so any
+  level means on). Only the final answer is written to `--output`: the server's
+  reasoning parser keeps the thinking in its own response field, which pxGPT never
+  saves. Stage 3 stays pinned to thinking off — the shard schemas already require a
+  `rationale`, so reasoning would restate it at several times the cost, and the
+  setting has to be identical across a whole run for the results to compare.
+- **`TOP_P` / `TOP_K` config knobs** (defaults 0.95 / 64, the Gemma 4 checkpoint's
+  own values), sent on every OpenAI-wire request alongside `temperature`. The local
+  server pins the same values itself; the duplication is deliberate, because only
+  what the client sends appears in the request record a paper has to cite.
+
+### Changed
+- **`schema` no longer uses the legacy system-prompt path for any provider**, and the
+  user prompt no longer needs to ask for JSON-only output. `README.md`,
+  `user_manual.md` and `ops/local-vllm/README_vllm.md` all said otherwise in several
+  places and have been corrected.
+- **`--max-tokens` defaults to 2048 in `--shard-dir` mode** (`MAX_TOKENS` otherwise).
+  A grammar constrains the *shape* of the output, not its length, so a runaway
+  `rationale` can hit the cap mid-object; that is not a partial result. Validated
+  against the complete Sonnet-5 reference run — all 1420 shard answers of
+  `02_mature_v1` re-tokenized with the served model's own tokenizer: p50 419, p90 596,
+  max **832**, **0 over 2048**. Sonnet-5 is 1.36x more verbose than Gemma on identical
+  shards, so that is a conservative bound.
+- **An image folder containing no images is now an error** (see Fixed).
+- **`--provider` accepts `ollama`, `lmstudio` and `vllm`**; the long-removed `google`
+  choice is gone from the docs that still advertised it.
+- `CLAUDE.md` and `HANDOFF.md` are no longer tracked. Both are session hand-off notes
+  for this checkout, not part of the package.
+- The run summary no longer prints a speed-up ratio against a fixed constant. Per-plant
+  cost scales with photo count and shard count, so a baseline from another dataset is
+  not a valid divisor — it is a source of wrong numbers, not a convenience.
+
+### Fixed
+- **An image folder with no images produced a text-only request instead of an error.**
+  Pointing `--input-folder` at the *tree* of plant folders rather than at one plant
+  sent zero image blocks, no warning: the model answered the prompt from nothing,
+  every shard still validated against its schema, and the run looked completely
+  healthy while the trait values were invented. `list_images` now raises, and names
+  the subdirectories it found when the folder looks like a plant tree — the mistake
+  that actually happens, given `--input-folder` takes one plant and `--input-dir`
+  takes the tree.
+- **A truncated response is now a failed shard, not a partial result.**
+  `finish_reason == "length"` raises instead of returning a string that cannot be
+  parsed.
+- **Leaked reasoning now fails the shard.** `enable_thinking: false` is sent
+  explicitly on every request rather than left to the chat template's default (a
+  default does not appear in the request record and is owned by somebody else), and a
+  non-empty reasoning field on the way back raises, naming the field and its first 200
+  characters. Both spellings are checked — `reasoning` and `reasoning_content`;
+  neither is modelled by the OpenAI SDK. Nothing is stripped: silently cleaning it up
+  would turn a configuration fault into an invisible data-cleaning step. Confirmed
+  live that vLLM 0.24 emits `reasoning`, so the assertion cannot sit silent.
+- **`mm_processor_kwargs` and `seed` can no longer be sent.** `extra_body` is
+  assembled in exactly one function, which is what makes the prohibition checkable
+  (with tests asserting the keys appear in no executable line). Neither would error:
+  the first puts the images in a different prefix-cache namespace — re-confirmed on
+  vLLM 0.24, a byte-identical cached prompt re-paid a 50.7 s prefill at 2.5 % hit —
+  and the second collapses to zero the run-to-run variance the consistency study
+  exists to measure.
+- **`Ctrl-C` did not work during a sharded run.** `ThreadPoolExecutor.__exit__` calls
+  `shutdown(wait=True)`, so a real `SIGINT` either stalled for minutes or killed the
+  process before the merge. The executor's lifetime is now owned explicitly: cancel
+  what has not started, finish what is in flight, merge, exit.
+- **A fully resumed run tripped the circuit breaker.** Every shard cached meant zero
+  *fresh* successes per plant, which read as three consecutive dead plants. A plant
+  now counts as productive on any usable shard, cached or fresh.
+- **The progress line crashed on a plant whose warm shards all failed** — no usage to
+  average, and `None` reached a format string.
+- Image discovery is shared by both transports through one sorted,
+  `IMAGE_EXTENSIONS`-filtered helper, so the order a plant's photos are sent in cannot
+  differ between shards. A differing order misses the prefix cache from the first
+  changed block onward.
+
+
 ### Changed
 - **Stage 1 (`describe-batch`) prompts split by growth stage.** `prompts/describe_plant.txt`
   is replaced by `prompts/describe_plant_mature.txt` (10×10×6.5 cm rockwool cube) and
