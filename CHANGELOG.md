@@ -1,8 +1,7 @@
 # Changelog
 
-## Unreleased
+## New features
 
-### New features
 - **Local Stage 3: `pxgpt schema --shard-dir --input-dir` runs a whole dataset.**
   The batch stages need the providers' Batch APIs, which no local server offers, so
   until now a self-hosted Stage 3 was not possible at all. `schema` gained a second
@@ -89,122 +88,6 @@
   server pins the same values itself; the duplication is deliberate, because only
   what the client sends appears in the request record a paper has to cite.
 
-### Changed
-- **`schema` no longer uses the legacy system-prompt path for any provider**, and the
-  user prompt no longer needs to ask for JSON-only output. `README.md`,
-  `user_manual.md` and `ops/local-vllm/README_vllm.md` all said otherwise in several
-  places and have been corrected.
-- **`--max-tokens` defaults to 2048 in `--shard-dir` mode** (`MAX_TOKENS` otherwise).
-  A grammar constrains the *shape* of the output, not its length, so a runaway
-  `rationale` can hit the cap mid-object; that is not a partial result. Validated
-  against the complete Sonnet-5 reference run — all 1420 shard answers of
-  `02_mature_v1` re-tokenized with the served model's own tokenizer: p50 419, p90 596,
-  max **832**, **0 over 2048**. Sonnet-5 is 1.36x more verbose than Gemma on identical
-  shards, so that is a conservative bound.
-- **An image folder containing no images is now an error** (see Fixed).
-- **`--provider` accepts `ollama`, `lmstudio` and `vllm`**; the long-removed `google`
-  choice is gone from the docs that still advertised it.
-- `CLAUDE.md` and `HANDOFF.md` are no longer tracked. Both are session hand-off notes
-  for this checkout, not part of the package.
-- The run summary no longer prints a speed-up ratio against a fixed constant. Per-plant
-  cost scales with photo count and shard count, so a baseline from another dataset is
-  not a valid divisor — it is a source of wrong numbers, not a convenience.
-
-### Fixed
-- **An image folder with no images produced a text-only request instead of an error.**
-  Pointing `--input-folder` at the *tree* of plant folders rather than at one plant
-  sent zero image blocks, no warning: the model answered the prompt from nothing,
-  every shard still validated against its schema, and the run looked completely
-  healthy while the trait values were invented. `list_images` now raises, and names
-  the subdirectories it found when the folder looks like a plant tree — the mistake
-  that actually happens, given `--input-folder` takes one plant and `--input-dir`
-  takes the tree.
-- **A truncated response is now a failed shard, not a partial result.**
-  `finish_reason == "length"` raises instead of returning a string that cannot be
-  parsed.
-- **Leaked reasoning now fails the shard.** `enable_thinking: false` is sent
-  explicitly on every request rather than left to the chat template's default (a
-  default does not appear in the request record and is owned by somebody else), and a
-  non-empty reasoning field on the way back raises, naming the field and its first 200
-  characters. Both spellings are checked — `reasoning` and `reasoning_content`;
-  neither is modelled by the OpenAI SDK. Nothing is stripped: silently cleaning it up
-  would turn a configuration fault into an invisible data-cleaning step. Confirmed
-  live that vLLM 0.24 emits `reasoning`, so the assertion cannot sit silent.
-- **`mm_processor_kwargs` and `seed` can no longer be sent.** `extra_body` is
-  assembled in exactly one function, which is what makes the prohibition checkable
-  (with tests asserting the keys appear in no executable line). Neither would error:
-  the first puts the images in a different prefix-cache namespace — re-confirmed on
-  vLLM 0.24, a byte-identical cached prompt re-paid a 50.7 s prefill at 2.5 % hit —
-  and the second collapses to zero the run-to-run variance the consistency study
-  exists to measure.
-- **`Ctrl-C` did not work during a sharded run.** `ThreadPoolExecutor.__exit__` calls
-  `shutdown(wait=True)`, so a real `SIGINT` either stalled for minutes or killed the
-  process before the merge. The executor's lifetime is now owned explicitly: cancel
-  what has not started, finish what is in flight, merge, exit.
-- **A fully resumed run tripped the circuit breaker.** Every shard cached meant zero
-  *fresh* successes per plant, which read as three consecutive dead plants. A plant
-  now counts as productive on any usable shard, cached or fresh.
-- **The progress line crashed on a plant whose warm shards all failed** — no usage to
-  average, and `None` reached a format string.
-- Image discovery is shared by both transports through one sorted,
-  `IMAGE_EXTENSIONS`-filtered helper, so the order a plant's photos are sent in cannot
-  differ between shards. A differing order misses the prefix cache from the first
-  changed block onward.
-
-
-### Changed
-- **Stage 1 (`describe-batch`) prompts split by growth stage.** `prompts/describe_plant.txt`
-  is replaced by `prompts/describe_plant_mature.txt` (10×10×6.5 cm rockwool cube) and
-  `prompts/describe_plant_seedling.txt` (2.5 cm cube) — same morphology-description
-  instructions, growth-stage-specific rockwool dimensions. `prompts/phenotyping_system.txt`
-  is renamed `prompts/describe_plant_system.txt` (content unchanged).
-- **Stage 3 system prompt rewritten for native structured output.**
-  `prompts/phenotyping_system_schema.txt` (a legacy "return this JSON schema verbatim"
-  instruction from the pre-structured-output era) is replaced by two purpose-built
-  prompts: `prompts/phenotype_schema_system_template.txt` (per-plant scoring, mature
-  growth stage — rockwool dimensions left as placeholders to fill in) and
-  `prompts/phenotype_schema_system_seedling.txt` (per-*cultivar* scoring across a group
-  of individuals, fixed 2.5 cm seedling cube). Both specify the `rationale`-then-`value`
-  output order, require citing which image(s) support a judgment, and add an explicit
-  absence-vs-`not_assessable` rule (a well-supported "no such structure present" is a
-  valid value, distinct from "cannot be scored from these images").
-- **`generate_master_schema_v2.txt` promoted to `generate_master_schema.txt`** (drops
-  the `_v2` suffix; content otherwise unchanged apart from a generic placeholder for
-  the describe-output file name).
-- Legacy prompt/schema versions (`extract_traits.txt`, `phenotype_schema.json`,
-  `phenotyping_system_schema.txt`) archived under `prompts/old_v0.1.0/` instead of
-  being deleted outright.
-- **`user_manual.md` — master-schema generation prompt hardened**:
-  - Documents the mandatory top-level container shape: `trait_groups` must be a JSON
-    *object* keyed by group name (not an array, not named `groups`), each value
-    `{"description", "traits"}`.
-  - Nominal trait `values` are now an array of `{"value", "definition"}` objects (a
-    purely visual, self-contained definition shown verbatim to the downstream scorer)
-    instead of a bare array of category strings; population/frequency language
-    (`"most"`, `"rare"`, cultivar ids, support counts) is banned from these
-    definitions and must go in `design_note` instead.
-  - Updates the format anchor example accordingly and fixes a couple of typos/spacing.
-
-### Fixed
-- **`phenotype-batch --dispatch batch` gaps are now recoverable.** A batch
-  request that errored (typically a transient
-  `overloaded_error: File storage is temporarily unavailable`) is terminal inside
-  the Batch API, and the old `fetch-results` overwrote `<line_id>.json` from
-  scratch on every fetch without persisting per-shard results — so a momentary
-  Files-API blip became a permanent gap that `--resume` (sequential-only) could
-  not touch. `write_phenotype_sharded_results` now shares the sequential
-  dispatch's `<output>/_partial/<line_id>__<shard_id>.json` store: it adopts
-  partials already on disk, persists each freshly-succeeded shard, merges the
-  **union** of prior partials + this batch, and only writes `<line_id>.gaps.json`
-  for traits still missing (removing a stale gaps file once filled). This makes
-  `fetch-results` idempotent and lets a batch's failed shards be recovered with a
-  short `--dispatch sequential` resume to the same `--output` — re-issuing only
-  the missing shards with in-run transient retry. See
-  `dispatch_batch_vs_sequential.md` → "Recovering failed shards from a batch".
-  (Shared atomic writer `batch_utils.write_json_atomic`; the sequential path's
-  private copy was removed.)
-
-### New features
 - **`phenotype-batch --dispatch sequential` is now crash-safe, resumable and
   live-logging.** A sharded sequential run is ~`plants × shards` synchronous
   calls (hundreds to thousands, many hours); previously every result lived only
@@ -302,38 +185,6 @@
     one `{line_id}.json` per plant plus `{line_id}.gaps.json` for any missing
     traits / shard errors. Cache-creation vs cache-read tokens are logged.
 
-### Changed
-- **`phenotype-batch --input-dir` is now optional with the Files API.** Stage 3
-  can reuse the images already uploaded by `describe-batch` directly from
-  `--manifest`: when `--input-dir` is omitted, the plant lines and their
-  `file_id`s are reconstructed from the manifest (grouping each uploaded image
-  path by its parent-directory name, the Stage 1 `custom_id`), so the original
-  image tree need not be present on disk and nothing is re-uploaded. Pass
-  `--input-dir` to additionally upload images added since Stage 1.
-  `--input-dir` is still **required** with `--no-files-api`, since inline base64
-  mode must read the image bytes from disk.
-
-### Fixed
-- **Image uploads now retry transient gateway errors.** A Cloudflare `502 Bad
-  Gateway` (or `503`/`504`/`429`/connection/timeout) during a Files-API upload
-  no longer aborts the run — `FilesManager` / `OpenAIFilesManager` retry up to
-  5 times with exponential backoff + jitter, reopening the file each attempt.
-  Non-transient errors (e.g. `400`) still fail fast. Already-uploaded images are
-  skipped via the manifest, so reruns were always safe; this avoids needing one.
-
-### Changed
-- **Effort env vars accept `off`/`none`** (in addition to blank) as the
-  "no reasoning" value, so they match the `--effort off` flag. Across
-  `STAGE3_EFFORT`, `DESCRIBE_EFFORT`, `ANALYZE_EFFORT`, `OPENAI_REASONING_EFFORT`:
-  **default = off = none = no reasoning + temperature is sent**; a level
-  (`low`…`max`) enables reasoning.
-- **Reasoning is now OFF by default everywhere.** `STAGE3_EFFORT` default changed
-  from `medium` → `""` (empty). Stage 3 (`phenotype-batch`) and the `schema`
-  command now run **without reasoning and send `temperature`** by default;
-  structured output (`output_config.format`) is unaffected. Set `STAGE3_EFFORT`
-  (or pass `--effort`) to opt back into adaptive thinking.
-
-### New features
 - **`extract-report` command**: backward-compatible extractor for the legacy
   `<think>...</think><report>...</report>` chain-of-thought prompt convention.
   Keeps only the `<report>` body (discards `<think>`); auto-closes truncated
@@ -396,6 +247,149 @@
   `USE_FILES_API=false` in `.env`) to embed each image inline as base64 in the
   request instead; the `files-api-2025-04-14` beta header and the manifest are
   skipped in that mode.
+
+## Changed
+
+- **`schema` no longer uses the legacy system-prompt path for any provider**, and the
+  user prompt no longer needs to ask for JSON-only output. `README.md`,
+  `user_manual.md` and `ops/local-vllm/README_vllm.md` all said otherwise in several
+  places and have been corrected.
+- **`--max-tokens` defaults to 2048 in `--shard-dir` mode** (`MAX_TOKENS` otherwise).
+  A grammar constrains the *shape* of the output, not its length, so a runaway
+  `rationale` can hit the cap mid-object; that is not a partial result. Validated
+  against the complete Sonnet-5 reference run — all 1420 shard answers of
+  `02_mature_v1` re-tokenized with the served model's own tokenizer: p50 419, p90 596,
+  max **832**, **0 over 2048**. Sonnet-5 is 1.36x more verbose than Gemma on identical
+  shards, so that is a conservative bound.
+- **An image folder containing no images is now an error** (see Fixed).
+- **`--provider` accepts `ollama`, `lmstudio` and `vllm`**; the long-removed `google`
+  choice is gone from the docs that still advertised it.
+- `CLAUDE.md` and `HANDOFF.md` are no longer tracked. Both are session hand-off notes
+  for this checkout, not part of the package.
+- The run summary no longer prints a speed-up ratio against a fixed constant. Per-plant
+  cost scales with photo count and shard count, so a baseline from another dataset is
+  not a valid divisor — it is a source of wrong numbers, not a convenience.
+
+- **Stage 1 (`describe-batch`) prompts split by growth stage.** `prompts/describe_plant.txt`
+  is replaced by `prompts/describe_plant_mature.txt` (10×10×6.5 cm rockwool cube) and
+  `prompts/describe_plant_seedling.txt` (2.5 cm cube) — same morphology-description
+  instructions, growth-stage-specific rockwool dimensions. `prompts/phenotyping_system.txt`
+  is renamed `prompts/describe_plant_system.txt` (content unchanged).
+- **Stage 3 system prompt rewritten for native structured output.**
+  `prompts/phenotyping_system_schema.txt` (a legacy "return this JSON schema verbatim"
+  instruction from the pre-structured-output era) is replaced by two purpose-built
+  prompts: `prompts/phenotype_schema_system_template.txt` (per-plant scoring, mature
+  growth stage — rockwool dimensions left as placeholders to fill in) and
+  `prompts/phenotype_schema_system_seedling.txt` (per-*cultivar* scoring across a group
+  of individuals, fixed 2.5 cm seedling cube). Both specify the `rationale`-then-`value`
+  output order, require citing which image(s) support a judgment, and add an explicit
+  absence-vs-`not_assessable` rule (a well-supported "no such structure present" is a
+  valid value, distinct from "cannot be scored from these images").
+- **`generate_master_schema_v2.txt` promoted to `generate_master_schema.txt`** (drops
+  the `_v2` suffix; content otherwise unchanged apart from a generic placeholder for
+  the describe-output file name).
+- Legacy prompt/schema versions (`extract_traits.txt`, `phenotype_schema.json`,
+  `phenotyping_system_schema.txt`) archived under `prompts/old_v0.1.0/` instead of
+  being deleted outright.
+- **`user_manual.md` — master-schema generation prompt hardened**:
+  - Documents the mandatory top-level container shape: `trait_groups` must be a JSON
+    *object* keyed by group name (not an array, not named `groups`), each value
+    `{"description", "traits"}`.
+  - Nominal trait `values` are now an array of `{"value", "definition"}` objects (a
+    purely visual, self-contained definition shown verbatim to the downstream scorer)
+    instead of a bare array of category strings; population/frequency language
+    (`"most"`, `"rare"`, cultivar ids, support counts) is banned from these
+    definitions and must go in `design_note` instead.
+  - Updates the format anchor example accordingly and fixes a couple of typos/spacing.
+
+- **`phenotype-batch --input-dir` is now optional with the Files API.** Stage 3
+  can reuse the images already uploaded by `describe-batch` directly from
+  `--manifest`: when `--input-dir` is omitted, the plant lines and their
+  `file_id`s are reconstructed from the manifest (grouping each uploaded image
+  path by its parent-directory name, the Stage 1 `custom_id`), so the original
+  image tree need not be present on disk and nothing is re-uploaded. Pass
+  `--input-dir` to additionally upload images added since Stage 1.
+  `--input-dir` is still **required** with `--no-files-api`, since inline base64
+  mode must read the image bytes from disk.
+
+- **Effort env vars accept `off`/`none`** (in addition to blank) as the
+  "no reasoning" value, so they match the `--effort off` flag. Across
+  `STAGE3_EFFORT`, `DESCRIBE_EFFORT`, `ANALYZE_EFFORT`, `OPENAI_REASONING_EFFORT`:
+  **default = off = none = no reasoning + temperature is sent**; a level
+  (`low`…`max`) enables reasoning.
+- **Reasoning is now OFF by default everywhere.** `STAGE3_EFFORT` default changed
+  from `medium` → `""` (empty). Stage 3 (`phenotype-batch`) and the `schema`
+  command now run **without reasoning and send `temperature`** by default;
+  structured output (`output_config.format`) is unaffected. Set `STAGE3_EFFORT`
+  (or pass `--effort`) to opt back into adaptive thinking.
+
+## Fixed
+
+- **An image folder with no images produced a text-only request instead of an error.**
+  Pointing `--input-folder` at the *tree* of plant folders rather than at one plant
+  sent zero image blocks, no warning: the model answered the prompt from nothing,
+  every shard still validated against its schema, and the run looked completely
+  healthy while the trait values were invented. `list_images` now raises, and names
+  the subdirectories it found when the folder looks like a plant tree — the mistake
+  that actually happens, given `--input-folder` takes one plant and `--input-dir`
+  takes the tree.
+- **A truncated response is now a failed shard, not a partial result.**
+  `finish_reason == "length"` raises instead of returning a string that cannot be
+  parsed.
+- **Leaked reasoning now fails the shard.** `enable_thinking: false` is sent
+  explicitly on every request rather than left to the chat template's default (a
+  default does not appear in the request record and is owned by somebody else), and a
+  non-empty reasoning field on the way back raises, naming the field and its first 200
+  characters. Both spellings are checked — `reasoning` and `reasoning_content`;
+  neither is modelled by the OpenAI SDK. Nothing is stripped: silently cleaning it up
+  would turn a configuration fault into an invisible data-cleaning step. Confirmed
+  live that vLLM 0.24 emits `reasoning`, so the assertion cannot sit silent.
+- **`mm_processor_kwargs` and `seed` can no longer be sent.** `extra_body` is
+  assembled in exactly one function, which is what makes the prohibition checkable
+  (with tests asserting the keys appear in no executable line). Neither would error:
+  the first puts the images in a different prefix-cache namespace — re-confirmed on
+  vLLM 0.24, a byte-identical cached prompt re-paid a 50.7 s prefill at 2.5 % hit —
+  and the second collapses to zero the run-to-run variance the consistency study
+  exists to measure.
+- **`Ctrl-C` did not work during a sharded run.** `ThreadPoolExecutor.__exit__` calls
+  `shutdown(wait=True)`, so a real `SIGINT` either stalled for minutes or killed the
+  process before the merge. The executor's lifetime is now owned explicitly: cancel
+  what has not started, finish what is in flight, merge, exit.
+- **A fully resumed run tripped the circuit breaker.** Every shard cached meant zero
+  *fresh* successes per plant, which read as three consecutive dead plants. A plant
+  now counts as productive on any usable shard, cached or fresh.
+- **The progress line crashed on a plant whose warm shards all failed** — no usage to
+  average, and `None` reached a format string.
+- Image discovery is shared by both transports through one sorted,
+  `IMAGE_EXTENSIONS`-filtered helper, so the order a plant's photos are sent in cannot
+  differ between shards. A differing order misses the prefix cache from the first
+  changed block onward.
+
+
+- **`phenotype-batch --dispatch batch` gaps are now recoverable.** A batch
+  request that errored (typically a transient
+  `overloaded_error: File storage is temporarily unavailable`) is terminal inside
+  the Batch API, and the old `fetch-results` overwrote `<line_id>.json` from
+  scratch on every fetch without persisting per-shard results — so a momentary
+  Files-API blip became a permanent gap that `--resume` (sequential-only) could
+  not touch. `write_phenotype_sharded_results` now shares the sequential
+  dispatch's `<output>/_partial/<line_id>__<shard_id>.json` store: it adopts
+  partials already on disk, persists each freshly-succeeded shard, merges the
+  **union** of prior partials + this batch, and only writes `<line_id>.gaps.json`
+  for traits still missing (removing a stale gaps file once filled). This makes
+  `fetch-results` idempotent and lets a batch's failed shards be recovered with a
+  short `--dispatch sequential` resume to the same `--output` — re-issuing only
+  the missing shards with in-run transient retry. See
+  `dispatch_batch_vs_sequential.md` → "Recovering failed shards from a batch".
+  (Shared atomic writer `batch_utils.write_json_atomic`; the sequential path's
+  private copy was removed.)
+
+- **Image uploads now retry transient gateway errors.** A Cloudflare `502 Bad
+  Gateway` (or `503`/`504`/`429`/connection/timeout) during a Files-API upload
+  no longer aborts the run — `FilesManager` / `OpenAIFilesManager` retry up to
+  5 times with exponential backoff + jitter, reopening the file each attempt.
+  Non-transient errors (e.g. `400`) still fail fast. Already-uploaded images are
+  skipped via the manifest, so reruns were always safe; this avoids needing one.
 
 ## v0.3.0 — 2026-06-04
 
