@@ -66,6 +66,7 @@ from ..core import sharding
 # the Anthropic path.  Shared rather than copied: a merge index that differed
 # between providers would silently make their outputs incomparable.
 from .phenotype import _resolve_master_index
+from ..core.provenance import build_provenance, read_schema_identity, stamp_record
 
 # OpenAI Batch endpoint. The Responses API is required so images can be
 # referenced by Files-API file_id (Chat Completions cannot do this).
@@ -345,6 +346,9 @@ def _run_openai_batch(args, stage: str) -> int:
         "stage": stage,
         "output": args.output,
         "line_ids": line_ids,
+        # Recorded so fetch-results can read the schema's identity strings into
+        # each record's _provenance; absent in pre-provenance checkpoints.
+        "schema": str(Path(args.schema).resolve()) if args.schema else None,
         "model": model,
         "input_file_id": input_file_id,
         "jsonl_path": jsonl_path,
@@ -372,7 +376,11 @@ def _run_openai_batch(args, stage: str) -> int:
         print_token_summary(totals)
         print(f"\nDescriptions written to: {args.output}")
     else:
-        totals = write_openai_phenotype_results(client, batch, line_ids, args.output)
+        schema_name, schema_version = read_schema_identity(args.schema)
+        totals = write_openai_phenotype_results(
+            client, batch, line_ids, args.output, "openai", model,
+            schema_name, schema_version, batch_id,
+        )
         print_token_summary(totals)
         print(f"\nPhenotype JSON files written to: {args.output}/")
     return 0
@@ -429,6 +437,8 @@ def _run_openai_sharded(args, config, client, model, effort, plant_lines,
 
     master_index, master_path = _resolve_master_index(manifest, shard_dir,
                                                       args.master_schema)
+    # Read once per run: only the two top-level identity strings are wanted.
+    schema_name, schema_version = read_schema_identity(master_path)
 
     requests = build_openai_sharded_requests(
         line_image_blocks, shards, system_prompt, config
@@ -439,16 +449,18 @@ def _run_openai_sharded(args, config, client, model, effort, plant_lines,
 
     if args.dispatch == "sequential":
         return _dispatch_openai_sequential(
-            args, config, client, model, requests, line_ids, master_index
+            args, config, client, model, requests, line_ids, master_index,
+            schema_name, schema_version,
         )
     return _dispatch_openai_batch(
         args, config, client, model, requests, line_ids, shards, shard_dir,
-        master_path, master_index,
+        master_path, master_index, schema_name, schema_version,
     )
 
 
 def _dispatch_openai_batch(args, config, client, model, requests, line_ids, shards,
-                           shard_dir, master_path, master_index):
+                           shard_dir, master_path, master_index,
+                           schema_name=None, schema_version=None):
     jsonl_requests = [
         {"custom_id": r["custom_id"], "method": "POST",
          "url": _OPENAI_BATCH_ENDPOINT, "body": r["body"]}
@@ -490,6 +502,7 @@ def _dispatch_openai_batch(args, config, client, model, requests, line_ids, shar
     print("\n--- Writing merged results ---")
     totals = write_openai_phenotype_sharded_results(
         client, batch, line_ids, master_index, args.output, "openai", model,
+        schema_name, schema_version, batch_id,
     )
     print_token_summary(totals)
     print(f"\nMerged phenotype JSON files written to: {args.output}/")
@@ -531,7 +544,8 @@ def _call_with_retry(client, body, i, total, custom_id,
 
 
 def _dispatch_openai_sequential(args, config, client, model, requests, line_ids,
-                                master_index):
+                                master_index, schema_name=None,
+                                schema_version=None):
     """Run each plant's shards as near-synchronous, resumable Responses calls.
 
     Deliberately ``client.responses.create()`` with the same body the batch path
@@ -553,7 +567,11 @@ def _dispatch_openai_sequential(args, config, client, model, requests, line_ids,
     partial_dir = out / "_partial"
     out.mkdir(parents=True, exist_ok=True)
     partial_dir.mkdir(parents=True, exist_ok=True)
-    assert_partial_provenance(partial_dir, "openai", model)
+    assert_partial_provenance(partial_dir, "openai", model,
+                              schema_name, schema_version)
+    # One block per run, repeated into every record this run finalizes.  No
+    # batch id exists on this path, so run_id stays null.
+    prov = build_provenance("openai", model, schema_name, schema_version, None)
     progress_path = partial_dir / "progress.jsonl"
 
     # Expected shard count per plant (requests are built plant-contiguous).
@@ -578,7 +596,7 @@ def _dispatch_openai_sequential(args, config, client, model, requests, line_ids,
         record, missing = sharding.merge_plant_record(
             per_line.get(lid, []), group_order, group_traits, trait_meta
         )
-        write_json_atomic(out / f"{lid}.json", record)
+        write_json_atomic(out / f"{lid}.json", stamp_record(record, prov))
         gaps_path = out / f"{lid}.gaps.json"
         if missing:
             write_json_atomic(gaps_path, {

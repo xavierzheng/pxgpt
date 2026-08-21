@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .provenance import build_provenance, stamp_record
+
 
 def write_json_atomic(path: Path, obj: Any) -> None:
     """Write *obj* as pretty JSON to *path* via a temp file + atomic rename.
@@ -220,11 +222,22 @@ def write_phenotype_results(
     batch_id: str,
     line_ids: List[str],
     output_dir: str,
+    provider: str = "anthropic",
+    model: Optional[str] = None,
+    schema_name: Optional[str] = None,
+    schema_version: Optional[str] = None,
+    run_id: Optional[str] = None,
 ) -> Dict[str, int]:
     """Retrieve batch results and write one JSON file per plant line/cultivar.
 
+    The unsharded path: one request per plant, so the response IS the record and
+    there is nothing to merge.  It still gets the same ``_provenance`` block as
+    the sharded path — these files land in the same kind of result directory and
+    are read by the same ``json-to-table``.
+
     Returns token-usage totals.
     """
+    prov = build_provenance(provider, model, schema_name, schema_version, run_id)
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     totals = {"input": 0, "output": 0, "cache_creation": 0, "cache_read": 0}
@@ -245,6 +258,8 @@ def write_phenotype_results(
             totals["cache_read"] += getattr(u, "cache_read_input_tokens", 0)
             try:
                 parsed = json.loads(text)
+                if isinstance(parsed, dict):
+                    parsed = stamp_record(parsed, prov)
                 dest = out / f"{cid}.json"
                 with open(dest, "w", encoding="utf-8") as f:
                     json.dump(parsed, f, indent=2)
@@ -295,11 +310,20 @@ def read_run_meta(partial_dir) -> Optional[Dict[str, Any]]:
         return None
 
 
-def write_run_meta_if_absent(partial_dir, provider: str, model: str) -> None:
-    """Stamp *partial_dir* with *provider* / *model* unless already stamped.
+def write_run_meta_if_absent(
+    partial_dir,
+    provider: str,
+    model: str,
+    schema_name: Optional[str] = None,
+    schema_version: Optional[str] = None,
+) -> None:
+    """Stamp *partial_dir* with the run's identity unless already stamped.
 
     Creates *partial_dir* when it does not exist yet, so the guard can be called
-    before the store has been laid down.
+    before the store has been laid down.  ``schema_name`` / ``schema_version``
+    are recorded alongside provider/model: the same model run against two schema
+    versions produces two incompatible trait sets, and merging those into one
+    output is exactly as wrong as merging two models.
     """
     path = _run_meta_path(partial_dir)
     if path.exists():
@@ -308,17 +332,35 @@ def write_run_meta_if_absent(partial_dir, provider: str, model: str) -> None:
     write_json_atomic(path, {
         "provider": provider,
         "model": model,
+        "schema_name": schema_name,
+        "schema_version": schema_version,
         "created": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     })
 
 
-def assert_partial_provenance(partial_dir, provider: str, model: str) -> None:
-    """Refuse to reuse a ``_partial/`` store another provider/model created.
+def assert_partial_provenance(
+    partial_dir,
+    provider: str,
+    model: str,
+    schema_name: Optional[str] = None,
+    schema_version: Optional[str] = None,
+) -> None:
+    """Refuse to reuse a ``_partial/`` store another run created.
 
     Stamps the store on first use.  An unstamped store that already holds
     partials is a legacy one: it is adopted as before, with one warning.  Raises
-    ``RuntimeError`` when the stamp names a different provider or model, without
-    writing anything.
+    ``RuntimeError`` when the stamp names a different provider, model or schema
+    version, without writing anything.
+
+    Two kinds of stamp are tolerated rather than refused, because neither is
+    evidence of a conflict:
+
+      * a stamp written before ``schema_version`` existed (no such key) — one
+        warning, and the missing fields are added in place from this run;
+      * a run that cannot name its own schema version (``schema_version=None``,
+        e.g. the local ``--shard-dir`` path, whose merge index comes from the
+        manifest and never opens a master schema) — nothing to compare, so the
+        stamp is left as it is.
     """
     partial_dir = Path(partial_dir)
     meta = read_run_meta(partial_dir)
@@ -331,19 +373,49 @@ def assert_partial_provenance(partial_dir, provider: str, model: str) -> None:
                   f"{_RUN_META_NAME} (legacy store).  Adopting them as "
                   f"provider={provider!r} model={model!r} — if they came from a "
                   f"different run, stop now and use a different --output.")
-        write_run_meta_if_absent(partial_dir, provider, model)
+        write_run_meta_if_absent(partial_dir, provider, model,
+                                 schema_name, schema_version)
         return
 
-    if meta.get("provider") == provider and meta.get("model") == model:
+    if meta.get("provider") != provider or meta.get("model") != model:
+        raise RuntimeError(
+            f"Refusing to reuse the shard partial store in {partial_dir}\n"
+            f"  it was created by : provider={meta.get('provider')!r} "
+            f"model={meta.get('model')!r}\n"
+            f"  this run is       : provider={provider!r} model={model!r}\n"
+            f"Adopting those partials would silently merge another run's results "
+            f"into this one's output.  Either:\n"
+            f"  - point --output at a different directory, or\n"
+            f"  - delete {_run_meta_path(partial_dir)} if you are certain the "
+            f"existing partials belong to this run."
+        )
+
+    if "schema_version" not in meta:
+        # Legacy stamp: provider/model agree, so these partials are ours.  Fill
+        # in the fields it predates instead of erroring — same adoption
+        # behaviour as an unstamped store.
+        print(f"  WARNING: {_run_meta_path(partial_dir)} predates schema "
+              f"provenance (no 'schema_version').  Adopting it and recording "
+              f"schema_name={schema_name!r} schema_version={schema_version!r} "
+              f"from this run.")
+        upgraded = dict(meta)
+        upgraded.setdefault("schema_name", schema_name)
+        upgraded["schema_version"] = schema_version
+        write_json_atomic(_run_meta_path(partial_dir), upgraded)
+        return
+
+    if schema_version is None or meta.get("schema_version") == schema_version:
         return
 
     raise RuntimeError(
         f"Refusing to reuse the shard partial store in {partial_dir}\n"
-        f"  it was created by : provider={meta.get('provider')!r} "
-        f"model={meta.get('model')!r}\n"
-        f"  this run is       : provider={provider!r} model={model!r}\n"
-        f"Adopting those partials would silently merge another run's results "
-        f"into this one's output.  Either:\n"
+        f"  it was created with schema_version="
+        f"{meta.get('schema_version')!r} (schema_name={meta.get('schema_name')!r})\n"
+        f"  this run uses       schema_version="
+        f"{schema_version!r} (schema_name={schema_name!r})\n"
+        f"Same model, different schema: the traits do not line up, so merging "
+        f"those partials would produce a record that never came from one "
+        f"schema.  Either:\n"
         f"  - point --output at a different directory, or\n"
         f"  - delete {_run_meta_path(partial_dir)} if you are certain the "
         f"existing partials belong to this run."
@@ -358,6 +430,9 @@ def merge_sharded_results(
     output_dir: str,
     provider: str,
     model: str,
+    schema_name: Optional[str] = None,
+    schema_version: Optional[str] = None,
+    run_id: Optional[str] = None,
 ) -> Dict[str, int]:
     """Merge freshly-fetched shards with the ``_partial/`` store; write per plant.
 
@@ -381,6 +456,11 @@ def merge_sharded_results(
     ``<lid>.gaps.json`` if it is missing *after* the union; a stale gaps file
     whose traits are now filled is removed.
 
+    Every written record carries a ``_provenance`` block naming this run
+    (:func:`pxgpt.core.provenance.build_provenance`), computed once here and
+    repeated into each record, so a record that leaves this directory still says
+    where it came from.
+
     Returns ``{"written", "plants_with_gaps", "total_gaps"}``.  Both providers
     share this so the merge, the gap rule and the recovery story can never drift
     apart between them — an asymmetry there would silently break the
@@ -393,7 +473,9 @@ def merge_sharded_results(
     out.mkdir(parents=True, exist_ok=True)
     partial_dir = out / "_partial"
     partial_dir.mkdir(parents=True, exist_ok=True)
-    assert_partial_provenance(partial_dir, provider, model)
+    assert_partial_provenance(partial_dir, provider, model,
+                              schema_name, schema_version)
+    prov = build_provenance(provider, model, schema_name, schema_version, run_id)
 
     # Per plant, keep one object per shard so a re-fetch overrides cleanly and
     # a shard is never merged twice.  Adopt existing partials first.
@@ -427,7 +509,7 @@ def merge_sharded_results(
             list(shards_by_line.get(lid, {}).values()),
             group_order, group_traits, trait_meta,
         )
-        write_json_atomic(out / f"{lid}.json", record)
+        write_json_atomic(out / f"{lid}.json", stamp_record(record, prov))
         written += 1
 
         gaps_path = out / f"{lid}.gaps.json"
@@ -466,6 +548,9 @@ def write_phenotype_sharded_results(
     output_dir: str,
     provider: str,
     model: str,
+    schema_name: Optional[str] = None,
+    schema_version: Optional[str] = None,
+    run_id: Optional[str] = None,
 ) -> Dict[str, int]:
     """Retrieve a SHARDED Anthropic phenotype batch and merge it per plant.
 
@@ -481,7 +566,8 @@ def write_phenotype_sharded_results(
 
     # Refuse a foreign _partial/ store before spending the results download.
     # merge_sharded_results asserts again; the check is idempotent.
-    assert_partial_provenance(Path(output_dir) / "_partial", provider, model)
+    assert_partial_provenance(Path(output_dir) / "_partial", provider, model,
+                              schema_name, schema_version)
 
     totals = {"input": 0, "output": 0, "cache_creation": 0, "cache_read": 0}
     fresh: Dict[str, Dict[str, Any]] = {}
@@ -509,7 +595,7 @@ def write_phenotype_sharded_results(
             print(f"  WARNING: {cid} failed — {detail}")
 
     merge_sharded_results(fresh, shard_errors, line_ids, master_index, output_dir,
-                          provider, model)
+                          provider, model, schema_name, schema_version, run_id)
     return totals
 
 

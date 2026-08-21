@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from anthropic import APIStatusError, BadRequestError
 
 from . import shard_builder
+from .provenance import is_reserved_record_key
 
 NA = "not_assessable"
 MANIFEST_NAME = "shards_manifest.json"
@@ -343,6 +344,8 @@ def merge_plant_record(
         if not isinstance(obj, dict):
             continue
         for group, traits in obj.items():
+            if is_reserved_record_key(group):
+                continue  # ``_provenance`` and friends are metadata, not groups
             if isinstance(traits, dict):
                 raw.setdefault(group, {}).update(traits)
 

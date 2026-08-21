@@ -470,7 +470,8 @@ def test_sequential_stamps_the_store_and_skips_it_when_resuming(tmp_path):
     assert (meta["provider"], meta["model"]) == ("openai", "gpt-5.6-luna")
     # the stamp must not have been mistaken for a shard partial
     record = json.loads((out / "p1.json").read_text())
-    assert set(record) == {"g1", "g2"}
+    assert set(record) == {"_provenance", "g1", "g2"}  # + the record's own stamp
+    assert record["_provenance"]["model"] == "gpt-5.6-luna"
     assert not (out / ".json").exists()
 
 

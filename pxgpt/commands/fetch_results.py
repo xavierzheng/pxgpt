@@ -20,6 +20,7 @@ from ..core.batch_utils import (
     print_token_summary,
 )
 from ..core import sharding
+from ..core.provenance import read_schema_identity
 
 
 def _sharded_master_index(checkpoint):
@@ -43,6 +44,21 @@ def _sharded_master_index(checkpoint):
     print("Error: cannot locate the master schema or shard manifest recorded in "
           "the checkpoint; needed to merge sharded results.")
     return None
+
+
+def _schema_identity(checkpoint):
+    """Return ``(schema_name, schema_version)`` for the run this checkpoint describes.
+
+    A sharded checkpoint records the master schema it was built from; an
+    unsharded one records the ``--schema`` file.  Either is read for its two
+    top-level identity strings only, and a checkpoint written before this field
+    existed (or whose file has moved) yields ``(None, None)`` -- a null beats a
+    guess in a provenance record.
+    """
+    path = checkpoint.get("master_schema") or checkpoint.get("schema")
+    if path and not Path(path).exists():
+        return None, None
+    return read_schema_identity(path)
 
 
 def _fetch_anthropic(config, checkpoint, output):
@@ -74,7 +90,12 @@ def _fetch_anthropic(config, checkpoint, output):
         totals = write_describe_results(client, batch_id, line_ids, output)
         print(f"Descriptions written to: {output}")
     elif stage == "phenotype":
-        totals = write_phenotype_results(client, batch_id, line_ids, output)
+        schema_name, schema_version = _schema_identity(checkpoint)
+        totals = write_phenotype_results(
+            client, batch_id, line_ids, output, "anthropic",
+            checkpoint.get("model") or config.anthropic_model,
+            schema_name, schema_version, batch_id,
+        )
         print(f"Phenotype JSON files written to: {output}/")
     elif stage == "phenotype_sharded":
         master_index = _sharded_master_index(checkpoint)
@@ -91,9 +112,10 @@ def _fetch_anthropic(config, checkpoint, output):
                   f"_partial/ provenance check.")
             ck_provider = ck_provider or "anthropic"
             ck_model = ck_model or config.anthropic_model
+        schema_name, schema_version = _schema_identity(checkpoint)
         totals = write_phenotype_sharded_results(
             client, batch_id, line_ids, master_index, output,
-            ck_provider, ck_model,
+            ck_provider, ck_model, schema_name, schema_version, batch_id,
         )
         print(f"Merged phenotype JSON files written to: {output}/")
     else:
@@ -145,7 +167,12 @@ def _fetch_openai(config, checkpoint, output):
         totals = write_openai_describe_results(client, batch, line_ids, output)
         print(f"Descriptions written to: {output}")
     elif stage == "phenotype":
-        totals = write_openai_phenotype_results(client, batch, line_ids, output)
+        schema_name, schema_version = _schema_identity(checkpoint)
+        totals = write_openai_phenotype_results(
+            client, batch, line_ids, output, "openai",
+            checkpoint.get("model") or config.openai_model,
+            schema_name, schema_version, batch_id,
+        )
         print(f"Phenotype JSON files written to: {output}/")
     elif stage == "phenotype_sharded":
         master_index = _sharded_master_index(checkpoint)
@@ -158,9 +185,10 @@ def _fetch_openai(config, checkpoint, output):
             print(f"  WARNING: checkpoint has no model; assuming "
                   f"{config.openai_model!r} for the _partial/ provenance check.")
             ck_model = config.openai_model
+        schema_name, schema_version = _schema_identity(checkpoint)
         totals = write_openai_phenotype_sharded_results(
             client, batch, line_ids, master_index, output,
-            "openai", ck_model,
+            "openai", ck_model, schema_name, schema_version, batch_id,
         )
         print(f"Merged phenotype JSON files written to: {output}/")
     else:

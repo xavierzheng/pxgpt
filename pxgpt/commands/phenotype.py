@@ -63,6 +63,7 @@ from ..core.batch_utils import (
     _RUN_META_NAME,
 )
 from ..core import sharding
+from ..core.provenance import build_provenance, read_schema_identity, stamp_record
 
 
 def phenotype_batch_command(args):
@@ -248,6 +249,9 @@ def phenotype_batch_command(args):
         "stage": "phenotype",
         "output": args.output,
         "line_ids": line_ids,
+        # Recorded so fetch-results can read the schema's identity strings into
+        # each record's _provenance; absent in pre-provenance checkpoints.
+        "schema": str(Path(args.schema).resolve()) if args.schema else None,
         "model": config.anthropic_model,
     }
     with open(checkpoint_path, "w", encoding="utf-8") as f:
@@ -270,7 +274,11 @@ def phenotype_batch_command(args):
     poll_batch(client, batch_id)
 
     print("\n--- Writing results ---")
-    totals = write_phenotype_results(client, batch_id, line_ids, args.output)
+    schema_name, schema_version = read_schema_identity(args.schema)
+    totals = write_phenotype_results(
+        client, batch_id, line_ids, args.output,
+        "anthropic", config.anthropic_model, schema_name, schema_version, batch_id,
+    )
     print_token_summary(totals)
     print(f"\nPhenotype JSON files written to: {args.output}/")
     return 0
@@ -319,6 +327,9 @@ def _run_sharded(args, config, client, line_image_blocks, use_files_api):
         return 1
 
     master_index, master_path = _resolve_master_index(manifest, shard_dir, args.master_schema)
+    # Read once per run, not once per plant: only the two top-level identity
+    # strings are wanted, and a manifest-only run has none to give.
+    schema_name, schema_version = read_schema_identity(master_path)
 
     requests = sharding.build_sharded_requests(
         line_image_blocks, shards, system_prompt, config, build_request_params
@@ -329,16 +340,18 @@ def _run_sharded(args, config, client, line_image_blocks, use_files_api):
 
     if args.dispatch == "sequential":
         return _dispatch_sequential(
-            args, config, client, requests, line_ids, master_index, use_files_api
+            args, config, client, requests, line_ids, master_index, use_files_api,
+            schema_name, schema_version,
         )
     return _dispatch_batch(
         args, config, client, requests, line_ids, shards, shard_dir, master_path,
-        use_files_api,
+        use_files_api, schema_name, schema_version,
     )
 
 
 def _dispatch_batch(args, config, client, requests, line_ids, shards, shard_dir,
-                    master_path, use_files_api):
+                    master_path, use_files_api, schema_name=None,
+                    schema_version=None):
     betas = ["files-api-2025-04-14"] if use_files_api else []
     print(f"\n--- Submitting batch ({len(requests)} requests) ---")
     batch = client.beta.messages.batches.create(requests=requests, betas=betas)
@@ -376,7 +389,7 @@ def _dispatch_batch(args, config, client, requests, line_ids, shards, shard_dir,
     master_index, _ = _resolve_master_index(manifest, shard_dir, args.master_schema)
     totals = write_phenotype_sharded_results(
         client, batch_id, line_ids, master_index, args.output,
-        "anthropic", config.anthropic_model,
+        "anthropic", config.anthropic_model, schema_name, schema_version, batch_id,
     )
     print_token_summary(totals)
     print(f"\nMerged phenotype JSON files written to: {args.output}/")
@@ -421,7 +434,7 @@ def _call_with_retry(client, betas, params, i, total, custom_id,
 
 
 def _dispatch_sequential(args, config, client, requests, line_ids, master_index,
-                         use_files_api):
+                         use_files_api, schema_name=None, schema_version=None):
     """Run each plant's shards as near-synchronous, resumable calls.
 
     Crash-safe + resumable.  Each successful shard's parsed JSON is written
@@ -444,7 +457,12 @@ def _dispatch_sequential(args, config, client, requests, line_ids, master_index,
     partial_dir = out / "_partial"
     out.mkdir(parents=True, exist_ok=True)
     partial_dir.mkdir(parents=True, exist_ok=True)
-    assert_partial_provenance(partial_dir, "anthropic", config.anthropic_model)
+    assert_partial_provenance(partial_dir, "anthropic", config.anthropic_model,
+                              schema_name, schema_version)
+    # One block per run, repeated into every record this run finalizes.  No
+    # batch id exists on this path, so run_id stays null.
+    prov = build_provenance("anthropic", config.anthropic_model,
+                            schema_name, schema_version, None)
     progress_path = partial_dir / "progress.jsonl"
 
     # Expected shard count per plant (requests are built plant-contiguous).
@@ -469,7 +487,7 @@ def _dispatch_sequential(args, config, client, requests, line_ids, master_index,
         record, missing = sharding.merge_plant_record(
             per_line.get(lid, []), group_order, group_traits, trait_meta
         )
-        write_json_atomic(out / f"{lid}.json", record)
+        write_json_atomic(out / f"{lid}.json", stamp_record(record, prov))
         gaps_path = out / f"{lid}.gaps.json"
         if missing:
             write_json_atomic(gaps_path, {

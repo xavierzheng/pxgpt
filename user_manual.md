@@ -342,6 +342,7 @@ In sharded mode `--schema`, `--system-prompt` and `--prompt` are **optional** �
   - **Transient errors are retried in-run**: `429` / `5xx` / Anthropic's `529` "Overloaded" / connection blips get up to 3 attempts with exponential backoff before a shard is dropped. A `400` such as *"Grammar compilation timed out"* is a schema-size error and is **not** retried in-run — reduce `--shard-budget` and re-shard, or rely on resume.
   - **Live logging**: progress lines appear in the SLURM/stdout log as the run proceeds (stdout is line-buffered by the CLI; no `PYTHONUNBUFFERED` needed).
   - A clean, uninterrupted sequential run produces exactly the same `<line_id>.json` / `<line_id>.gaps.json` files as before — only the `_partial/` directory is new.
+  - **The `_partial/` store guards its own identity in `<output>/_partial/.run.json`**, checked before every merge (sequential dispatch, batch `fetch-results`, and the local `pxgpt schema --shard-dir` path share the same guard). It refuses to reuse a store that a different provider or model created, and now also records `schema_name`/`schema_version` and refuses a store whose `schema_version` differs from this run's — same model, different schema means the traits no longer line up, and merging those partials would build a record that never came from one schema. Either refusal names what the store was created with vs. what this run uses and gives the same two remedies: point `--output` at a different directory, or delete `<output>/_partial/.run.json` if you are certain the existing partials belong to this run. Two things are tolerated rather than refused: a legacy stamp with no `schema_version` key (one warning; the field is filled in from this run) and a run that cannot name its own schema version (`schema_version` is `null` — e.g. local `--shard-dir` mode, whose merge index comes from the manifest and never opens a master schema) — nothing to compare, so the stamp is left alone.
 
 **Step 3 — retrieve + merge:**
 
@@ -473,6 +474,21 @@ Each per-plant JSON is `{group: {trait: {rationale, value}}}`, and `value` is
 `json_normalize` bakes in the `rationale`/`value` nesting and the `not_assessable`
 sentinel as a literal string rather than a real NA.
 
+**Every per-plant JSON also carries a `_provenance` block**, written first in the
+file: `provider`, `model`, `schema_name`, `schema_version`, `pxgpt_version`,
+`created` (UTC `YYYY-MM-DDTHH:MM:SSZ`), `run_id`. `schema_name`/`schema_version`
+come from the master schema's own two top-level fields (`null` wherever the run
+never opens one — `shards_manifest.json` is *not* a source; its `version` field is
+the manifest format version, not a schema identity), and `run_id` is the batch id
+on batch paths, `null` on sequential/local paths. It is recomputed at write time,
+so re-merging (an idempotent `fetch-results`, a sequential resume) always leaves
+exactly one, current block behind. `_provenance` is metadata, not a trait group —
+skip keys starting with `_` if you iterate a record's top-level keys yourself.
+Every writer stamps it: the shared sharded merge (both providers, batch and
+sequential dispatch), the unsharded per-plant batch writers, and the local `pxgpt
+schema --shard-dir` / `--schema` paths (for `--schema`, only a response that
+parses as a JSON object gets the block; anything else is written verbatim).
+
 **Recommended: `pxgpt json-to-table`** — flattens the whole result directory into
 a wide, typed, analysis-ready table in one command, using the master (+ shard)
 schema to reconstruct ordinal labels, unit-suffix quantitative columns, and
@@ -488,6 +504,11 @@ pxgpt json-to-table \
 ```
 
 - One row per plant line/cultivar; `cultivar_id` (the filename stem) is the first column.
+- Immediately after `cultivar_id`, three provenance columns — `provider`, `model`,
+  `schema_version` — read per row from that record's `_provenance` block. Records
+  from an older pxGPT with no `_provenance` fall back to
+  `<result-dir>/_partial/.run.json` when one is present, else the three columns
+  are NA; either way the flattener still writes the table, with one warning.
 - **nominal** → column = trait name; value = plain string (character in both outputs — never a factor/category).
 - **quantitative** → column = `<trait>_<unit>` (e.g. `plant_height_cm`; unit sanitized — `m²` → `m2`); numeric.
 - **ordinal** → column = trait name; the integer level code is reconstructed into its schema label (e.g. `1` → `"mild"`). In the CSV this is a plain label string; in the feather file it's an **ordered** `pandas.Categorical` over the full schema-defined level set, so R's `arrow::read_feather()` reads it as an ordered factor.
@@ -498,7 +519,13 @@ pxgpt json-to-table \
 key (plus `_<unit>` for quantitative traits). If the master schema ever
 assesses the *same* leaf key under two different organ groups (e.g. `length`
 under both `leaf` and `petal`), both would compute the same final name —
-by default `json-to-table` refuses to silently let one overwrite the other:
+by default `json-to-table` refuses to silently let one overwrite the other.
+`cultivar_id`, `provider`, `model` and `schema_version` are also reserved: a
+trait that resolves onto one of them is a collision too, in *every*
+`--on-collision` mode (including the prefix ones) — those columns carry the
+row's own identity and are never silently renamed out from under the reader.
+Use `--rename-map` to give the trait a different name instead. A plain leaf-key
+clash between two traits looks like this:
 
 ```
 $ pxgpt json-to-table --result-dir phenotypes/ --master-schema master_schema.json --out-prefix analysis/stage3_table
@@ -558,6 +585,39 @@ e.g. mapping two different paths to the same name).
 Traits with the same leaf key but genuinely different units (e.g. `stem.length` in cm vs `hair.length` in mm) are never flagged — they already compute to distinct final names. Whichever mode you use, a final uniqueness check always runs before any file is written, so a bad `--rename-map` that itself introduces a duplicate is caught too.
 
 See `pxgpt/core/json2table.py` for the flattening logic if you need to call it as a library from a notebook instead of the CLI.
+
+**Mixed provenance is refused by default.** If `--result-dir` holds records from
+more than one run — different provider, different model, or the same model
+scored against a different `schema_version` — `json-to-table` stops before
+writing anything and lists each distinct `(provider, model, schema_version)`
+tuple with the cultivar ids that carry it:
+
+```
+Refusing to flatten records from more than one run:
+  provider='anthropic' model='claude-sonnet-5' schema_version='2.1'  <- 38 record(s): s0001, s0002, s0003, s0004 ...
+  provider='openai' model='gpt-5.6-luna' schema_version='2.1'  <- 4 record(s): s0039, s0040, s0041, s0042
+```
+
+One table whose rows come from different models reads as one experiment and is
+not one. Pass **`--allow-mixed-provenance`** if the mixture is deliberate — the
+table is written anyway, and the per-row `provider`/`model`/`schema_version`
+columns carry the truth.
+
+**The feather file also repeats the whole provenance block** as Arrow schema
+metadata, under the key `pxgpt_provenance` (JSON-encoded bytes) — so it survives
+even if the three columns are later dropped. It is added to, never in place of,
+the `pandas` metadata key pandas itself writes (that key is what makes an ordinal
+column come back as an ORDERED Categorical / R ordered factor):
+
+```python
+import json, pyarrow.feather as pf
+md = pf.read_table("analysis/stage3_table.feather").schema.metadata
+print(json.loads(md[b"pxgpt_provenance"]))
+```
+
+The value is the single provenance block when every record agrees; with
+`--allow-mixed-provenance` and a genuine mixture, it is instead
+`{"mixed": true, "values": [<distinct blocks>]}`.
 
 **Reading the outputs downstream (Python):**
 ```python
@@ -842,10 +902,11 @@ pxgpt json-to-table \
   [--shard-dir DIR] \       # fallback trait metadata for traits absent from master
   --out-prefix PREFIX \     # writes <prefix>.csv and <prefix>.feather
   [--on-collision {error,prefix_collided,prefix_all}] \  # default: error
-  [--rename-map FILE]       # JSON: {"group.trait": "desired_column_name", ...}
+  [--rename-map FILE] \     # JSON: {"group.trait": "desired_column_name", ...}
+  [--allow-mixed-provenance]  # write anyway when records disagree on provider/model/schema_version
 ```
 
-Writes `<prefix>.csv` (ordinal traits as label strings) and `<prefix>.feather` (Arrow IPC v2; identical except ordinal traits are ordered `pandas.Categorical`, so R's `arrow::read_feather()` reads them as ordered factors). Nominal columns are plain strings in both — never a category/factor. Any trait found in results but not in the master or shard schemas is logged as a warning and included as a best-effort string column.
+Writes `<prefix>.csv` (ordinal traits as label strings) and `<prefix>.feather` (Arrow IPC v2; identical except ordinal traits are ordered `pandas.Categorical`, so R's `arrow::read_feather()` reads them as ordered factors). Nominal columns are plain strings in both — never a category/factor. Any trait found in results but not in the master or shard schemas is logged as a warning and included as a best-effort string column. Every row also carries `provider`/`model`/`schema_version` from that record's `_provenance` block (see **Downstream analysis** above); by default, a `--result-dir` holding more than one distinct `(provider, model, schema_version)` is refused before anything is written — pass `--allow-mixed-provenance` to write anyway.
 
 `--on-collision` controls what happens when two traits compute the same final column name (see **Column name collisions** above): `error` (default) writes no files and prints a `--rename-map` fill-in template; `prefix_collided` auto-prefixes only the clashing columns with the minimal group-path prefix needed; `prefix_all` prefixes every column with its full path regardless of collisions. `--rename-map` is applied first and takes a JSON file keyed by dotted source path (`group.trait`, not the possibly-colliding column name), values used verbatim with no unit re-appended. A global uniqueness check runs last regardless of mode — it raises rather than ever letting one column silently overwrite another.
 

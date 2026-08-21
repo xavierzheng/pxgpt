@@ -80,32 +80,32 @@ def test_example_a1_error_default_raises_with_fill_in_template(master_a, results
 
 
 def test_example_a2_prefix_collided_only_touches_clashing_columns(master_a, results_a):
-    csv_df, feather_df, warnings = json2table.build_table(
+    csv_df, feather_df, warnings, _prov = json2table.build_table(
         results_a, master_a, on_collision="prefix_collided"
     )
     assert list(csv_df.columns) == [
-        "cultivar_id", "leaf_length_cm", "petal_length_cm", "color",
+        "cultivar_id", *json2table.PROVENANCE_COLUMNS, "leaf_length_cm", "petal_length_cm", "color",
     ]
     assert list(feather_df.columns) == list(csv_df.columns)
 
 
 def test_example_a3_prefix_all_uses_full_path_for_every_column(master_a, results_a):
-    csv_df, feather_df, warnings = json2table.build_table(
+    csv_df, feather_df, warnings, _prov = json2table.build_table(
         results_a, master_a, on_collision="prefix_all"
     )
     assert list(csv_df.columns) == [
-        "cultivar_id", "leaf_length_cm", "petal_length_cm", "flower_color",
+        "cultivar_id", *json2table.PROVENANCE_COLUMNS, "leaf_length_cm", "petal_length_cm", "flower_color",
     ]
     assert list(feather_df.columns) == list(csv_df.columns)
 
 
 def test_example_a4_rename_map_used_verbatim(master_a, results_a):
     rename_map = {"leaf.length": "leaf_len_cm", "petal.length": "petal_len_cm"}
-    csv_df, feather_df, warnings = json2table.build_table(
+    csv_df, feather_df, warnings, _prov = json2table.build_table(
         results_a, master_a, rename_map=rename_map
     )
     assert list(csv_df.columns) == [
-        "cultivar_id", "leaf_len_cm", "petal_len_cm", "color",
+        "cultivar_id", *json2table.PROVENANCE_COLUMNS, "leaf_len_cm", "petal_len_cm", "color",
     ]
     assert list(feather_df.columns) == list(csv_df.columns)
 
@@ -141,11 +141,11 @@ def results_b(tmp_path):
 
 
 def test_example_b_prefix_collided_auto_deepens_past_one_level(master_b, results_b):
-    csv_df, feather_df, warnings = json2table.build_table(
+    csv_df, feather_df, warnings, _prov = json2table.build_table(
         results_b, master_b, on_collision="prefix_collided"
     )
     assert list(csv_df.columns) == [
-        "cultivar_id", "sepal_tip_angle_deg", "bract_tip_angle_deg",
+        "cultivar_id", *json2table.PROVENANCE_COLUMNS, "sepal_tip_angle_deg", "bract_tip_angle_deg",
     ]
     assert list(feather_df.columns) == list(csv_df.columns)
 
@@ -187,12 +187,14 @@ def results_c(tmp_path):
 
 
 def test_example_c_regression_no_collision_default_error_is_noop(master_c, results_c):
-    csv_df, feather_df, warnings = json2table.build_table(results_c, master_c)
+    csv_df, feather_df, warnings, _prov = json2table.build_table(results_c, master_c)
     assert list(csv_df.columns) == [
-        "cultivar_id", "plant_height_cm", "leaf_color", "vigor",
+        "cultivar_id", *json2table.PROVENANCE_COLUMNS, "plant_height_cm", "leaf_color", "vigor",
     ]
     assert list(feather_df.columns) == list(csv_df.columns)
-    assert warnings == []
+    # These fixtures predate _provenance, so the one warning is that fallback;
+    # what this test is about is that no collision warning is raised.
+    assert [w for w in warnings if "_provenance" not in w] == []
 
 
 # ---------------------------------------------------------------------------
@@ -226,8 +228,8 @@ def results_d(tmp_path):
 
 
 def test_example_d_same_name_different_unit_not_flagged(master_d, results_d):
-    csv_df, feather_df, warnings = json2table.build_table(results_d, master_d)
-    assert list(csv_df.columns) == ["cultivar_id", "length_cm", "length_mm"]
+    csv_df, feather_df, warnings, _prov = json2table.build_table(results_d, master_d)
+    assert list(csv_df.columns) == ["cultivar_id", *json2table.PROVENANCE_COLUMNS, "length_cm", "length_mm"]
     assert list(feather_df.columns) == list(csv_df.columns)
 
 
@@ -299,4 +301,4 @@ def test_cli_rename_map_from_file(master_a, results_a, tmp_path):
 
     import pandas as pd
     df = pd.read_csv(out_prefix + ".csv")
-    assert list(df.columns) == ["cultivar_id", "leaf_len_cm", "petal_len_cm", "color"]
+    assert list(df.columns) == ["cultivar_id", *json2table.PROVENANCE_COLUMNS, "leaf_len_cm", "petal_len_cm", "color"]

@@ -34,6 +34,7 @@ from .batch_utils import (          # shared with the Anthropic path
     merge_sharded_results,
     strip_code_fence,
 )
+from .provenance import build_provenance, stamp_record
 
 
 # ---------------------------------------------------------------------------
@@ -505,9 +506,18 @@ def write_openai_describe_results(
 
 
 def write_openai_phenotype_results(
-    client, batch, line_ids: List[str], output_dir: str
+    client, batch, line_ids: List[str], output_dir: str,
+    provider: str = "openai", model: Optional[str] = None,
+    schema_name: Optional[str] = None, schema_version: Optional[str] = None,
+    run_id: Optional[str] = None,
 ) -> Dict[str, int]:
-    """Write one JSON file per plant line from a finished OpenAI batch."""
+    """Write one JSON file per plant line from a finished OpenAI batch.
+
+    Unsharded: the response IS the record, so there is nothing to merge — but it
+    still carries the same ``_provenance`` block as the sharded path, because
+    these files land in the same kind of result directory.
+    """
+    prov = build_provenance(provider, model, schema_name, schema_version, run_id)
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     totals = {"input": 0, "output": 0, "cache_creation": 0, "cache_read": 0}
@@ -528,6 +538,8 @@ def write_openai_phenotype_results(
             continue
         try:
             parsed = json.loads(strip_code_fence(content))
+            if isinstance(parsed, dict):
+                parsed = stamp_record(parsed, prov)
             dest = out / f"{cid}.json"
             with open(dest, "w", encoding="utf-8") as f:
                 json.dump(parsed, f, indent=2)
@@ -547,6 +559,8 @@ def write_openai_phenotype_results(
 def write_openai_phenotype_sharded_results(
     client, batch, line_ids: List[str], master_index, output_dir: str,
     provider: str = "openai", model: str = "",
+    schema_name: Optional[str] = None, schema_version: Optional[str] = None,
+    run_id: Optional[str] = None,
 ) -> Dict[str, int]:
     """Retrieve a SHARDED OpenAI phenotype batch and merge it per plant.
 
@@ -564,7 +578,8 @@ def write_openai_phenotype_sharded_results(
 
     # Refuse a foreign _partial/ store before downloading the result files.
     # merge_sharded_results asserts again; the check is idempotent.
-    assert_partial_provenance(Path(output_dir) / "_partial", provider, model)
+    assert_partial_provenance(Path(output_dir) / "_partial", provider, model,
+                              schema_name, schema_version)
 
     totals = {"input": 0, "output": 0, "cache_creation": 0, "cache_read": 0}
     fresh: Dict[str, Dict[str, Any]] = {}
@@ -586,5 +601,5 @@ def write_openai_phenotype_sharded_results(
             print(f"  WARNING: {cid} — JSON parse failed")
 
     merge_sharded_results(fresh, shard_errors, line_ids, master_index, output_dir,
-                          provider, model)
+                          provider, model, schema_name, schema_version, run_id)
     return totals

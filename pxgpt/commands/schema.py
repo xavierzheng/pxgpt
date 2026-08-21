@@ -72,6 +72,7 @@ from ..core.batch_utils import (
     write_json_atomic,
 )
 from ..core import sharding
+from ..core.provenance import build_provenance, read_schema_identity, stamp_record
 from ..providers.anthropic_provider import AnthropicProvider
 from ..providers.openai_compat_provider import (
     OpenAICompatProvider,
@@ -264,6 +265,23 @@ def schema_command(args):
 # --schema : one schema per plant
 # ---------------------------------------------------------------------------
 
+def _stamped_text(text, prov):
+    """Return *text* with a ``_provenance`` block inserted, or unchanged.
+
+    The response is written as text elsewhere in this path so a malformed answer
+    can be read back exactly as it arrived.  That is kept: only a response that
+    parses as a JSON object is re-serialized with the block on top; anything else
+    passes through untouched, still inspectable.
+    """
+    try:
+        parsed = json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        return text
+    if not isinstance(parsed, dict):
+        return text
+    return json.dumps(stamp_record(parsed, prov), indent=2, ensure_ascii=False) + "\n"
+
+
 def _run_single(args, config, provider_name, plants):
     if not args.system_prompt or not args.prompt:
         print("Error: --system-prompt and --prompt are required with --schema.")
@@ -302,6 +320,12 @@ def _run_single(args, config, provider_name, plants):
     except (FileNotFoundError, json.JSONDecodeError) as e:
         print(f"Schema error: {e}")
         return 1
+
+    # Same _provenance block as every other writer: these files land in a
+    # result directory that json-to-table reads.  There is no _partial/ store
+    # here to fall back on, so an unstamped record would be unattributable.
+    prov = build_provenance(provider.provider_name, config.get_model(provider_name),
+                            *read_schema_identity(args.schema), None)
 
     multi = bool(args.input_dir)
     out = Path(args.output)
@@ -342,7 +366,7 @@ def _run_single(args, config, provider_name, plants):
                 return 1
             continue
 
-        write_file_safely(str(dest), response.content, "output")
+        write_file_safely(str(dest), _stamped_text(response.content, prov), "output")
         if not multi:
             print(f"Results written to: {dest}")
 
@@ -628,6 +652,12 @@ def _run_sharded(args, config, provider_name, plants):
     # moved on since the set was frozen and would order fields against shards
     # that no longer exist.
     master_index = sharding.master_index_from_manifest(manifest)
+    # The merge index stays manifest-derived (above).  The master schema is
+    # opened for its two identity strings ONLY -- those cannot come from the
+    # manifest, which records a format version and no schema identity at all.
+    schema_name, schema_version = read_schema_identity(
+        sharding.resolve_master_path(manifest, args.shard_dir)
+    )
 
     config.max_tokens = args.max_tokens if args.max_tokens is not None else SHARD_MAX_TOKENS
 
@@ -664,7 +694,8 @@ def _run_sharded(args, config, provider_name, plants):
     out.mkdir(parents=True, exist_ok=True)
     partial_dir.mkdir(parents=True, exist_ok=True)
     try:
-        assert_partial_provenance(partial_dir, provider.provider_name, model)
+        assert_partial_provenance(partial_dir, provider.provider_name, model,
+                                  schema_name, schema_version)
     except RuntimeError as e:
         print(f"Error: {e}")
         return 1
@@ -879,7 +910,7 @@ def _run_sharded(args, config, provider_name, plants):
                                                  for c in fresh])) or done_plants
     stats = merge_sharded_results(
         fresh, shard_errors, merge_ids, master_index, str(out),
-        provider.provider_name, model,
+        provider.provider_name, model, schema_name, schema_version, None,
     )
 
     elapsed = time.time() - started

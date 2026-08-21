@@ -2,6 +2,73 @@
 
 ## New features
 
+- **Record-level provenance: every merged Stage 3 record carries its own `_provenance` block.**
+  `_partial/.run.json` stamps a *store* with the run that created it, but that guard
+  dies with the directory — copy a `<line_id>.json` out on its own and its origin is
+  gone. Every merged record (`<output>/<line_id>.json`) now carries a top-level
+  `_provenance` block, written first in the file: `provider`, `model`, `schema_name`,
+  `schema_version`, `pxgpt_version`, `created` (UTC `YYYY-MM-DDTHH:MM:SSZ`), `run_id`.
+  - `provider`/`model` are the same strings the `_partial/.run.json` stamp uses.
+    `schema_name`/`schema_version` come from the master schema JSON's own two
+    top-level fields — `null` wherever the run never opens a master schema.
+    `shards_manifest.json` is deliberately NOT a source: its `version` field is the
+    manifest format version, not a schema identity. `run_id` is the batch id on
+    batch dispatch, `null` on sequential / local paths.
+  - `_provenance` is a RESERVED top-level key, not a trait group — any code
+    iterating a record's top-level keys must skip keys starting with `_`.
+  - The block is recomputed from the current run at write time, so re-merging (an
+    idempotent `fetch-results`, a sequential resume) always leaves exactly one,
+    current block behind — never two, never stale.
+  - Every writer stamps it: the shared sharded merge (`merge_sharded_results`, both
+    providers, batch and sequential dispatch), the unsharded per-plant batch
+    writers (`write_phenotype_results` and the OpenAI equivalent), and the local
+    `pxgpt schema` paths (`--shard-dir` and `--schema`). For `pxgpt schema --schema`
+    the response is still written verbatim when it does not parse as a JSON
+    object — only a parsing object response is re-serialized with the block on top.
+- **`_partial/.run.json` now also stamps and guards schema identity.** The store's
+  provenance stamp already refused reuse across a different provider/model; it now
+  also records `schema_name`/`schema_version` and refuses a run whose
+  `schema_version` differs from the one the store was created with — same model,
+  different schema means the traits no longer line up, and merging those partials
+  would build a record that never came from one schema. The error names what the
+  store was created with vs. what this run uses, with the same two remedies as the
+  provider/model refusal: point `--output` elsewhere, or delete the stamp. Two cases
+  are tolerated rather than refused: a legacy stamp with no `schema_version` key
+  (one warning; the field is added in place from this run), and a run that cannot
+  name its own schema version (`schema_version` is `null` — e.g. local `--shard-dir`
+  mode, whose merge index comes from the manifest and never opens a master schema) —
+  nothing to compare, so the stamp is left alone.
+- **`json-to-table` carries provenance into both outputs.** Three new columns —
+  `provider`, `model`, `schema_version` — land immediately after `cultivar_id` in
+  both the CSV and the feather file, read per row from that record's `_provenance`.
+  The feather file also repeats the whole block as Arrow schema metadata under
+  `pxgpt_provenance` (JSON-encoded bytes), added to — never replacing — the
+  `pandas` metadata key that makes ordinal columns read back as ordered
+  Categoricals / R ordered factors:
+    ```python
+    import json, pyarrow.feather as pf
+    md = pf.read_table("out.feather").schema.metadata
+    print(json.loads(md[b"pxgpt_provenance"]))
+    ```
+    The value is the single block when every record agrees, otherwise
+    `{"mixed": true, "values": [<distinct blocks>]}`.
+  - `cultivar_id`, `provider`, `model`, `schema_version` are now reserved column
+    names: a trait that resolves onto one of them raises the column-collision error
+    in every `--on-collision` mode and names `--rename-map` as the fix — they are
+    never silently renamed out from under the reader.
+  - New flag **`--allow-mixed-provenance`**. By default, records that disagree on
+    `(provider, model, schema_version)` are refused before anything is written, with
+    an error listing each distinct tuple and the records carrying it — one table
+    whose rows come from different models reads as one experiment and is not one.
+    With the flag, the table is written anyway and the per-row columns carry the
+    truth.
+  - **Backward compatible**: records with no `_provenance` (written by an older
+    pxGPT) fall back to `<result-dir>/_partial/.run.json` when present, else the
+    three columns are NA. Either way exactly one warning is printed and the table
+    still writes — a legacy directory never hard-fails on provenance alone.
+  - **Bug fix**: `<cultivar>.gaps.json` sidecars are now skipped by the flattener.
+    Before, one was read as if it were a record and produced an extra all-NA row
+    named `<cultivar>.gaps`.
 - **Local Stage 3: `pxgpt schema --shard-dir --input-dir` runs a whole dataset.**
   The batch stages need the providers' Batch APIs, which no local server offers, so
   until now a self-hosted Stage 3 was not possible at all. `schema` gained a second
@@ -325,6 +392,17 @@
 
 ## Fixed
 
+- **`pxgpt --version` and `pxgpt.__version__` could disagree, because the version
+  lived as three hand-edited literals.** `pxgpt/__init__.py` had drifted to
+  `0.3.0` while `setup.py` and `pxgpt --version` both said `0.4.0` — anyone reading
+  `pxgpt.__version__` in code got a wrong answer. This matters more now than
+  before: `pxgpt_version` is recorded into every `_provenance` block written into
+  data files (see **New features**), so the number needs exactly one source.
+  `setup.py`'s `version=` is now the only editable copy; `pxgpt/__init__.py` reads
+  it back from the installed distribution's metadata via `importlib.metadata`, and
+  `pxgpt --version` formats that instead of restating it. A source tree that was
+  never `pip install -e`'d reports `0.0.0+source` rather than inventing a number
+  that could be wrong.
 - **An image folder with no images produced a text-only request instead of an error.**
   Pointing `--input-folder` at the *tree* of plant folders rather than at one plant
   sent zero image blocks, no warning: the model answered the prompt from nothing,

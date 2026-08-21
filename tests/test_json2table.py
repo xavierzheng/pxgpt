@@ -126,7 +126,7 @@ def built(master_path, shard_dir, result_dir):
 
 
 def test_row_count_and_cultivar_id_column(built):
-    csv_df, feather_df, warnings = built
+    csv_df, feather_df, warnings, _prov = built
     assert len(csv_df) == 3
     assert len(feather_df) == 3
     assert list(csv_df.columns)[0] == "cultivar_id"
@@ -135,7 +135,7 @@ def test_row_count_and_cultivar_id_column(built):
 
 
 def test_nominal_column_stays_string_in_both_outputs(built):
-    csv_df, feather_df, warnings = built
+    csv_df, feather_df, warnings, _prov = built
     assert "leaf_color" in csv_df.columns
     row = csv_df.set_index("cultivar_id")
     assert row.loc["c1", "leaf_color"] == "green"
@@ -147,7 +147,7 @@ def test_nominal_column_stays_string_in_both_outputs(built):
 
 
 def test_quantitative_column_uses_sanitized_unit_and_is_numeric(built):
-    csv_df, feather_df, warnings = built
+    csv_df, feather_df, warnings, _prov = built
     assert "plant_height_cm" in csv_df.columns
     assert "canopy_area_m2" in csv_df.columns  # superscript sanitized
     row = csv_df.set_index("cultivar_id")
@@ -158,7 +158,7 @@ def test_quantitative_column_uses_sanitized_unit_and_is_numeric(built):
 
 
 def test_ordinal_reconstructs_label_and_feather_is_ordered_categorical(built):
-    csv_df, feather_df, warnings = built
+    csv_df, feather_df, warnings, _prov = built
     row = csv_df.set_index("cultivar_id")
     assert row.loc["c1", "senescence"] == "mild"
     assert row.loc["c3", "senescence"] == "extensive"
@@ -171,7 +171,7 @@ def test_ordinal_reconstructs_label_and_feather_is_ordered_categorical(built):
 
 
 def test_ordinal_not_assessable_becomes_na_and_not_a_category(built):
-    csv_df, feather_df, warnings = built
+    csv_df, feather_df, warnings, _prov = built
     row = csv_df.set_index("cultivar_id")
     assert pd.isna(row.loc["c2", "senescence"])
     assert "not_assessable" not in list(feather_df["senescence"].cat.categories)
@@ -180,7 +180,7 @@ def test_ordinal_not_assessable_becomes_na_and_not_a_category(built):
 
 
 def test_shard_fallback_trait_included_as_nominal(built):
-    csv_df, feather_df, warnings = built
+    csv_df, feather_df, warnings, _prov = built
     assert "root_vigor" in csv_df.columns
     row = csv_df.set_index("cultivar_id")
     assert row.loc["c1", "root_vigor"] == "strong"
@@ -189,7 +189,7 @@ def test_shard_fallback_trait_included_as_nominal(built):
 
 
 def test_unknown_trait_logged_and_included_as_string_fallback(built):
-    csv_df, feather_df, warnings = built
+    csv_df, feather_df, warnings, _prov = built
     assert "mystery_trait" in csv_df.columns
     row = csv_df.set_index("cultivar_id")
     assert row.loc["c1", "mystery_trait"] == "foo"
@@ -198,7 +198,7 @@ def test_unknown_trait_logged_and_included_as_string_fallback(built):
 
 
 def test_deterministic_column_order(built):
-    csv_df, feather_df, warnings = built
+    csv_df, feather_df, warnings, _prov = built
     cols = list(csv_df.columns)
     # master-schema traits come first (in schema order), shard fallback next,
     # unknown traits last; identical between csv and feather outputs.
@@ -211,7 +211,7 @@ def test_deterministic_column_order(built):
 
 
 def test_write_table_round_trip(built, tmp_path):
-    csv_df, feather_df, warnings = built
+    csv_df, feather_df, warnings, _prov = built
     out_prefix = str(tmp_path / "out" / "table")
     json2table.write_table(csv_df, feather_df, out_prefix)
 

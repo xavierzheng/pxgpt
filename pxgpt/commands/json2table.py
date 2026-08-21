@@ -26,19 +26,28 @@ def json2table_command(args):
 
     print(f"--- Flattening {args.result_dir} -> {args.out_prefix}.{{csv,feather}} ---")
     try:
-        csv_df, feather_df, warnings = core.build_table(
+        csv_df, feather_df, warnings, provenance = core.build_table(
             args.result_dir, args.master_schema, shard_dir=args.shard_dir,
             on_collision=args.on_collision, rename_map=rename_map,
+            allow_mixed_provenance=args.allow_mixed_provenance,
         )
-    except (core.ColumnCollisionError, core.DuplicateColumnError) as e:
+    except (core.ColumnCollisionError, core.DuplicateColumnError,
+            core.MixedProvenanceError) as e:
         print(str(e))
         return 1
 
     for w in warnings:
         print(f"  WARNING: {w}")
 
-    core.write_table(csv_df, feather_df, args.out_prefix)
+    core.write_table(csv_df, feather_df, args.out_prefix, provenance=provenance)
 
+    if provenance.get("mixed"):
+        print(f"  Provenance: MIXED ({len(provenance['values'])} distinct block(s)) "
+              f"— see the provider/model/schema_version columns")
+    else:
+        print(f"  Provenance: provider={provenance.get('provider')!r} "
+              f"model={provenance.get('model')!r} "
+              f"schema_version={provenance.get('schema_version')!r}")
     print(f"  Rows: {len(csv_df)}   Columns: {len(csv_df.columns)}")
     print(f"  Wrote {args.out_prefix}.csv")
     print(f"  Wrote {args.out_prefix}.feather")
@@ -59,7 +68,10 @@ def setup_json2table_parser(subparsers):
             "level code into the schema-defined label. Writes both a CSV (labels "
             "as strings) and an Arrow IPC feather file (ordinal columns as "
             "ordered pandas Categoricals, so R's arrow::read_feather() reads "
-            "them as ordered factors)."
+            "them as ordered factors). Every row also carries the provenance "
+            "of the record it came from — provider, model, schema_version — and "
+            "the feather file repeats the whole block in its Arrow schema "
+            "metadata under 'pxgpt_provenance'."
         ),
     )
     parser.add_argument(
@@ -95,5 +107,12 @@ def setup_json2table_parser(subparsers):
              "'leaf.length') -> desired column name, used verbatim (no unit "
              "re-appended). Applied before --on-collision; see the template "
              "printed by the default 'error' mode.",
+    )
+    parser.add_argument(
+        "--allow-mixed-provenance", action="store_true",
+        help="Flatten even when the records come from more than one run "
+             "(different provider / model / schema_version). Refused by "
+             "default. The per-row provider/model/schema_version columns carry "
+             "the truth, and the feather metadata records the mixture.",
     )
     parser.set_defaults(func=json2table_command)
