@@ -36,7 +36,12 @@ class Config:
     anthropic_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
 
-    # Base URLs for local / OpenAI-compatible providers
+    # Base URLs for local / OpenAI-compatible providers.
+    # DEPRECATED: ollama_* and lmstudio_* are slated for removal in a future
+    # major release -- vLLM is the supported local backend, because it is the
+    # only one that lets you pin the per-image visual token budget
+    # (max_soft_tokens; see ops/local-vllm/ and OpenAICompatProvider).
+    # Still fully functional; no runtime warning is emitted.
     openai_base_url: Optional[str] = None
     ollama_base_url: str = "http://localhost:11434"
     lmstudio_base_url: str = "http://localhost:1234/v1"

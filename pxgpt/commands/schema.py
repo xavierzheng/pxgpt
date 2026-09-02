@@ -1054,7 +1054,18 @@ def setup_schema_parser(subparsers):
     parser.add_argument(
         "--provider",
         choices=["anthropic", "openai", "ollama", "lmstudio", "vllm"],
-        help="LLM provider (overrides config/env)",
+        help=(
+            "LLM provider (overrides config/env). "
+            "Local backends: 'vllm' is the recommended one. It is the only "
+            "local server that lets you pin the per-image visual token "
+            "budget (max_soft_tokens -- see ops/local-vllm/), which is what "
+            "keeps fine-grained traits legible and keeps local runs "
+            "comparable with the cloud ones. "
+            "'ollama' and 'lmstudio' are NOT recommended for phenotyping: "
+            "neither exposes that control, so their image downsampling is "
+            "neither settable nor reportable. Both still work today and are "
+            "slated for removal in a future major release."
+        ),
     )
     parser.add_argument(
         "--image-transport",

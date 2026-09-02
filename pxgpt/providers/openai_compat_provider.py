@@ -54,6 +54,27 @@ class OpenAICompatProvider(BaseProvider):
     - ollama     : ``config.ollama_base_url`` + ``/v1``
     - lmstudio  : ``config.lmstudio_base_url`` (already ends in ``/v1``)
     - vllm      : ``config.vllm_base_url``     (already ends in ``/v1``)
+
+    .. deprecated::
+       **``ollama`` and ``lmstudio`` are slated for removal in a future major
+       release.  vLLM is the supported local backend.**  Both remain fully
+       functional today; nothing here is gated or warned at runtime.
+
+       The reason is visual tokenization, which is the whole ballgame for
+       phenotyping.  vLLM exposes a per-image budget --
+       ``--mm-processor-kwargs '{"max_soft_tokens": N}'``, ladder
+       ``70 / 140 / 280 / 560 / 1120`` -- so the deployment in
+       ``ops/local-vllm/`` pins 1120 to land close to Anthropic Sonnet 5's
+       per-image tokenization and keep local and cloud runs comparable.
+       Ollama and LM Studio expose no equivalent knob: whatever downsampling
+       they apply is not settable, not reportable, and free to change under a
+       backend or model update.  A trait like petiole cross-section or leaf
+       margin lives or dies on that detail, and an uncontrolled backend cannot
+       be held to a measurement.
+
+       This has NOT been measured against either backend -- the objection is
+       the missing control, not a benchmarked loss.  Measuring it is what would
+       overturn the decision.
     """
 
     def __init__(self, config, provider: str):

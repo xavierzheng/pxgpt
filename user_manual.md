@@ -1078,6 +1078,43 @@ Note: GPT-5 / o-series reasoning models only accept the default `temperature`; p
 
 `analyze` and `schema` run on Ollama, LM Studio, and vLLM in addition to the cloud providers. Each is a first-class `--provider` value with its own env vars. **Use a vision-capable model** — both commands send images. (The batch stages are Anthropic/OpenAI-only.)
 
+#### Use vLLM. The other two are supported, not recommended.
+
+All three work today, and nothing warns you at runtime. For phenotyping, only
+**vLLM** is recommended, and the reason is visual tokenization rather than speed
+or convenience.
+
+pxGPT scores fine-grained traits — petiole cross-section shape, leaf margin type,
+colour hue. Whether the model can resolve those at all depends on how many visual
+tokens each photo becomes. vLLM makes that an explicit, recorded setting:
+
+```
+--mm-processor-kwargs '{"max_soft_tokens": N}'      # ladder: 70 140 280 560 1120
+```
+
+The deployment in `ops/local-vllm/` pins **`IMAGE_TOKEN_BUDGET=1120`**, the top of
+the ladder, for two reasons: the traits are fine-grained, and 1120 lands close to
+Anthropic Sonnet 5's per-image tokenization, which is the only thing that makes a
+local run and a cloud run comparable. Measured, one photo: 70 → 84 prompt tokens,
+280 → 284, 1120 → 1131. Left unset, that checkpoint defaults to **280** — a
+quarter of the detail, silently. See
+[`ops/local-vllm/README_vllm.md`](ops/local-vllm/README_vllm.md) §2 for the full
+cost table.
+
+**Ollama and LM Studio expose no equivalent knob.** Whatever downsampling each
+applies is not settable, not reportable, and not guaranteed to survive a backend
+or model update. That is the objection, stated precisely: **this has not been
+benchmarked on either backend** — the problem is not a measured loss of quality,
+it is an uncontrolled variable sitting underneath every trait value you record.
+For a consistency study that compares backends, an unpinnable tokenizer is
+disqualifying on its own.
+
+> **Planned removal.** `ollama` and `lmstudio` are slated for removal in a future
+> major release; `vllm` is the local backend that will be kept. They are not
+> deprecated in code — no warning, no gate, no behaviour change. If someone
+> measures their visual tokenization and it proves controllable and stable, that
+> decision should be revisited.
+
 ```bash
 # Ollama — pxgpt analyze --provider ollama ...
 OLLAMA_BASE_URL=http://localhost:11434
@@ -1115,8 +1152,9 @@ How each is routed: all three speak the OpenAI wire protocol, so pxGPT sends the
 
 For `schema` on these providers the JSON schema is sent as **native structured output** — `response_format {"type": "json_schema", …, "strict": true}`, i.e. real constrained decoding via the server's grammar backend. The schema therefore appears in exactly one place, so the prompt stays byte-identical to what Anthropic and OpenAI receive and the runs remain comparable. The user prompt does **not** need to ask for JSON. If the backend rejects `response_format` the command fails rather than falling back to prompt text, because a silent downgrade produces output that looks fine and is in fact completely unconstrained.
 
-- Ollama: ensure `ollama serve` is running and the model is pulled (`ollama pull gemma3:12b`). Ollama's grammar support is weaker than vLLM's; prefer vLLM for `schema`.
-- vLLM: start it with the scripted deployment below, then set `VLLM_MODEL` to the served name.
+- vLLM (recommended): start it with the scripted deployment below, then set `VLLM_MODEL` to the served name.
+- Ollama: ensure `ollama serve` is running and the model is pulled (`ollama pull gemma3:12b`). Two strikes against it for this workload — its grammar support is weaker than vLLM's, so prefer vLLM for `schema`; and it gives you no control over the per-image visual token budget (above).
+- LM Studio: same visual-token objection as Ollama. Useful for a quick interactive check, not for a run whose numbers you intend to report.
 
 ### Two `.env` files, and they are not interchangeable
 
