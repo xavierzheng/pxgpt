@@ -3,7 +3,11 @@
 from setuptools import setup, find_packages
 
 with open("requirements.txt") as f:
-    requirements = f.read().splitlines()
+    requirements = [
+        line.split("#")[0].strip()
+        for line in f
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
 
 setup(
     name="pxgpt",

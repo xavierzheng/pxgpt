@@ -1,5 +1,7 @@
-anthropic>=0.105.2
-openai>=1.40.0
+anthropic>=0.105.2,<1.0  # SDK v1 removes temperature= from messages.create
+openai>=1.66.0,<=3.0.0  # floor: client.responses.create() lands in 1.66.0.
+                        # ceiling: 3.0.0 is the tested version, and the SDK
+                        # also drives the local ollama/lmstudio/vllm path.
 Pillow>=10.0.0
 pandas>=2.0.0
 pyarrow>=14.0.0
