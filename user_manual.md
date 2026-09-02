@@ -82,7 +82,7 @@ Supported image formats: `.jpg`, `.jpeg`, `.png` (upper-case extensions are fine
 Before the first Stage 3 run, normalize your JSON schema to meet the Anthropic structured-output requirements:
 
 ```bash
-pxgpt normalize-schema --schema prompts/phenotype_schema.json
+pxgpt normalize-schema --schema master_schema.json
 ```
 
 This adds `additionalProperties: false` and an empty `required` array to every object node, and strips the `format` keyword (e.g. `"format": "date"`) which is not supported by the API.
@@ -99,8 +99,8 @@ Submit all plant lines in one batch call. Images are uploaded to the Files API f
 pxgpt describe-batch \
   --input-dir ./images \
   --output descriptions.txt \
-  --system-prompt prompts/phenotyping_system.txt \
-  --prompt prompts/describe_plant.txt \
+  --system-prompt prompts/describe_plant_system.txt \
+  --prompt prompts/describe_plant_mature.txt \
   --manifest file_manifest.json
 ```
 
@@ -260,10 +260,10 @@ and NOT a bare nominal value list like ["green", "purple"] with no definitions.
 All the phenotyping reports are combined into [paste your describing output file name here]. Use this file as your phenotyping reports source.
 ```
 
-**Iterate** until the schema covers all observed variation. Save the final schema to a file (e.g. `prompts/phenotype_schema.json`), then normalize it:
+**Iterate** until the schema covers all observed variation. Save the final schema to a file (e.g. `master_schema.json` — this is yours, and nothing equivalent ships with pxGPT), then normalize it:
 
 ```bash
-pxgpt normalize-schema --schema prompts/phenotype_schema.json
+pxgpt normalize-schema --schema master_schema.json
 ```
 
 ---
@@ -273,11 +273,12 @@ pxgpt normalize-schema --schema prompts/phenotype_schema.json
 Submit all plant lines for structured extraction. The same manifest from Stage 1 is reused, so no images are re-uploaded. With the Files API (default), `--input-dir` is **optional**: omit it and the plant lines plus their `file_id`s are reconstructed straight from `--manifest`, so the image tree need not even be present on disk:
 
 ```bash
+pxgpt shard-schema --master master_schema.json --shard-dir shard_master_schema
+
 pxgpt phenotype-batch \
-  --schema prompts/phenotype_schema.json \
+  --shard-dir shard_master_schema \
   --output phenotypes/ \
-  --system-prompt prompts/phenotyping_system_schema.txt \
-  --prompt prompts/extract_traits.txt \
+  --system-prompt prompts/phenotype_schema_system_mature.txt \
   --manifest file_manifest.json
 ```
 
@@ -943,8 +944,8 @@ for i in $(ls germplasm_images/); do
   pxgpt analyze \
     --input-folder germplasm_images/${i} \
     --output results/${i}_description.txt \
-    --system-prompt prompts/phenotyping_system.txt \
-    --prompt prompts/describe_plant.txt \
+    --system-prompt prompts/describe_plant_system.txt \
+    --prompt prompts/describe_plant_mature.txt \
     --provider anthropic
 done
 ```
@@ -1406,13 +1407,36 @@ See [Example_master_schema.tsv](Example_master_schema.tsv) for the flattened fie
 
 ### Prompt engineering
 
-**Stage 1 system prompt** (`prompts/phenotyping_system.txt`): brief role definition. Keep it stable across runs — it is cached.
+What ships in `prompts/`, and what each file is for:
 
-**Stage 1 user prompt** (`prompts/describe_plant.txt`): ask for all morphological traits you care about. The richer the descriptions, the better the Stage 2 schema synthesis.
+| File | Stage | Role |
+|---|---|---|
+| `describe_plant_system.txt` | 1 | System prompt: role definition. Keep it stable across runs — it is cached. |
+| `describe_plant_mature.txt`, `describe_plant_seedling.txt` | 1 | User prompt, **split by growth stage**. Ask for every morphological trait you care about; the richer the descriptions, the better the Stage 2 synthesis. |
+| `generate_master_schema.txt` | 2 | The prompt you paste into an LLM session to synthesise your master schema from the Stage 1 descriptions. |
+| `phenotype_schema_system_mature.txt`, `phenotype_schema_system_seedling.txt` | 3 | System prompt, passed as `--system-prompt`. See below — this one matters more than it looks. |
+| `phenotype_schema_system_template.txt` | 3 | Starting point for a growth stage not covered above. |
 
-**Stage 3 system prompt** (`prompts/phenotyping_system_schema.txt`): define output requirements. Include "Use NA only for string fields when a value cannot be confidently determined."
+**No master schema and no shard schema ship with pxGPT.** Yours depends on your
+traits, your growth stage and your imaging rig, so a shipped one would be
+actively misleading — every user's differs. Stage 2 is where you produce it.
 
-**Stage 3 user prompt** (`prompts/extract_traits.txt`): instruct the model to fill in every field, use scale references (rockwool cube, ColorChecker, ruler), and return a single valid JSON object.
+**Always pass `--system-prompt` at Stage 3, even though `shard-schema` writes
+one.** The generator emits `shards_system.md` and a run falls back to it
+(`pxgpt/core/sharding.py`, `load_system_prompt` — the CLI override wins).
+Override it anyway, because the shipped Stage 3 system prompts carry two things
+the generated preamble cannot know:
+
+- **The scale reference for your growth stage.** `_mature` states a
+  10 x 10 x 6.5 cm rockwool cube; `_seedling` states 2.5 cm. A quantitative trait
+  is an eyeball estimate against that reference, so the wrong one shifts every
+  measurement.
+- **When to answer `not_assessable`.** Emphasised four times in the mature
+  prompt, and absent from the generated preamble. `shard-schema` injects the
+  *value* into every nominal and ordinal enum, but nothing tells the model when
+  it is the honest answer.
+
+Stage 3 needs no user prompt with `--shard-dir`: each shard carries its own.
 
 ### Upload concurrency
 
@@ -1500,16 +1524,15 @@ Because both stages use the same manifest and the batch API is asynchronous, you
 ```bash
 # Submit Stage 1
 pxgpt describe-batch --input-dir ./images --output descriptions.txt \
-  --system-prompt prompts/phenotyping_system.txt \
-  --prompt prompts/describe_plant.txt
+  --system-prompt prompts/describe_plant_system.txt \
+  --prompt prompts/describe_plant_mature.txt
 # → all images are now uploaded; checkpoint_S1.json saved
 
 # Submit Stage 3 immediately (reuses file_ids from manifest)
 pxgpt phenotype-batch --input-dir ./images \
-  --schema prompts/phenotype_schema.json \
+  --shard-dir shard_master_schema \
   --output phenotypes/ \
-  --system-prompt prompts/phenotyping_system_schema.txt \
-  --prompt prompts/extract_traits.txt
+  --system-prompt prompts/phenotype_schema_system_mature.txt
 # → no uploads; checkpoint_S3.json saved
 
 # Retrieve results for both when done
@@ -1551,8 +1574,8 @@ source activate pxgpt
 pxgpt describe-batch \
   --input-dir /data/images \
   --output /results/descriptions.txt \
-  --system-prompt prompts/phenotyping_system.txt \
-  --prompt prompts/describe_plant.txt
+  --system-prompt prompts/describe_plant_system.txt \
+  --prompt prompts/describe_plant_mature.txt
 
 # Checkpoint file is now in the working directory
 echo "Batch submitted. Checkpoint: checkpoint_*.json"

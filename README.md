@@ -287,9 +287,12 @@ images/
 │   └── ...
 ```
 
-**Step 1 — normalize your schema** (one-time, in-place):
+**Step 1 — normalize your schema** (one-time, in-place). This is **your** master
+schema, synthesised in Stage 2 with [`prompts/generate_master_schema.txt`](prompts/generate_master_schema.txt).
+No master or shard schema ships with pxGPT: yours depends on your traits, your
+growth stage and your imaging setup, so a shipped one would be misleading.
 ```bash
-pxgpt normalize-schema --schema prompts/phenotype_schema.json
+pxgpt normalize-schema --schema master_schema.json
 ```
 
 **Step 2 — Stage 1 descriptions**:
@@ -297,21 +300,31 @@ pxgpt normalize-schema --schema prompts/phenotype_schema.json
 pxgpt describe-batch \
   --input-dir ./images \
   --output descriptions.txt \
-  --system-prompt prompts/phenotyping_system.txt \
-  --prompt prompts/describe_plant.txt
+  --system-prompt prompts/describe_plant_system.txt \
+  --prompt prompts/describe_plant_mature.txt     # or _seedling
 # Prints batch ID and saves checkpoint_<batch_id>.json
 ```
 When results are fetched, `descriptions.txt` contains grouped descriptions, one section per plant line/cultivar.
 
 **Step 3 — Stage 3 structured phenotyping** (can run concurrently with Stage 1; images are already uploaded). With the Files API, `--input-dir` is optional — the plant lines and their `file_id`s are reused straight from `--manifest`:
 ```bash
+pxgpt shard-schema --master master_schema.json --shard-dir shard_master_schema
+
 pxgpt phenotype-batch \
-  --schema prompts/phenotype_schema.json \
+  --shard-dir shard_master_schema \
   --output phenotypes/ \
-  --system-prompt prompts/phenotyping_system_schema.txt \
-  --prompt prompts/extract_traits.txt \
+  --system-prompt prompts/phenotype_schema_system_mature.txt \
   --manifest file_manifest.json
 ```
+
+**Why `--system-prompt` here, when `shard-schema` already writes one.**
+`shard-schema` emits `shards_system.md` and the run uses it unless you override
+it. Override it: the shipped
+`prompts/phenotype_schema_system_{mature,seedling}.txt` carry two things the
+generated preamble cannot know — the **scale reference for your growth stage**
+(a 10 x 10 x 6.5 cm rockwool cube for mature plants, 2.5 cm for seedlings) and
+the emphasis on when to answer `not_assessable`. Both change what the model
+reports. No `--prompt` is needed with `--shard-dir`: each shard carries its own.
 
 **Step 4 — retrieve results** (once the Anthropic batch finishes, usually within a few hours):
 ```bash
@@ -449,16 +462,15 @@ full column-typing rules and a worked collision-resolution example.
 pxgpt analyze \
   --input-folder images/s0001 \
   --output s0001_desc.txt \
-  --system-prompt prompts/phenotyping_system.txt \
-  --prompt prompts/describe_plant.txt
+  --system-prompt prompts/describe_plant_system.txt \
+  --prompt prompts/describe_plant_mature.txt
 
 # Structured JSON (uses native structured output for Anthropic)
 pxgpt schema \
   --input-folder images/s0001 \
   --output s0001.json \
-  --system-prompt prompts/phenotyping_system_schema.txt \
-  --schema prompts/phenotype_schema.json \
-  --prompt prompts/extract_traits.txt
+  --shard-dir shard_master_schema \
+  --system-prompt prompts/phenotype_schema_system_mature.txt
 ```
 
 ---

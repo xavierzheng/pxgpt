@@ -163,8 +163,8 @@ export TIMEOUT=1800                       # a cold prefill takes 75-95 s
 pxgpt analyze --provider vllm --image-transport file \
   --input-folder "$MEDIA_ROOT"/<your plant folder> \
   --output /tmp/one.txt \
-  --system-prompt prompts/phenotyping_system.txt \
-  --prompt prompts/describe_plant.txt
+  --system-prompt prompts/describe_plant_system.txt \
+  --prompt prompts/describe_plant_mature.txt
 ```
 
 Skip the `set -a; source` line and you must type the literals instead — the
