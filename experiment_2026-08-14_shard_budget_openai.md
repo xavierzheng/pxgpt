@@ -21,9 +21,9 @@ whether packing more traits into one request degrades the scoring.
 
 ## Answer
 
-**Budget 80 (4 shards) costs about 1.7 traits of 49 for a 2.4× saving, and that
-penalty is statistically detectable. Budget 320 (1 shard) is much worse and should
-not be used.**
+**Budget 80 (4 shards) costs about 1.7 traits of the pooled 49 — 1.9 of the 45
+categorical traits — for a 2.43× saving, and that penalty is statistically
+detectable. Budget 320 (1 shard) is much worse and should not be used.**
 
 Two experiments, in this order. The second supersedes the first wherever they
 overlap:
@@ -31,7 +31,7 @@ overlap:
 | experiment | plants | runs per config | scope |
 |---|---|---|---|
 | **A** (below) | 1 (`s0001`) | 2 | budgets 40 / 80 / 320 + Anthropic reference |
-| **B** ([below](#follow-up-budget-80-on-10-plants)) | 10 | 2 | budgets 40 / 80 only |
+| **B** ([below](#experiment-b)) | 10 | 2 | budgets 40 / 80 only |
 
 Headline numbers, disagreeing traits out of 49:
 
@@ -46,26 +46,39 @@ Headline numbers, disagreeing traits out of 49:
 **The single-plant run underestimated the noise floor.** `s0001` happened to be a
 quiet plant; across 10 plants a configuration disagrees with *itself* on 7 of 49
 traits on average, not 5. That reframes everything: budget 80's excess over noise
-is **+1.68 traits** (paired t(9) = 3.03, p = 0.014, 95% CI +0.42 … +2.93), which is
-real but modest — **re-running budget 40 already changes ~7 traits; switching to
-budget 80 changes ~8.2.**
+is **+1.68 traits of the pooled 49** (paired t(9) = 3.03, p = 0.014,
+95% CI +0.42 … +2.93), which is real but modest — **re-running budget 40 already
+changes ~7 traits; switching to budget 80 changes ~8.2.** Over the 45 categorical
+traits alone the same test gives **+1.88** (t(9) = 3.23, p = 0.010,
+95% CI +0.56 … +3.19) — see the subset table below, and quote the subset with the
+number.
 
 **Split the 4 quantitative traits out and the picture is cleaner.** They are
 eyeballed against a nearby ruler / colorchecker over several camera angles, so
 their inconsistency is expected and accepted; pooling them into an agreement rate
 muddies what that rate means:
 
-| trait subset | b40 noise | b80 noise | b40 vs b80 | excess | p |
-|---|---|---|---|---|---|
-| all 49 | 7.00 | 6.10 | 8.22 | +1.68 | 0.0142 |
-| **categorical (45)** | **4.60** (10.2%) | **3.50** (7.8%) | **5.92** (13.2%) | **+1.88** | **0.0103** |
-| quantitative (4) | 2.40 (60%) | 2.60 (65%) | 2.30 (57%) | −0.20 | 0.18 (ns) |
+| trait subset | b40 noise | b80 noise | b40 vs b80 | excess | 95% CI | t(9) | p | plants > own noise |
+|---|---|---|---|---|---|---|---|---|
+| all 49 (pooled) | 7.00 | 6.10 | 8.22 | +1.68 | +0.42 … +2.93 | 3.03 | 0.0143 | 7 of 10 |
+| **categorical (45)** | **4.60** (10.2%) | **3.50** (7.8%) | **5.92** (13.2%) | **+1.88** | **+0.56 … +3.19** | **3.23** | **0.0104** | **8 of 10** |
+| quantitative (4) | 2.40 | 2.60 | 2.30 | −0.20 | −0.51 … +0.11 | −1.44 | 0.18 (ns) | 2 of 10 |
 
-Quantitative traits carry **no budget signal at all** — they disagree ~60% of the
-time *within* one configuration and budget 80 is no worse than a re-run. Excluding
-them does not rescue budget 80: the categorical penalty is slightly *clearer*
-(+1.88 of 45, p = 0.010, 8 of 10 plants above their own noise). Categorical
-reproducibility is ~90%, better than the pooled figure implied.
+**Every excess figure in this document belongs to one of these three rows.** The
+pooled row and the categorical row are both correct and they are not
+interchangeable — always state which subset a number comes from.
+
+Quantitative traits carry **no budget signal at all**, and budget 80 is no worse
+than a re-run. Their exact-match rate (2.40 of 4 changing between two runs of the
+same configuration) is an **artifact of counting a continuous measurement as a
+category**, not a scoring failure — read their repeatability as a CV instead
+([below](#quantitative-cv)): 3% on leaf count, 8% on height, 9% on blade length,
+28% on canopy spread.
+
+Excluding them does not rescue budget 80: the categorical penalty is slightly
+*clearer* (+1.88 of 45, p = 0.010, 8 of 10 plants above their own noise).
+Categorical reproducibility is **89.8% raw agreement, Gwet's AC1 0.88** — better
+than the 86% the pooled 49-trait count implies.
 
 Per-trait rationale length — the chain-of-thought the schema deliberately forces
 before each value — shortens robustly: 180.6 → 152.9 characters (−15%, n = 490
@@ -134,16 +147,26 @@ budget is acceptable but hand-writing a big schema is not.
 OpenAI strict-mode caps for reference: 5,000 object properties, 1,000 enum values,
 depth 10. Even the single-shard schema is an order of magnitude inside them.
 
-## Cost
+## Cost — `s0001` only (15 images)
 
-| config | input tokens / plant | output tokens | $/plant | 142 plants | 142 plants via `--dispatch batch` |
-|---|---|---|---|---|---|
-| budget 40 (10 shards) | **308,397** | 2,583 / 2,671 | $0.065 | **$9.21** | $4.61 |
-| budget 80 (4 shards) | **127,691** | 2,311 / 2,337 | $0.028 | **$4.02** | $2.01 |
-| budget 320 (1 shard) | **37,355** | 1,881 / 2,001 | $0.010 | **$1.39** | $0.70 |
+⚠ **These are one plant's tokens. Do not extrapolate them to the collection** —
+see [experiment B's cost table](#cost-10-plants), which is the figure to quote.
+
+| config | input tokens / plant | output tokens | $/plant |
+|---|---|---|---|
+| budget 40 (10 shards) | **308,397** | 2,583 / 2,671 | $0.065 |
+| budget 80 (4 shards) | **127,691** | 2,311 / 2,337 | $0.028 |
+| budget 320 (1 shard) | **37,355** | 1,881 / 2,001 | $0.010 |
 
 All input/output figures are measured. Pricing at `gpt-5.6-luna` $0.20/M input,
-$1.20/M output; the batch column applies the Batch API's documented 50% discount.
+$1.20/M output.
+
+`s0001` carries **15 images**, against a 19.9-image mean over experiment B's ten
+plants and a **19.6-image mean over the full 142-plant collection**
+(2,784 images / 142 plants, counted in `02_mature_v1/images/`). Because input
+scales with images, these per-plant figures under-state a whole-collection cost by
+about a quarter: budget 40 measures **403,506** input tokens per plant over ten
+plants, not 308,397.
 
 Input scales almost exactly with shard count because the ~30 k-token image payload
 is repeated per request — that repetition, not the schema, is the bill.
@@ -281,6 +304,8 @@ present`) — changes of kind, not degree.
 - Only `s0001` was used (15 images, a complete set). Plants with fewer or poorer
   images may behave differently.
 
+<a id="experiment-b"></a>
+
 # Experiment B — budget 80 on 10 plants
 
 Experiment A's single plant could not separate a budget effect from run-to-run
@@ -307,8 +332,8 @@ Four `--dispatch batch` submissions, 280 requests total, **0 failures**:
 
 | run | shards | requests | JSONL | input tokens | output tokens |
 |---|---|---|---|---|---|
-| `b40-r1` | 10 | 100 | 1.5 MB | 4,035,060 | 26,641 |
-| `b40-r2` | 10 | 100 | 1.5 MB | 4,035,060 | 26,380 |
+| `b40-r1` | 10 | 100 | 969,690 B | 4,035,060 | 26,641 |
+| `b40-r2` | 10 | 100 | 969,690 B | 4,035,060 | 26,380 |
 | `b80-r1` | 4 | 40 | 597,932 B | 1,657,346 | 23,084 |
 | `b80-r2` | 4 | 40 | 597,932 B | 1,657,346 | 23,034 |
 
@@ -316,6 +341,27 @@ The two runs of each configuration consumed **exactly** the same input tokens,
 which confirms they are two samples of one configuration rather than two different
 requests. All 199 images were uploaded once into a shared manifest and reused by
 `file_id` across all four runs.
+
+<a id="cost-10-plants"></a>
+
+## Result — cost, measured over 10 plants
+
+**This is the cost table to quote.** It replaces experiment A's single-plant
+figures for any collection-level estimate.
+
+| config | input tok / plant | $/plant | 142 plants | 142 plants, `--dispatch batch` |
+|---|---|---|---|---|
+| budget 40 | **403,506** | $0.0839 | **$11.91** | $5.96 |
+| budget 80 | **165,735** | $0.0359 | **$5.10** | $2.55 |
+
+Measured over the 10 plants above at `gpt-5.6-luna` $0.20/M input, $1.20/M output;
+the batch column applies the Batch API's documented 50% discount. Input ratio
+b40 / b80 = **2.43×**.
+
+The extrapolation to 142 plants is sound because input scales with images per
+plant, and these 10 plants average **19.9 images** against **19.6 for the whole
+142-plant collection** (2,784 images / 142 plants). Experiment A's `s0001` has only
+15, which is why its 308,397 tokens per plant under-state the collection by ~24%.
 
 ## Validity check: the two shard sets differ ONLY in partitioning
 
@@ -357,23 +403,43 @@ Paired per plant (each plant's cross-config divergence minus its own noise floor
 so plants that are simply unstable cannot create the effect:
 
 ```
+ALL 49 TRAITS (pooled)
 per-plant excess: -0.25, -0.50, +4.00, +4.00, +1.25, +3.25, +1.75, +2.50, +1.25, -0.50
 n = 10   mean = +1.68 traits   sd = 1.75   se = 0.55
 t(9) = 3.03   two-sided p = 0.0143   95% CI  +0.42 … +2.93
 7 of 10 plants diverged more than their own noise
+
+CATEGORICAL ONLY (45 traits) -- the comparison that speaks to scoring
+per-plant excess: +0.50, -0.50, +4.50, +4.50, +1.50, +3.50, +1.50, +2.75, +0.50,  0.00
+n = 10   mean = +1.88 traits   sd = 1.84   se = 0.58
+t(9) = 3.23   two-sided p = 0.0104   95% CI  +0.56 … +3.19
+8 of 10 plants diverged more than their own noise
 ```
 
+Both blocks come from `analysis/compare_configs.py`; the categorical one is the
+number [`HANDOFF.md`](HANDOFF.md) and the lab notebook quote. Cite the subset with
+the number — the pooled +1.68 / CI +0.42 … +2.93 / "7 of 10" and the categorical
++1.88 / CI +0.56 … +3.19 / "8 of 10" are different measurements, not a
+disagreement.
+
 So yes — detectable, and small. The confidence interval spans "half a trait" to
-"three traits" out of 49. Image count does not predict divergence
+"three traits". Image count does not predict divergence
 (Pearson r = +0.03, n = 10).
 
 ### The most important number is the noise floor itself
 
-A configuration disagrees with **itself** on 7 of 49 traits between two runs —
-about 86% run-to-run reproducibility at `TEMPERATURE=0.5`. That is a property of
-the current production setup, not of budget 80, and it is larger than the entire
-budget effect. Any downstream analysis that treats a single Stage 3 run as a fixed
-measurement is absorbing ~13% per-trait instability already.
+A configuration disagrees with **itself** on 7 of 49 traits between two runs at
+`TEMPERATURE=0.5`. Stated as a rate that is 86%, but **the pooled figure is the
+wrong one to quote**: it drags the 4 ruler-eyeballed quantitative traits into a
+count of categorical agreement. On the 45 categorical traits the same two runs give
+**89.8% raw agreement and Gwet's AC1 0.88** (`analysis/reproducibility_b40.txt`) —
+so the honest headline is **~90% categorical run-to-run reproducibility, AC1 0.88**,
+with the quantitative traits reported separately as CVs.
+
+Either way this is a property of the current production setup, not of budget 80,
+and it is larger than the entire budget effect. Any downstream analysis that treats
+a single Stage 3 run as a fixed measurement is absorbing ~10% per-trait categorical
+instability already.
 
 ## Result — rationale length
 
@@ -413,18 +479,32 @@ shifted a specific handful of traits; across ten it does not concentrate anywher
 and the single apparent concentration is a ruler-eyeballed measurement. Budget 80
 is diffusely slightly less stable, not biased on particular traits.
 
+<a id="quantitative-cv"></a>
+
 ## Quantitative traits, in their own units
 
 Their run-to-run inconsistency is expected and accepted (rough measurement against
 a nearby ruler / colorchecker, from several camera angles), so they are reported as
-magnitudes rather than folded into an agreement count:
+magnitudes rather than folded into an agreement count.
 
-| trait | unit | mean \|b40r1 − b40r2\| | mean \|b40 − b80\| |
-|---|---|---|---|
-| `plant_height` | cm | 1.00 | 0.70 |
-| `plant_canopy_spread` | cm | **4.40** | 2.05 |
-| `plant_true_leaf_number` | count | 0.30 | 0.80 |
-| `leaf_blade_length` | cm | 0.85 | 0.75 |
+**Use the CV. The exact-match rate is an artifact.** Counting a continuous
+measurement as "agreeing" only when two runs print the identical number makes 10.0
+vs 10.5 cm a full disagreement, which is why these four traits show a ~60%
+"disagreement" rate *within a single configuration*. That number describes the
+metric, not the model. The repeatability figure that means something is the
+coefficient of variation — mean |run 1 − run 2| over the trait mean, budget 40,
+10 plants:
+
+| trait | unit | mean | mean \|b40r1 − b40r2\| | **CV** | mean \|b40 − b80\| |
+|---|---|---|---|---|---|
+| `plant_true_leaf_number` | count | 10.1 | 0.30 | **3%** | 0.80 |
+| `plant_height` | cm | 12.2 | 1.00 | **8%** | 0.70 |
+| `leaf_blade_length` | cm | 9.5 | 0.85 | **9%** | 0.75 |
+| `plant_canopy_spread` | cm | 15.7 | **4.40** | **28%** | 2.05 |
+
+Read this way three of the four are repeatable to within 10%, and only
+`plant_canopy_spread` is genuinely unusable at ±28%. The 60% exact-match figure
+would have condemned all four equally.
 
 For three of the four, the *within*-configuration spread is as large as or larger
 than the between-budget difference. Budget choice is not what determines these
@@ -464,9 +544,10 @@ values.
   traits are affected — 23 traits with 1–4 hits each is too sparse for that.
 - **Budgets 160 and 320 were only compile-checked on 10 plants, not scored.** The
   320 result is n = 1.
-- Cost figures scale with images per plant (15–26 here, mean 19.9). A collection
-  with more images per plant pays proportionally more, and the budget saving grows
-  in absolute terms.
+- Cost figures scale with images per plant (15–26 here, mean 19.9; the full
+  142-plant collection means 19.6, so these 10 plants extrapolate cleanly). A
+  collection with more images per plant pays proportionally more, and the budget
+  saving grows in absolute terms.
 - All runs used `STAGE3_EFFORT` off (`reasoning.effort: "none"`) and
   `TEMPERATURE=0.5`. Reasoning-enabled runs may behave differently — untested.
 

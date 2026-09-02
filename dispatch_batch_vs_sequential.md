@@ -190,8 +190,10 @@ the OpenAI counterpart. It consumes the **same shard set**, writes the same
 `{line_id}.gaps.json`, so one shard set can be scored by both providers and the
 results compared trait-for-trait.
 
-Every number in this section was measured against `gpt-5.6-luna` on one real
-plant (s0001, 15 images) with the frozen 10-shard set, through the Files API.
+Every number in this section was measured against `gpt-5.6-luna` through the Files
+API. The dispatch and caching measurements use one real plant (s0001, 15 images)
+with the frozen 10-shard set; the shard-budget cost table below adds the measured
+10-plant means, which are the ones to extrapolate from.
 
 ## Bottom line (OpenAI)
 
@@ -263,21 +265,27 @@ object properties, 1,000 enum values and depth 10, and the whole 49-trait schema
 in one shard measures 159 / 165 / 4. Every shard set below was accepted by the
 live API, including the single-shard one:
 
-| `--shard-budget` | shards | largest shard (props / enum values / depth) | OpenAI accepts | input tokens per plant |
-|---|---|---|---|---|
-| 40 (current) | 10 | 25 / 26 / 4 | yes | **308,397** (measured) |
-| 80 | 4 | 46 / 52 / 4 | yes | ~125 k |
-| 160 | 2 | 93 / 93 / 4 | yes | ~65 k |
-| 320 | 1 | 159 / 165 / 4 | yes | ~35 k |
+| `--shard-budget` | shards | largest shard (props / enum values / depth) | OpenAI accepts | input tok/plant, `s0001` (15 img) | input tok/plant, 10-plant mean (19.9 img) |
+|---|---|---|---|---|---|
+| 40 (current) | 10 | 25 / 26 / 4 | yes | **308,397** (measured) | **403,506** (measured) |
+| 80 | 4 | 46 / 52 / 4 | yes | **127,691** (measured) | **165,735** (measured) |
+| 160 | 2 | 93 / 93 / 4 | yes | ~65 k | ~85 k |
+| 320 | 1 | 159 / 165 / 4 | yes | **37,355** (measured) | ~49 k |
 
-Only the first row is measured; the others extrapolate from the measured
-~30 k-token image payload that every request repeats, plus a shard-prompt total
-that stays roughly constant however it is split. Since the images are the payload
-being repeated, **halving the shard count nearly halves the input cost**. At
-`gpt-5.6-luna` input pricing, 142 plants sequentially: ~$8.80 at budget 40 versus
-~$1.00 at budget 320, and about half that again through `--dispatch batch`.
-Output tokens (~2,600 per plant) barely move, because the same 49 rationales get
-written either way.
+Budgets 40 and 80 are measured in both columns; 320 was scored on `s0001` only and
+160 was never scored, so their right-hand entries scale the `s0001` measurement by
+the image-count ratio. Since the ~30 k-token image payload is what every request
+repeats, **halving the shard count nearly halves the input cost**.
+
+**Quote the 10-plant column for any collection estimate.** `s0001` carries 15
+images against a 19.6-image mean over the whole 142-plant collection
+(2,784 images / 142 plants), so its tokens under-state a full run by about a
+quarter. Measured over 10 plants at `gpt-5.6-luna` pricing, 142 plants
+sequentially cost **$11.91 at budget 40** versus **$5.10 at budget 80** — $5.96 and
+$2.55 respectively through `--dispatch batch`. Budget 320 extrapolates to ~$1.7
+(n = 1 plant), but see the quality verdict below: do not use it. Output tokens
+(~2,600 per plant) barely move, because the same 49 rationales get written either
+way.
 
 **All four shard sets keep every trait and every `not_assessable`.** This matters:
 `pxgpt shard-schema` *adds* `not_assessable` to every nominal and ordinal enum —
@@ -298,8 +306,12 @@ Before raising it, weigh three things:
   plants, two runs per configuration
   ([`experiment_2026-08-14_shard_budget_openai.md`](experiment_2026-08-14_shard_budget_openai.md)):
   a configuration disagrees with **itself** on 7.0 of 49 traits between runs, and
-  budget 80 disagrees with budget 40 on 8.2 — an excess of **+1.68 traits**
-  (paired t(9) = 3.03, p = 0.014). Real, and smaller than a re-run. Per-trait
+  budget 80 disagrees with budget 40 on 8.2 — an excess of **+1.68 traits over all
+  49 pooled** (paired t(9) = 3.03, p = 0.014, 95% CI +0.42 … +2.93). Over the 45
+  **categorical** traits alone — the subset that speaks to scoring, since the 4
+  quantitative traits are ruler estimates — the excess is **+1.88** (t(9) = 3.23,
+  p = 0.010, 95% CI +0.56 … +3.19), and categorical run-to-run reproducibility is
+  **89.8%, Gwet's AC1 0.88**. Real, and smaller than a re-run. Per-trait
   rationale length drops 15% (180.6 → 152.9 chars), which matters because
   `trait_object()` puts `rationale` before `value` precisely to force
   chain-of-thought. Budget 80 is a fair trade for 2.43× less input cost; budget

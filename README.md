@@ -10,6 +10,7 @@
 - **Native structured output** (Stage 3): schema passed directly as `output_config.format`; no regex or tag parsing
 - **Schema normalizer**: one command adds `additionalProperties: false` and `required` arrays to every object in your schema
 - **JSON-to-table flattening**: one command turns the per-plant Stage 3 JSON output into a wide, typed CSV + feather table (ordinal traits reconstructed from level code to label, as an ordered factor in R)
+- **Record-level provenance**: every merged Stage 3 record carries a `_provenance` block (provider, model, schema name/version, pxGPT version, run id, timestamp), and `json-to-table` writes `provider`/`model`/`schema_version` columns per row plus the whole block into the feather file's Arrow metadata. A result directory mixing providers, models or schema versions is refused unless you pass `--allow-mixed-provenance`
 - **Multiple providers**: Anthropic, OpenAI, Ollama, LM Studio, vLLM
 - **Prompt caching**: automatic for Anthropic (reduces costs on repeated system prompts)
 - **Robust error handling**: exponential backoff, per-request failure isolation, crash-safe manifest
@@ -96,6 +97,10 @@ UPLOAD_CONCURRENCY=10
 # Use the Files API (default true). Set false — or pass --no-files-api — to
 # embed images inline as base64 instead of uploading once and reusing file_ids.
 USE_FILES_API=true
+
+# Retry / backoff knobs behind "robust error handling" above
+MAX_RETRIES=3         # retries after the first attempt (so 4 tries in total)
+RATE_LIMIT_SLEEP=60   # flat seconds to wait after a rate-limit error
 ```
 
 ### Local / self-hosted providers (analyze + schema)
@@ -364,6 +369,14 @@ schema label — a plain string in the CSV, an **ordered** `pandas.Categorical`
 in the feather file so `arrow::read_feather()` reads them as ordered factors
 in R. Missing traits and `not_assessable` become real NA everywhere.
 
+Right after `cultivar_id` every row also carries `provider`, `model` and
+`schema_version`, read from that record's `_provenance` block, and the feather
+file repeats the full block as Arrow schema metadata under `pxgpt_provenance`.
+If the `--result-dir` holds records that disagree on `(provider, model,
+schema_version)`, `json-to-table` writes nothing and tells you which records
+differ — split the directory, or pass `--allow-mixed-provenance` when the
+mixture is deliberate.
+
 If two traits ever compute the same column name (e.g. the same leaf key
 assessed under two organ groups), `json-to-table` refuses to silently drop
 one — it writes no files and prints a `--rename-map` fill-in template by
@@ -406,7 +419,7 @@ pxgpt schema \
 | `pxgpt extract-report` | Extract `<report>` from `<think>`/`<report>` output (single or grouped); back-compat for non-native reasoning |
 | `pxgpt normalize-schema` | Add `additionalProperties: false` + `required` to all objects in a schema |
 | `pxgpt shard-schema` | Split a master schema into compilable Stage 3 shards (+ per-shard prompts) for `phenotype-batch --shard-dir` / `phenotype-batch-openai --shard-dir` |
-| `pxgpt json-to-table` | Flatten Stage 3 per-plant JSON results into a wide, typed CSV + feather table (with column-name collision detection/resolution) |
+| `pxgpt json-to-table` | Flatten Stage 3 per-plant JSON results into a wide, typed CSV + feather table, with per-row provenance columns (column-name collision detection/resolution; `--allow-mixed-provenance` to combine mismatched runs) |
 | `pxgpt analyze` | Single-folder text description (sync, all providers) |
 | `pxgpt schema` | Single-folder structured JSON (sync, all providers) |
 

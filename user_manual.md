@@ -1040,6 +1040,13 @@ STAGE3_MAX_TOKENS=16384
 # batch request instead of uploading once and reusing file_ids. The
 # --no-files-api flag on describe-batch / phenotype-batch overrides this.
 USE_FILES_API=true
+
+# Retry / backoff (sync + sequential paths, both providers). A connection error
+# or a 502/503/504 is retried with exponential backoff (2^attempt + jitter); a
+# rate-limit error instead waits a flat RATE_LIMIT_SLEEP seconds. Anything else
+# (a 400, for instance) is raised immediately, never retried.
+MAX_RETRIES=3         # retries after the first attempt -> 4 tries in total
+RATE_LIMIT_SLEEP=60
 ```
 
 **Files API vs. inline base64**: with the Files API (default) each image is uploaded once and referenced by `file_id` across Stage 1 and Stage 3 — best for large collections re-used across stages. With `USE_FILES_API=false` (or `--no-files-api`) images are embedded as base64 in each request: no upload step or manifest, useful when the Files API beta is unavailable or for one-off runs, at the cost of re-sending image bytes on every request.
