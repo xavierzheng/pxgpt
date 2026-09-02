@@ -31,7 +31,7 @@ overlap:
 | experiment | plants | runs per config | scope |
 |---|---|---|---|
 | **A** (below) | 1 (`s0001`) | 2 | budgets 40 / 80 / 320 + Anthropic reference |
-| **B** ([below](#experiment-b)) | 10 | 2 | budgets 40 / 80 only |
+| **B** ([below](#experiment-b-budget-80-on-10-plants)) | 10 | 2 | budgets 40 / 80 only |
 
 Headline numbers, disagreeing traits out of 49:
 
@@ -72,7 +72,7 @@ Quantitative traits carry **no budget signal at all**, and budget 80 is no worse
 than a re-run. Their exact-match rate (2.40 of 4 changing between two runs of the
 same configuration) is an **artifact of counting a continuous measurement as a
 category**, not a scoring failure — read their repeatability as a CV instead
-([below](#quantitative-cv)): 3% on leaf count, 8% on height, 9% on blade length,
+([below](#quantitative-traits-in-their-own-units)): 3% on leaf count, 8% on height, 9% on blade length,
 28% on canopy spread.
 
 Excluding them does not rescue budget 80: the categorical penalty is slightly
@@ -150,7 +150,7 @@ depth 10. Even the single-shard schema is an order of magnitude inside them.
 ## Cost — `s0001` only (15 images)
 
 ⚠ **These are one plant's tokens. Do not extrapolate them to the collection** —
-see [experiment B's cost table](#cost-10-plants), which is the figure to quote.
+see [experiment B's cost table](#result-cost-measured-over-10-plants), which is the figure to quote.
 
 | config | input tokens / plant | output tokens | $/plant |
 |---|---|---|---|
@@ -304,9 +304,7 @@ present`) — changes of kind, not degree.
 - Only `s0001` was used (15 images, a complete set). Plants with fewer or poorer
   images may behave differently.
 
-<a id="experiment-b"></a>
-
-# Experiment B — budget 80 on 10 plants
+# Experiment B: budget 80 on 10 plants
 
 Experiment A's single plant could not separate a budget effect from run-to-run
 variation with any confidence, and its noise estimate turned out to be low. B
@@ -342,9 +340,7 @@ which confirms they are two samples of one configuration rather than two differe
 requests. All 199 images were uploaded once into a shared manifest and reused by
 `file_id` across all four runs.
 
-<a id="cost-10-plants"></a>
-
-## Result — cost, measured over 10 plants
+## Result: cost measured over 10 plants
 
 **This is the cost table to quote.** It replaces experiment A's single-plant
 figures for any collection-level estimate.
@@ -478,8 +474,6 @@ This corrects experiment A twice over. From one plant it looked as though budget
 shifted a specific handful of traits; across ten it does not concentrate anywhere,
 and the single apparent concentration is a ruler-eyeballed measurement. Budget 80
 is diffusely slightly less stable, not biased on particular traits.
-
-<a id="quantitative-cv"></a>
 
 ## Quantitative traits, in their own units
 

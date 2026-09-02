@@ -7,22 +7,132 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-[[ -f .env ]] || { echo "No .env -- run: cp env.example .env" >&2; exit 1; }
+# --- .env: load it, and say something useful when it is wrong ---------------
+if [[ ! -f .env ]]; then
+  cat >&2 <<'MSG'
+No .env in ops/local-vllm/. Set it up with:
+
+    cp env.example .env
+    $EDITOR .env        # set MEDIA_ROOT -- the only line you must edit
+    export HF_TOKEN=hf_...
+
+MSG
+  exit 1
+fi
+
+env_help() {
+  cat >&2 <<'MSG'
+
+Every line in .env must be NAME=value. Quote any value containing a space or
+any of  < > | & ( ) ; # *  -- a leftover placeholder is the usual cause, since
+bash reads < as a redirection:
+
+    MEDIA_ROOT=<FILL>              wrong -- syntax error
+    MEDIA_ROOT=/home/me/my pics    wrong -- unquoted space
+    MEDIA_ROOT=/home/me/pxgpt      right
+    MEDIA_ROOT="/home/me/my pics"  right
+
+Compare yours against env.example.
+MSG
+}
+
+# 1. Shape: anything that is not a comment, blank, or NAME=value.
+env_shape="$(grep -nvE '^[[:space:]]*(#|$)|^[A-Za-z_][A-Za-z0-9_]*=' .env || true)"
+if [[ -n "$env_shape" ]]; then
+  echo "These lines in .env are not NAME=value:" >&2
+  printf '    %s\n' "$env_shape" >&2
+  env_help
+  exit 1
+fi
+
+# 2. Load it in a subshell first, so a bad value reports itself here instead of
+#    killing this script with a bare bash error and a line number. Catches both
+#    syntax errors and the unquoted-space case, which is syntactically valid and
+#    only fails when it runs.
+if ! env_err="$(bash -c 'set -e; source .env' 2>&1 >/dev/null)"; then
+  echo ".env could not be loaded. bash reports:" >&2
+  printf '    %s\n' "$env_err" >&2
+  env_help
+  exit 1
+fi
 # shellcheck disable=SC1091
 source .env
+
+# MEDIA_ROOT is the only value a user has to supply by hand.
+if [[ -z "${MEDIA_ROOT:-}" ]]; then
+  cat >&2 <<'MSG'
+MEDIA_ROOT is empty in .env. It is the one value you must set.
+
+It is the absolute path to your photo root -- bind-mounted read-only at the
+SAME path inside the container and passed as --allowed-local-media-path, so the
+file:// URLs pxgpt sends resolve on both sides. It is a PREFIX, so point it at
+the project root and every dataset under it resolves:
+
+    MEDIA_ROOT=/home/xavier/project/pxgpt
+
+MSG
+  exit 1
+fi
+if [[ ! -d "$MEDIA_ROOT" ]]; then
+  echo "MEDIA_ROOT is not a directory: $MEDIA_ROOT" >&2
+  echo "It must be an absolute path that exists on this machine (no ~)." >&2
+  exit 1
+fi
 
 RUNBOOK="$PWD/RUNBOOK.md"
 PROBE="${CONTAINER_NAME}-probe"
 
+# Ordered best-tested first, so a fresh setup does not spend a 20+ GB download
+# on a candidate this repo already knows fails. See README_vllm.md
+# "The version constraint" for the tested verdict on each.
 CANDIDATES=(
-  "vllm/vllm-openai:gemma4-cu130"
-  "nvcr.io/nvidia/vllm:26.07-py3"   # latest NGC tag as of 2026-08-12
-  "vllm/vllm-openai:cu130-nightly"
+  "nvcr.io/nvidia/vllm:26.07-py3"    # vLLM 0.24.0 -- the pinned choice; loads it
+  "vllm/vllm-openai:cu130-nightly"   # 0.19.2rc1  -- loads it, but a floating tag
+  "vllm/vllm-openai:gemma4-cu130"    # 0.19.1     -- KNOWN BAD: KeyError on the
+                                     # per-expert NVFP4 scales. Kept last only
+                                     # because it is a floating tag that may be
+                                     # rebuilt; do not expect it to work.
 )
 
 if [[ -z "${HF_TOKEN:-}" ]]; then
-  echo "HF_TOKEN is not set. Export it before running (the repo may be gated)." >&2
+  cat >&2 <<'MSG'
+HF_TOKEN is not set. Export it in your shell before running this:
+
+    export HF_TOKEN=hf_...
+
+Get one at https://huggingface.co/settings/tokens (read access is enough).
+It is needed because the weights repo may be gated. Do NOT put it in .env --
+that file is for server settings and this is a credential.
+MSG
   exit 1
+fi
+
+# Validate the token before spending 17 GB of download on it. A rejected token
+# otherwise surfaces partway through `hf download`, which looks like a network
+# fault rather than a credential one. Offline is not an error here -- only an
+# explicit rejection is.
+if command -v curl >/dev/null 2>&1; then
+  http="$(curl -s -o /dev/null -w '%{http_code}' -m 15 \
+          -H "Authorization: Bearer $HF_TOKEN" \
+          https://huggingface.co/api/whoami-v2 2>/dev/null || echo 000)"
+  case "$http" in
+    200) echo "==> HF_TOKEN accepted" ;;
+    401|403)
+      cat >&2 <<MSG
+HF_TOKEN was rejected by Hugging Face (HTTP $http).
+
+The token is set but not valid -- expired, revoked, or mistyped. Create a fresh
+one at https://huggingface.co/settings/tokens (read access is enough) and
+re-export it:
+
+    export HF_TOKEN=hf_...
+
+Stopping now rather than failing partway through a 17 GB download.
+MSG
+      exit 1 ;;
+    000) echo "==> Could not reach huggingface.co to check the token; continuing." ;;
+    *)   echo "==> Unexpected HTTP $http checking the token; continuing." ;;
+  esac
 fi
 
 # --- weights ---------------------------------------------------------------

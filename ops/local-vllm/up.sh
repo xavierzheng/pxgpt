@@ -3,16 +3,87 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-[[ -f .env ]] || { echo "No .env -- run: cp env.example .env && ./pull.sh" >&2; exit 1; }
+# --- .env: load it, and say something useful when it is wrong ---------------
+if [[ ! -f .env ]]; then
+  cat >&2 <<'MSG'
+No .env in ops/local-vllm/. Set it up with:
+
+    cp env.example .env
+    $EDITOR .env        # set MEDIA_ROOT -- the only line you must edit
+    export HF_TOKEN=hf_...
+
+MSG
+  exit 1
+fi
+
+env_help() {
+  cat >&2 <<'MSG'
+
+Every line in .env must be NAME=value. Quote any value containing a space or
+any of  < > | & ( ) ; # *  -- a leftover placeholder is the usual cause, since
+bash reads < as a redirection:
+
+    MEDIA_ROOT=<FILL>              wrong -- syntax error
+    MEDIA_ROOT=/home/me/my pics    wrong -- unquoted space
+    MEDIA_ROOT=/home/me/pxgpt      right
+    MEDIA_ROOT="/home/me/my pics"  right
+
+Compare yours against env.example.
+MSG
+}
+
+# 1. Shape: anything that is not a comment, blank, or NAME=value.
+env_shape="$(grep -nvE '^[[:space:]]*(#|$)|^[A-Za-z_][A-Za-z0-9_]*=' .env || true)"
+if [[ -n "$env_shape" ]]; then
+  echo "These lines in .env are not NAME=value:" >&2
+  printf '    %s\n' "$env_shape" >&2
+  env_help
+  exit 1
+fi
+
+# 2. Load it in a subshell first, so a bad value reports itself here instead of
+#    killing this script with a bare bash error and a line number. Catches both
+#    syntax errors and the unquoted-space case, which is syntactically valid and
+#    only fails when it runs.
+if ! env_err="$(bash -c 'set -e; source .env' 2>&1 >/dev/null)"; then
+  echo ".env could not be loaded. bash reports:" >&2
+  printf '    %s\n' "$env_err" >&2
+  env_help
+  exit 1
+fi
 # shellcheck disable=SC1091
 source .env
 
-for v in VLLM_IMAGE MODEL_REVISION MEDIA_ROOT IMAGE_TOKEN_BUDGET \
-         MOE_BACKEND TEMPERATURE TOP_P TOP_K; do
-  [[ "${!v-}" == "<FILL>" || -z "${!v-}" ]] && { echo "$v is unset in .env (run ./pull.sh)" >&2; exit 1; }
+# MEDIA_ROOT is the only value a user has to supply by hand.
+if [[ -z "${MEDIA_ROOT:-}" ]]; then
+  cat >&2 <<'MSG'
+MEDIA_ROOT is empty in .env. It is the one value you must set.
+
+It is the absolute path to your photo root -- bind-mounted read-only at the
+SAME path inside the container and passed as --allowed-local-media-path, so the
+file:// URLs pxgpt sends resolve on both sides. It is a PREFIX, so point it at
+the project root and every dataset under it resolves:
+
+    MEDIA_ROOT=/home/xavier/project/pxgpt
+
+MSG
+  exit 1
+fi
+if [[ ! -d "$MEDIA_ROOT" ]]; then
+  echo "MEDIA_ROOT is not a directory: $MEDIA_ROOT" >&2
+  echo "It must be an absolute path that exists on this machine (no ~)." >&2
+  exit 1
+fi
+
+# Written by pull.sh. Empty means pull.sh has not run (or did not finish).
+for v in VLLM_IMAGE MODEL_REVISION; do
+  [[ -n "${!v-}" ]] || { echo "$v is empty in .env -- run ./pull.sh first." >&2; exit 1; }
+done
+# Pinned settings that ship filled in; empty means .env was edited or truncated.
+for v in IMAGE_TOKEN_BUDGET MOE_BACKEND TEMPERATURE TOP_P TOP_K; do
+  [[ -n "${!v-}" ]] || { echo "$v is empty in .env -- restore it from env.example." >&2; exit 1; }
 done
 [[ "$VLLM_IMAGE" == *@sha256:* ]] || { echo "VLLM_IMAGE must be pinned by digest, got: $VLLM_IMAGE" >&2; exit 1; }
-[[ -d "$MEDIA_ROOT" ]] || { echo "MEDIA_ROOT does not exist: $MEDIA_ROOT" >&2; exit 1; }
 
 if docker ps --format '{{.Names}}' | grep -qx "$CONTAINER_NAME"; then
   echo "$CONTAINER_NAME is already running -- nothing to do."

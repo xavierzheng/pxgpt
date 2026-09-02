@@ -4,7 +4,7 @@
 
 > **Running locally? Use vLLM.** Ollama and LM Studio work, but neither lets you
 > control the per-image visual token budget — and for phenotyping, that budget is
-> the measurement. See [Which local backend](#which-local-backend).
+> the measurement. See [Which local backend](#which-local-backend-use-vllm).
 
 ## Features
 
@@ -15,7 +15,7 @@
 - **Schema normalizer**: one command adds `additionalProperties: false` and `required` arrays to every object in your schema
 - **JSON-to-table flattening**: one command turns the per-plant Stage 3 JSON output into a wide, typed CSV + feather table (ordinal traits reconstructed from level code to label, as an ordered factor in R)
 - **Record-level provenance**: every merged Stage 3 record carries a `_provenance` block (provider, model, schema name/version, pxGPT version, run id, timestamp), and `json-to-table` writes `provider`/`model`/`schema_version` columns per row plus the whole block into the feather file's Arrow metadata. A result directory mixing providers, models or schema versions is refused unless you pass `--allow-mixed-provenance`
-- **Multiple providers**: Anthropic, OpenAI, Ollama, LM Studio, vLLM — for local inference **vLLM is the recommended backend**; Ollama and LM Studio are supported but not recommended for phenotyping, and are slated for removal in a future major release ([why](#which-local-backend))
+- **Multiple providers**: Anthropic, OpenAI, Ollama, LM Studio, vLLM — for local inference **vLLM is the recommended backend**; Ollama and LM Studio are supported but not recommended for phenotyping, and are slated for removal in a future major release ([why](#which-local-backend-use-vllm))
 - **Prompt caching**: automatic for Anthropic (reduces costs on repeated system prompts)
 - **Robust error handling**: exponential backoff, per-request failure isolation, crash-safe manifest
 - **Crash-safe sequential dispatch** (Stage 3 sharded): `--dispatch sequential` persists each shard to disk as it returns and **resumes** after a kill/crash — skipping already-completed calls (no re-billing) and retrying transient overloads in-run
@@ -111,32 +111,30 @@ RATE_LIMIT_SLEEP=60   # flat seconds to wait after a rate-limit error
 
 Each is a first-class `--provider` value with its own env vars (no need to overload the OpenAI ones). Use a **vision-capable** model since both commands send images.
 
-<a id="which-local-backend"></a>
+#### Which local backend: use vLLM
 
-> #### Which local backend: use vLLM
->
-> All three work. Only **vLLM** is recommended for phenotyping, and the reason is
-> visual tokenization.
->
-> This tool scores fine-grained traits — petiole cross-section shape, leaf margin
-> type, colour hue. Whether the model can see those depends on how many visual
-> tokens each photo is turned into. vLLM makes that a setting you choose:
-> `--mm-processor-kwargs '{"max_soft_tokens": N}'`, on the ladder
-> `70 / 140 / 280 / 560 / 1120`. The deployment in
-> [`ops/local-vllm/`](ops/local-vllm/README_vllm.md) pins **1120**, the top of the
-> ladder, because it lands close to Anthropic Sonnet 5's per-image tokenization —
-> which is what makes a local run and a cloud run comparable at all. Left unset,
-> that checkpoint would default to 280, a quarter of the detail.
->
-> **Ollama and LM Studio expose no equivalent control.** Whatever downsampling
-> they apply is not something you can set, read back, or hold constant across a
-> backend or model update. That is the objection: not a benchmarked loss — it has
-> not been measured on either backend — but an uncontrolled variable sitting
-> underneath every trait you record.
->
-> Both remain fully functional and nothing warns at runtime. Both are **slated
-> for removal in a future major release**. If you measure their tokenization and
-> it holds up, that decision should be revisited.
+All three work. Only **vLLM** is recommended for phenotyping, and the reason is
+visual tokenization.
+
+This tool scores fine-grained traits — petiole cross-section shape, leaf margin
+type, colour hue. Whether the model can see those depends on how many visual
+tokens each photo is turned into. vLLM makes that a setting you choose:
+`--mm-processor-kwargs '{"max_soft_tokens": N}'`, on the ladder
+`70 / 140 / 280 / 560 / 1120`. The deployment in
+[`ops/local-vllm/`](ops/local-vllm/README_vllm.md) pins **1120**, the top of the
+ladder, because it lands close to Anthropic Sonnet 5's per-image tokenization —
+which is what makes a local run and a cloud run comparable at all. Left unset,
+that checkpoint would default to 280, a quarter of the detail.
+
+**Ollama and LM Studio expose no equivalent control.** Whatever downsampling
+they apply is not something you can set, read back, or hold constant across a
+backend or model update. That is the objection: not a benchmarked loss — it has
+not been measured on either backend — but an uncontrolled variable sitting
+underneath every trait you record.
+
+Both remain fully functional and nothing warns at runtime. Both are **slated
+for removal in a future major release**. If you measure their tokenization and
+it holds up, that decision should be revisited.
 
 ```bash
 # Ollama
@@ -213,9 +211,11 @@ No local server offers a Batch API, so `schema --shard-dir --input-dir` is the
 local Stage 3 runner. Four steps:
 
 ```bash
-# 1. Start the server (once). MEDIA_ROOT must be a PARENT of your images.
-cd ops/local-vllm && cp env.example .env    # set MEDIA_ROOT + SERVED_MODEL_NAME
-./pull.sh && ./up.sh
+# 1. Start the server (once). MEDIA_ROOT is the ONE line you edit, and it must
+#    be a PARENT of your images. Check your hardware first -- see the guide.
+cd ops/local-vllm && cp env.example .env && $EDITOR .env
+export HF_TOKEN=hf_...                      # https://huggingface.co/settings/tokens
+./pull.sh && ./up.sh                        # pull.sh needs HF_TOKEN; ~40 GB
 
 # 2. Point pxGPT at it. TIMEOUT matters: a cold prefill takes 75-95 s.
 export VLLM_MODEL=gemma4-26b-a4b-nvfp4 TIMEOUT=1800
@@ -242,7 +242,7 @@ were measured on one GB10 box and are **not** portable — run `--limit 4` first
 new hardware and watch the reported `MemAvail`. Full explanation of every flag:
 [user_manual.md](user_manual.md#local--self-hosted-providers-analyze--schema-only).
 
-**Self-hosting a local model?** See [ops/local-vllm/README_vllm.md](ops/local-vllm/README_vllm.md) for a tested, reproducible vLLM deployment of Gemma 4 26B A4B (NVFP4) on a DGX Spark — including the vLLM version constraint that decides whether the checkpoint loads at all.
+**Self-hosting a local model?** See [ops/local-vllm/README_vllm.md](ops/local-vllm/README_vllm.md) for a tested, reproducible vLLM deployment of Gemma 4 26B A4B (NVFP4) on a DGX Spark. Start at its **Step 0**, which checks whether your machine qualifies before you download ~40 GB — the pins there are measured on one machine class and do not transfer unchanged.
 
 ---
 
@@ -464,7 +464,7 @@ Run `pxgpt <command> --help` for full argument details.
 |----------|---------|-----------|------------------|-------|
 | **Anthropic** (default) | ✅ | ✅ | ✅ | Native thinking, structured output, Files API |
 | **OpenAI** | — | ✅ | ✅ | Batch API stages + Files API (`vision`); sync via the OpenAI SDK |
-| **Ollama** | — | — | ⚠️ | Works, **not recommended** — no visual-token control ([why](#which-local-backend)); removal planned. OpenAI-compatible (`OLLAMA_BASE_URL` + `/v1`); use a vision model |
+| **Ollama** | — | — | ⚠️ | Works, **not recommended** — no visual-token control ([why](#which-local-backend-use-vllm)); removal planned. OpenAI-compatible (`OLLAMA_BASE_URL` + `/v1`); use a vision model |
 | **LM Studio** | — | — | ⚠️ | Works, **not recommended** — same reason; removal planned. OpenAI-compatible (`LMSTUDIO_*`); use a vision model |
 | **vLLM** | — | — | ✅ | **Recommended local backend** — pins the per-image token budget. OpenAI-compatible (`VLLM_*`, model required); use a vision model — [hosting guide](ops/local-vllm/README_vllm.md) |
 

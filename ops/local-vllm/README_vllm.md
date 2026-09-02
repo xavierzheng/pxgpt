@@ -9,87 +9,149 @@ comparison, latency tables, rejected candidates — are in
 [RUNBOOK.md](RUNBOOK.md). Read this file to run the server; read the RUNBOOK to
 understand why it is configured this way or to re-derive it on new hardware.
 
+**Just want it running?** [Step 0](#step-0-will-this-run-on-my-machine) checks
+your hardware, [Quick start](#quick-start) is four commands, then
+[Pointing pxGPT at the server](#pointing-pxgpt-at-the-server) connects pxGPT to
+it. Everything after that is reference — read it when you need it.
+
 - Back to the project overview: [../../README.md](../../README.md)
 - Full pxGPT workflows and provider reference: [../../user_manual.md](../../user_manual.md)
 
 ---
 
-## The version constraint — read this first
+## Step 0: will this run on my machine?
 
-**Not every vLLM build can load this checkpoint.** This is the single thing most
-likely to waste your afternoon, so it comes before everything else.
+**Run these four checks first.** This deployment is pinned to one machine class.
+If a check fails, stop here: you will otherwise find out ~40 minutes and ~40 GB
+into the download.
 
-The NVFP4 weights are `compressed-tensors` with per-expert activation scales.
-Older Gemma 4 MoE weight loaders have no mapping for them and die during startup:
-
+```bash
+uname -m                    # want: aarch64
+nvidia-smi --query-gpu=name,compute_cap,memory.total --format=csv
+                            # want: compute_cap 12.1, memory.total ~128 GB (GB10)
+docker --version            # want: any recent Docker; verified on 29.1.3
+df -h .                     # want: >= 40 GB free (17 GB weights + 22 GB image)
 ```
-File ".../vllm/model_executor/models/gemma4.py", line 1359, in load_weights
-KeyError: 'layers.0.experts.0.down_proj.input_global_scale'
-```
 
-If you see that `KeyError`, **the image is too old — nothing else is wrong.** Do
-not add flags, do not re-quantize, do not patch the model executor. Change image.
-
-| Image | vLLM | Loads this checkpoint? |
+| Check | Needed | If it does not match |
 |---|---|---|
-| `vllm/vllm-openai:gemma4-cu130` | `0.19.1.dev6` | **No** — the `KeyError` above |
-| `vllm/vllm-openai:cu130-nightly` | `0.19.2rc1.dev107` | Yes (floating nightly tag) |
-| **`nvcr.io/nvidia/vllm:26.07-py3`** | **`0.24.0+092c4842.dev`** | **Yes — the pinned choice** |
+| architecture | `aarch64` | This is a DGX Spark / GB10 deployment. x86 hosts need their own image and a re-run of [RUNBOOK.md](RUNBOOK.md); the pins here do not transfer. |
+| compute capability | `12.1` (sm_121) | The pinned image is built for sm_121. Another GPU needs a different vLLM build. |
+| GPU memory | ~128 GB unified | The server holds **~109 GB of the 121 GB pool** while up. A smaller card cannot load this model at `MAX_MODEL_LEN=65536`. Stop other GPU work before starting. |
+| free disk | ≥ 40 GB | 17 GB weights + 22 GB image. Add ~45 GB more if `pull.sh` has to fall through to the other candidates. |
 
-The fix landed between `0.19.1` and `0.19.2rc1`. Note the image named for Gemma 4
-is the one that *cannot* serve it — pick by tested behaviour, not by tag name.
+You also need a **Hugging Face token**, because the weights repo may be gated:
+create one at <https://huggingface.co/settings/tokens> (read access is enough).
+It is a credential — `export` it in your shell, never put it in `.env`.
+`pull.sh` reads it from the process environment, not from `.env`, and validates it
+against the API before it downloads anything.
 
-The model card asks for `vllm>=0.25.0`; `0.24.0` works in practice and is what is
-pinned here. Treat "≥ 0.19.2rc1, and verify" as the real rule.
-
-**Pinned image** (never use a floating tag for a run you intend to cite):
-
-```
-nvcr.io/nvidia/vllm@sha256:95c498a475142c20c989c65e5d223348c09fed83ba17ddf44f117610c0bd3268
-```
-
----
-
-## Prerequisites
-
-- **Hardware**: DGX Spark / GB10 (sm_121), 128 GB unified memory. Verified on
-  `aarch64`, Docker 29.1.3, driver exposing compute capability 12.1.
-- **Disk**: ~17 GB for the weights plus ~22 GB for the image (the other two
-  candidates are 20–23 GB each if `pull.sh` has to try them).
-- **`HF_TOKEN`** exported in your shell (`pull.sh` refuses to run without it).
-- **Memory headroom**: the server holds ~109 GB of the 121 GB pool while up. Stop
-  other GPU work first.
+> **Not a DGX Spark?** Nothing above is a soft warning. The image digest, the MoE
+> backend and the memory numbers were all measured on this one machine class, and
+> [RUNBOOK.md](RUNBOOK.md) is the guide for re-deriving them elsewhere. pxGPT
+> itself talks plain OpenAI HTTP, so any vLLM server you can start will work —
+> see [Pointing pxGPT at the server](#pointing-pxgpt-at-the-server).
 
 ---
 
 ## Quick start
 
+> **Do [Step 0](#step-0-will-this-run-on-my-machine) first.** It is four read-only commands and takes under a
+> minute. `pull.sh` downloads ~40 GB; Step 0 is how you find out beforehand that
+> this machine can run the result.
+
+Copy the block below and **edit one line of `.env`**. Everything else is written
+for you by `pull.sh` (`VLLM_IMAGE`, `MODEL_REVISION`) or ships already tuned. You
+are already inside the repo if you are reading this file — no clone needed.
+
 ```bash
-cd ops/local-vllm
+cd ops/local-vllm                      # from the repo root
+
 cp env.example .env
+${EDITOR:-nano} .env                   # set MEDIA_ROOT. Type a real path:
+                                       #   MEDIA_ROOT=/home/you/plants
+                                       # NOT MEDIA_ROOT=<your path> -- angle
+                                       # brackets are a bash syntax error.
 
-# Set MEDIA_ROOT to the absolute path of your photo root, e.g.
-#   MEDIA_ROOT=/home/xavier/project/pxgpt
-# It is a prefix, so point it at the project root rather than one dataset's
-# images -- then 02_mature_v1 and 03_mature_v2 both resolve without a restart.
-$EDITOR .env
+export HF_TOKEN=hf_...                 # from https://huggingface.co/settings/tokens
+curl -sf -H "Authorization: Bearer $HF_TOKEN" \
+     https://huggingface.co/api/whoami-v2 >/dev/null \
+  && echo "token OK" || echo "TOKEN REJECTED -- fix it before pull.sh"
 
-export HF_TOKEN=hf_...
-./pull.sh          # downloads weights, finds a working image, pins both into .env
-./up.sh            # starts the server; waits for /health (~4 min)
+./pull.sh                              # ~40 GB: weights + a working image,
+                                       # both pinned into .env for you
+./up.sh                                # starts the server and waits for /health:
+                                       # ~4 min typical, 20 min cap on a cold
+                                       # weight load + JIT codegen
 ```
 
-Then verify against your real data:
+**What to put in `MEDIA_ROOT`**: the absolute path to the folder that holds your
+photos — your own path, not one from this repo. It is a **prefix**, so point it at
+a parent directory rather than one dataset's images; then every dataset under it
+resolves without restarting the server. Two rules, because `.env` is loaded by
+`source`:
+
+- An absolute path. No `~` — it is not expanded here.
+- **No angle brackets.** `MEDIA_ROOT=<your path>` is a bash *syntax error*, not a
+  placeholder: `<` reads as a redirection. Type the real path.
+
+`pull.sh` checks the token itself before it downloads anything, so the `curl`
+line above is belt-and-braces — useful if you want to confirm the token on its
+own first.
+
+If either script stops, read what it printed. `pull.sh` and `up.sh` both check
+`.env` before doing anything and name exactly what is wrong — a missing file, a
+line that is not `NAME=value`, an empty or non-existent `MEDIA_ROOT`, an
+unexported `HF_TOKEN`, an image that is not digest-pinned. That message is the
+whole fix; you should not need to come back here.
+
+### Then check it actually works
+
+`up.sh` exits once the server answers `/health`, so the server is up when it
+returns. `smoke.py` is the separate question of whether it serves **your** model
+and resolves **your** image paths. Run it once after the first `up.sh`.
 
 ```bash
-# still in ops/local-vllm/ -- this is the ops requirements file,
-# separate from the repo root's, and smoke.py lives here too
-pip install -r ops/local-vllm/requirements.txt   # or: -r requirements.txt from here
-set -a; source .env; set +a          # loads the SERVER names for smoke.py.
-                                     # This does NOT configure pxgpt -- see
-                                     # "Pointing pxGPT at the server" below.
-python smoke.py                       # acceptance A-H, exits non-zero on failure
+# still in ops/local-vllm/. These packages are needed ONLY by smoke.py and
+# bench.sh -- the server itself runs in Docker and needs nothing from pip.
+# This is the ops requirements file, separate from the repo root's.
+pip install -r requirements.txt
+
+set -a; source .env; set +a   # loads the SERVER names, for smoke.py only.
+                              # This does NOT configure pxgpt -- pxgpt reads a
+                              # different set of variables, see "Pointing pxGPT
+                              # at the server" below.
+python smoke.py               # acceptance checks A-H; non-zero exit means failure
 ```
+
+`smoke.py` passing means the server is up, serves the right model, and resolves
+your `file://` image paths.
+
+### Last step — point pxGPT at it
+
+**`up.sh` cannot do this for you.** It sources `.env` inside its own process, and
+a child cannot export back into your shell. pxGPT also never reads a `.env` — only
+the process environment. So set these yourself, in the shell you run `pxgpt` from:
+
+```bash
+cd ../..                                  # repo root
+set -a; source ops/local-vllm/.env; set +a   # gets SERVED_MODEL_NAME and PORT
+export VLLM_MODEL="$SERVED_MODEL_NAME"    # server name and client name must match
+export VLLM_BASE_URL="http://localhost:${PORT}/v1"
+export VLLM_API_KEY=EMPTY                 # any non-empty string; nothing checks it
+export TIMEOUT=1800                       # a cold prefill takes 75-95 s
+
+pxgpt analyze --provider vllm --image-transport file \
+  --input-folder "$MEDIA_ROOT"/<your plant folder> \
+  --output /tmp/one.txt \
+  --system-prompt prompts/phenotyping_system.txt \
+  --prompt prompts/describe_plant.txt
+```
+
+Skip the `set -a; source` line and you must type the literals instead — the
+server's names and pxGPT's names are deliberately different, so nothing catches a
+mismatch except a 404. Full mapping and the reasoning:
+[Pointing pxGPT at the server](#pointing-pxgpt-at-the-server).
 
 Day-to-day:
 
@@ -130,8 +192,15 @@ DOCKER_CONFIG=/tmp/ngccfg docker pull nvcr.io/nvidia/vllm:26.07-py3
 
 ## Configuration (`.env`)
 
-`env.example` is version-controlled; `.env` is gitignored. `<FILL>` values are
-written by `pull.sh` or by you.
+`env.example` is version-controlled; `.env` is gitignored. Values ship **empty**
+when something has to fill them in: `MEDIA_ROOT` is yours to set, `VLLM_IMAGE`
+and `MODEL_REVISION` are written by `pull.sh`. Everything else ships with a
+working value.
+
+`.env` is `source`d by both scripts, so it has to stay valid shell — every line
+`NAME=value`, and any value with a space or one of `< > | & ( ) ; # *` quoted.
+Empty is how "not set yet" is spelled; a placeholder like `<FILL>` is a **bash
+syntax error**, because `<` reads as a redirection.
 
 | Variable | Meaning |
 |---|---|
@@ -139,6 +208,7 @@ written by `pull.sh` or by you.
 | `MODEL_REPO` | `unsloth/gemma-4-26B-A4B-it-NVFP4` |
 | `MODEL_REVISION` | HF commit sha, e.g. `20df0542b1a86ce19f495ac2eca2c7c12bce82f9` |
 | `SERVED_MODEL_NAME` | `gemma4-26b-a4b-nvfp4` — what clients pass as `model` |
+| `PORT` | `8000`, shipped filled in. `up.sh` binds it on the host; pxGPT reaches it as `VLLM_BASE_URL=http://localhost:8000/v1`. Change it here, not in the client. |
 | `MEDIA_ROOT` | Absolute photo root. Mounted read-only at the **same path** inside the container, and passed as `--allowed-local-media-path`. A **prefix**, so any subfolder resolves — point it at the project root to cover every dataset. |
 | `MAX_MODEL_LEN` | 65536 |
 | `MAX_NUM_SEQS` | 16 — free *for KV cache* (that pool is sized by `GPU_MEM_UTIL`, not by sequence count). It is not a licence to run many plants' cold prefills at once: see the depth limit under [Concurrency](#concurrency-how-to-dispatch). |
@@ -346,12 +416,16 @@ This also carries `TEMPERATURE` / `TOP_P` / `TOP_K` over — the only three name
 the two files share — so the client sends exactly the sampling the server was
 started with.
 
-Writing the literals out works too, and is what the rest of this guide shows:
+Writing the literals out works too, and is what the rest of this guide shows.
+**Keep the `export`.** pxGPT never loads a `.env` of its own — it reads the
+process environment only, so a bare `VLLM_MODEL=...` stays local to your shell
+and pxGPT will not see it. The symptom is a 404 for a model the server *is*
+serving:
 
 ```bash
-VLLM_BASE_URL=http://localhost:8000/v1    # already the default
-VLLM_MODEL=gemma4-26b-a4b-nvfp4           # REQUIRED — the served name
-VLLM_API_KEY=EMPTY                        # any non-empty placeholder
+export VLLM_BASE_URL=http://localhost:8000/v1    # 8000 is PORT's shipped value
+export VLLM_MODEL=gemma4-26b-a4b-nvfp4           # REQUIRED — the served name
+export VLLM_API_KEY=EMPTY                        # any non-empty placeholder
 ```
 
 If `VLLM_MODEL` and `SERVED_MODEL_NAME` disagree the server 404s on a model it is
@@ -550,10 +624,59 @@ produce an empty column.
 
 ---
 
+## The vLLM version constraint (background)
+
+**Not every vLLM build can load this checkpoint.** `pull.sh` handles this for
+you — it tries the tested images best-first and keeps the first that actually
+serves the model, so you only need this section if it fails or if you are
+choosing an image by hand on other hardware.
+
+The NVFP4 weights are `compressed-tensors` with per-expert activation scales.
+Older Gemma 4 MoE weight loaders have no mapping for them and die during startup:
+
+```
+File ".../vllm/model_executor/models/gemma4.py", line 1359, in load_weights
+KeyError: 'layers.0.experts.0.down_proj.input_global_scale'
+```
+
+If you see that `KeyError`, **the image is too old — nothing else is wrong.** Do
+not add flags, do not re-quantize, do not patch the model executor. Change image.
+
+| Image | vLLM | Loads this checkpoint? |
+|---|---|---|
+| `vllm/vllm-openai:gemma4-cu130` | `0.19.1.dev6` | **No** — the `KeyError` above |
+| `vllm/vllm-openai:cu130-nightly` | `0.19.2rc1.dev107` | Yes (floating nightly tag) |
+| **`nvcr.io/nvidia/vllm:26.07-py3`** | **`0.24.0+092c4842.dev`** | **Yes — the pinned choice** |
+
+The fix landed between `0.19.1` and `0.19.2rc1`. Note the image named for Gemma 4
+is the one that *cannot* serve it — pick by tested behaviour, not by tag name.
+
+The model card asks for `vllm>=0.25.0`; `0.24.0` works in practice and is what is
+pinned here. Treat "≥ 0.19.2rc1, and verify" as the real rule.
+
+**Pinned image** (never use a floating tag for a run you intend to cite):
+
+```
+nvcr.io/nvidia/vllm@sha256:95c498a475142c20c989c65e5d223348c09fed83ba17ddf44f117610c0bd3268
+```
+
+---
+
 ## Troubleshooting
 
+**`.env: line N: syntax error near unexpected token 'newline'`** — a value in
+`.env` is not valid shell. Almost always an unquoted `<` or `>`, which bash reads
+as a redirection: `MEDIA_ROOT=<FILL>` or `MEDIA_ROOT=<your path>`. Put the real
+path in, unquoted if it has no spaces, quoted if it does. Current `pull.sh` and
+`up.sh` catch this before sourcing and print the offending line; if you see the
+raw bash error instead, your scripts predate that check.
+
+**`line N: <something>: command not found` while loading `.env`** — an unquoted
+space, e.g. `MEDIA_ROOT=/home/me/my photos`. Quote it:
+`MEDIA_ROOT="/home/me/my photos"`.
+
 **`KeyError: '...input_global_scale'` at startup** — image too old. See
-[the version constraint](#the-version-constraint--read-this-first).
+[the vLLM version constraint](#the-vllm-version-constraint-background).
 
 **`vllm: error: unrecognized arguments: serve unsloth/...`** — the
 `vllm/vllm-openai` images already have `ENTRYPOINT ["vllm","serve"]`, so the
