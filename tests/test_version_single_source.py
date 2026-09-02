@@ -68,3 +68,41 @@ def test_setup_py_still_declares_one():
     assert m, "setup.py must declare version="
     # Matches what is installed right now, so a bump without a reinstall is visible.
     assert m.group(1) == installed_version("pxgpt")
+
+
+# --------------------------------------------------------------------------
+# Test-only dependencies must not leak into install_requires.
+#
+# setup.py feeds requirements.txt straight into install_requires, so adding
+# pytest there -- which looked like the obvious fix when someone forgot to
+# install it -- would force a test runner on every user of the package.
+# --------------------------------------------------------------------------
+
+TEST_ONLY = ("pytest", "packaging")
+
+
+def test_test_only_deps_are_not_runtime_deps():
+    lines = [
+        line.split("#")[0].strip().lower()
+        for line in (REPO / "requirements.txt").read_text().splitlines()
+    ]
+    for dep in TEST_ONLY:
+        assert not any(line.startswith(dep) for line in lines if line), (
+            f"{dep} is test-only, but requirements.txt becomes install_requires. "
+            f'Put it in setup.py extras_require["dev"] instead.'
+        )
+
+
+def test_setup_py_declares_the_dev_extra():
+    import setuptools
+    from unittest import mock
+
+    captured = {}
+    with mock.patch.object(setuptools, "setup", lambda **kw: captured.update(kw)):
+        exec((REPO / "setup.py").read_text(), {"__name__": "__main__"})
+
+    extras = captured.get("extras_require", {})
+    assert "dev" in extras, 'setup.py must declare an extras_require["dev"]'
+    for dep in TEST_ONLY:
+        assert any(d.split(">")[0].split("=")[0].strip() == dep
+                   for d in extras["dev"]), f'{dep} missing from extras_require["dev"]'

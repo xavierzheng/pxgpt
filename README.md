@@ -49,6 +49,32 @@ cp .env.example project_A.env       # then fill in your API keys
 set -a && source project_A.env && set +a
 ```
 
+### Running the tests
+
+The suite is fast (a few seconds) and needs no API key, no network and no GPU.
+`pytest` is **not** a runtime dependency, so it lives in a `dev` extra rather
+than in `requirements.txt` — that file becomes `install_requires`, and anything
+added to it is forced on every user of the package:
+
+```bash
+pip install -e ".[dev]"     # adds pytest; the base install does not
+pytest tests/ -q            # 248 tests
+```
+
+Two groups are worth knowing about:
+
+```bash
+# the local vLLM setup path, without a GPU or a 40 GB download: it copies
+# env.example, runs pull.sh, and asserts every gate refuses with an explanation
+pytest tests/test_ops_local_vllm_setup.py -q
+
+# schema sharding, provenance and json-to-table
+pytest tests/ -q -k "shard or provenance or json2table"
+```
+
+There is no CI, so the suite runs when you run it. Worth doing after touching
+`ops/local-vllm/` or anything under `pxgpt/core/`.
+
 ## Configuration
 
 pxGPT reads its settings from the **process environment** — it does not load a

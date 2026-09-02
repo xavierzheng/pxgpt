@@ -16,6 +16,15 @@ setup(
     author="PXGPT Team", 
     packages=find_packages(),
     install_requires=requirements,
+    # Test-only, deliberately NOT in requirements.txt: that file becomes
+    # install_requires above, so anything added there is forced on every user
+    # who installs pxGPT. Install with:  pip install -e ".[dev]"
+    extras_require={
+        "dev": [
+            "pytest",
+            "packaging",   # tests/test_ops_local_vllm_setup.py parses PEP 508
+        ],
+    },
     python_requires=">=3.10",
     entry_points={
         'console_scripts': [
