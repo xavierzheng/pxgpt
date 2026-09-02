@@ -223,6 +223,61 @@ def test_missing_hf_is_named_and_stops_before_any_download(setup_dir, tmp_path):
     assert "requirements.txt" in r.stderr, "say how to get it"
 
 
+def test_scripts_check_the_daemon_not_just_the_binary():
+    """`command -v docker` passes on a host whose socket is root-owned.
+
+    Bug 5: pull.sh cleared the tool gate, downloaded 17 GB of weights, and only
+    then died at `docker pull` with a socket permission error.
+    """
+    for script in SCRIPTS:
+        text = script.read_text()
+        assert "docker info" in text, (
+            f"{script.name} must probe the daemon, not only the binary"
+        )
+
+
+@pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
+def test_denied_docker_socket_is_explained_before_any_work(script, setup_dir,
+                                                           tmp_path):
+    """A docker that exists but refuses must stop the run with the fix attached."""
+    fakebin = tmp_path / "denied"
+    fakebin.mkdir()
+    (fakebin / "docker").write_text(
+        "#!/bin/sh\n"
+        "echo 'permission denied while trying to connect to the Docker daemon "
+        "socket at unix:///var/run/docker.sock' >&2\n"
+        "exit 1\n"
+    )
+    (fakebin / "docker").chmod(0o755)
+    for tool in ("bash", "cat", "sed", "grep", "head", "printf", "curl", "hf",
+                 "env", "dirname", "tr", "sort", "ls"):
+        src = shutil.which(tool)
+        if src:
+            (fakebin / tool).symlink_to(src)
+    # hf may not exist on this machine; stub it so the gate reaches docker.
+    if not (fakebin / "hf").exists():
+        (fakebin / "hf").write_text("#!/bin/sh\nexit 0\n")
+        (fakebin / "hf").chmod(0o755)
+
+    r = _run(["bash", str(setup_dir / script.name)], cwd=setup_dir,
+             env={"PATH": str(fakebin)})
+    assert r.returncode == 1
+    assert "cannot talk to the daemon" in r.stderr, r.stderr
+    # The three options, and the two traps that go with them.
+    assert "usermod -aG docker" in r.stderr
+    assert "LOG OUT AND BACK IN" in r.stderr, "the group change needs a re-login"
+    assert "HF_HOME" in r.stderr, "sudo resets HOME; say so"
+    assert "amounts to root" in r.stderr, "the docker group is a privilege grant"
+
+
+def test_readme_documents_the_docker_socket_error():
+    """The error string is what a user pastes into a search box."""
+    guide = (OPS / "README_vllm.md").read_text()
+    assert "unix:///var/run/docker.sock" in guide
+    assert "usermod -aG docker" in guide
+    assert "rootless" in guide.lower()
+
+
 # --------------------------------------------------------------------------
 # 4. requirements.txt. This is bug 4.
 # --------------------------------------------------------------------------

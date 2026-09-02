@@ -14,6 +14,47 @@ if (( ${#missing[@]} )); then
   exit 1
 fi
 
+# `command -v docker` only proves the binary exists. It says nothing about
+# whether this user can reach the daemon, and that is a separate, very common
+# failure: the socket is root-owned. Without this check pull.sh sails past the
+# gate, downloads 17 GB of weights, and only then dies at `docker pull`.
+if ! docker info >/dev/null 2>&1; then
+  echo "docker is installed, but this user cannot talk to the daemon:" >&2
+  # `|| true`: the pipeline is expected to fail, and set -e + pipefail would
+  # otherwise kill the script before the explanation below is printed.
+  { docker info 2>&1 | head -3 | sed 's/^/    /' >&2; } || true
+  # Quoted heredoc: the text contains backticks and $VAR, none of which should
+  # be expanded or executed here.
+  cat >&2 <<'MSG'
+
+Three ways out. This is a host decision, not a pxGPT one, so pick deliberately
+-- the first is not merely a convenience:
+
+  1. Add yourself to the "docker" group. Easiest, and it grants this account
+     what amounts to root on the host: group members can mount any path into a
+     container. Do not do this on a shared machine without saying so.
+
+         sudo usermod -aG docker "$USER"
+
+     Then LOG OUT AND BACK IN. A running shell keeps its old group list, so
+     without that it looks as though the change did nothing. Running
+     "newgrp docker" fixes the current shell only.
+
+  2. Rootless Docker. Keeps the daemon away from root; needs its own setup for
+     GPU passthrough. https://docs.docker.com/engine/security/rootless/
+
+  3. Run these scripts under sudo. No permission change, but mind the trap:
+     sudo resets HOME, so HF_HOME lands in root's home, the weights download
+     somewhere else, and up.sh will not find them. Pass it through:
+
+         sudo -E HF_HOME="$HF_HOME" ./pull.sh
+
+Verify whichever you chose with:  docker run --rm hello-world
+
+MSG
+  exit 1
+fi
+
 # --- .env: load it, and say something useful when it is wrong ---------------
 if [[ ! -f .env ]]; then
   cat >&2 <<'MSG'

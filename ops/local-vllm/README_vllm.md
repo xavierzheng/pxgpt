@@ -683,6 +683,22 @@ nvcr.io/nvidia/vllm@sha256:95c498a475142c20c989c65e5d223348c09fed83ba17ddf44f117
 
 ## Troubleshooting
 
+**`permission denied while trying to connect to the Docker API at
+unix:///var/run/docker.sock`** — docker is installed, but your account cannot
+reach the daemon; the socket is root-owned. `pull.sh` and `up.sh` now check this
+before doing anything, so you get it in a second rather than after a 17 GB
+weight download. It is a host permission decision, not a pxGPT one, and the
+options differ in more than convenience:
+
+| Option | What it costs |
+|---|---|
+| `sudo usermod -aG docker "$USER"` | Easiest. Also grants that account **what amounts to root** — group members can bind-mount any path into a container. Think before doing it on a shared machine. **Log out and back in afterwards**; a running shell keeps its old group list, so it otherwise looks as though nothing happened (`newgrp docker` fixes only the current shell). |
+| [Rootless Docker](https://docs.docker.com/engine/security/rootless/) | Keeps the daemon away from root, but needs its own setup for GPU passthrough. |
+| `sudo ./pull.sh` | No permission change. But `sudo` resets `HOME`, so `HF_HOME` lands in root's home, the weights download somewhere else, and `up.sh` will not find them. Pass it through: `sudo -E HF_HOME="$HF_HOME" ./pull.sh` |
+
+Verify whichever you chose with `docker run --rm hello-world` — that is also the
+check in [Step 0](#step-0-will-this-run-on-my-machine).
+
 **`.env: line N: syntax error near unexpected token 'newline'`** — a value in
 `.env` is not valid shell. Almost always an unquoted `<` or `>`, which bash reads
 as a redirection: `MEDIA_ROOT=<FILL>` or `MEDIA_ROOT=<your path>`. Put the real
