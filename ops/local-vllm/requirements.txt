@@ -1,9 +1,16 @@
-# Needed by smoke.py and bench.sh only. The vLLM server runs in Docker and
-# needs nothing from here.
-#
-# Ceiling matches the repo root's requirements.txt: these scripts drive the local
-# vLLM server through the same openai SDK, so an untested major breaks them too.
-# The FLOOR is deliberately lower than the root's 1.66.0 -- smoke.py and bench.sh
-# use only chat.completions and models.list, never responses.create.
+# Install these BEFORE ./pull.sh -- it needs the `hf` CLI from huggingface_hub:
+#     pip install -r requirements.txt
+# The vLLM server itself runs in Docker and needs nothing from here.
+
+# pull.sh: downloads the model weights. Current releases provide the `hf`
+# entrypoint; older ones named it `huggingface-cli`. pull.sh accepts either, so
+# no version floor is pinned here -- pin one only if you measure a need.
+huggingface_hub[cli]
+
+# smoke.py and bench.sh only. The openai ceiling matches the repo root's
+# requirements.txt: these scripts drive the local vLLM server through the same
+# SDK, so an untested major breaks them too. The FLOOR is deliberately lower
+# than the root's 1.66.0 -- smoke.py and bench.sh use only chat.completions and
+# models.list, never responses.create.
 openai>=1.40.0,<=3.0.0
 jsonschema>=4.20.0

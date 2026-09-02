@@ -26,12 +26,28 @@ If a check fails, stop here: you will otherwise find out ~40 minutes and ~40 GB
 into the download.
 
 ```bash
+# hardware
 uname -m                    # want: aarch64
 nvidia-smi --query-gpu=name,compute_cap,memory.total --format=csv
                             # want: compute_cap 12.1, memory.total ~128 GB (GB10)
-docker --version            # want: any recent Docker; verified on 29.1.3
 df -h .                     # want: >= 40 GB free (17 GB weights + 22 GB image)
+
+# software the scripts call
+docker --version            # want: any recent Docker; verified on 29.1.3
+docker run --rm hello-world # must work WITHOUT sudo
+curl --version | head -1
+hf --help >/dev/null && echo "hf OK"   # the Hugging Face CLI; see below
 ```
+
+`hf` comes from `huggingface_hub` and is **not** installed by default — it is in
+this directory's `requirements.txt`, which you install before `pull.sh`:
+
+```bash
+pip install -r requirements.txt
+```
+
+`pull.sh` and `up.sh` check for all of these before doing anything and name
+whichever is missing, so a missing tool costs you a second, not a download.
 
 | Check | Needed | If it does not match |
 |---|---|---|
@@ -66,6 +82,9 @@ are already inside the repo if you are reading this file — no clone needed.
 
 ```bash
 cd ops/local-vllm                      # from the repo root
+
+pip install -r requirements.txt        # gives you `hf`, which pull.sh needs
+                                       # (and what smoke.py needs, later)
 
 cp env.example .env
 ${EDITOR:-nano} .env                   # set MEDIA_ROOT. Type a real path:
@@ -112,10 +131,10 @@ returns. `smoke.py` is the separate question of whether it serves **your** model
 and resolves **your** image paths. Run it once after the first `up.sh`.
 
 ```bash
-# still in ops/local-vllm/. These packages are needed ONLY by smoke.py and
-# bench.sh -- the server itself runs in Docker and needs nothing from pip.
-# This is the ops requirements file, separate from the repo root's.
-pip install -r requirements.txt
+# still in ops/local-vllm/. requirements.txt was already installed above, in
+# Quick start -- `hf` came from it and so do smoke.py's own dependencies. The
+# server itself runs in Docker and needs nothing from pip. Note this is the ops
+# requirements file, separate from the repo root's.
 
 set -a; source .env; set +a   # loads the SERVER names, for smoke.py only.
                               # This does NOT configure pxgpt -- pxgpt reads a

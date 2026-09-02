@@ -3,6 +3,17 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# --- external tools --------------------------------------------------------
+missing=()
+command -v docker >/dev/null 2>&1 || missing+=("docker")
+command -v curl   >/dev/null 2>&1 || missing+=("curl")
+if (( ${#missing[@]} )); then
+  echo "Missing required command(s): ${missing[*]}" >&2
+  echo "Install them and re-run. docker must work without sudo:" >&2
+  echo "    docker run --rm hello-world" >&2
+  exit 1
+fi
+
 # --- .env: load it, and say something useful when it is wrong ---------------
 if [[ ! -f .env ]]; then
   cat >&2 <<'MSG'

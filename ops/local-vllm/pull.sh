@@ -7,6 +7,37 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# --- external tools --------------------------------------------------------
+# Checked before anything else: these fail at the point of use otherwise, as a
+# bare "command not found" with a line number and no hint of what provides it.
+missing=()
+command -v docker >/dev/null 2>&1 || missing+=("docker")
+command -v curl   >/dev/null 2>&1 || missing+=("curl")
+
+# The Hugging Face CLI is `hf` in current huggingface_hub and `huggingface-cli`
+# in older releases. Accept either; only complain when neither is present.
+if   command -v hf              >/dev/null 2>&1; then HF_CLI=hf
+elif command -v huggingface-cli >/dev/null 2>&1; then HF_CLI=huggingface-cli
+else missing+=("hf (huggingface_hub)"); fi
+
+if (( ${#missing[@]} )); then
+  cat >&2 <<MSG
+Missing required command(s): ${missing[*]}
+
+  docker  install it for your distro, and check you can run it without sudo:
+              docker run --rm hello-world
+  curl    install it for your distro (usually the 'curl' package)
+  hf      the Hugging Face CLI, used here to download the weights. Install the
+          ops requirements into whatever Python environment you are using:
+
+              pip install -r requirements.txt
+
+          (that file also carries what smoke.py needs). Verify with:  hf --help
+
+MSG
+  exit 1
+fi
+
 # --- .env: load it, and say something useful when it is wrong ---------------
 if [[ ! -f .env ]]; then
   cat >&2 <<'MSG'
@@ -137,7 +168,7 @@ fi
 
 # --- weights ---------------------------------------------------------------
 echo "==> Downloading $MODEL_REPO"
-hf download "$MODEL_REPO" --revision main
+"$HF_CLI" download "$MODEL_REPO" --revision main
 # Resolve 'main' to the immutable commit sha and pin it in .env.
 SNAP_DIR="${HF_HOME:-$HOME/.cache/huggingface}/hub/models--${MODEL_REPO//\//--}/snapshots"
 REVISION="$(ls -1 "$SNAP_DIR" | head -1)"
