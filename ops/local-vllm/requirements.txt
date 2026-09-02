@@ -2,10 +2,14 @@
 #     pip install -r requirements.txt
 # The vLLM server itself runs in Docker and needs nothing from here.
 
-# pull.sh: downloads the model weights. Current releases provide the `hf`
-# entrypoint; older ones named it `huggingface-cli`. pull.sh accepts either, so
-# no version floor is pinned here -- pin one only if you measure a need.
-huggingface_hub[cli]
+# pull.sh: downloads the model weights. The CLI is in the base package -- do NOT
+# write huggingface_hub[cli], that extra does not exist on 1.x and pip warns:
+#     does not have an extra named `cli`
+# Verified on 1.29.0: the base distribution declares both console scripts,
+# `hf` (current) and `huggingface-cli` (the deprecated alias). pull.sh prefers
+# `hf` and falls back to the old name, so no version floor is pinned here --
+# pin one only if you measure a need.
+huggingface_hub
 
 # smoke.py and bench.sh only. The openai ceiling matches the repo root's
 # requirements.txt: these scripts drive the local vLLM server through the same
