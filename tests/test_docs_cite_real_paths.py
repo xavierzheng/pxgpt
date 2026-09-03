@@ -14,18 +14,36 @@ example in the project was broken, and nothing noticed:
 
 It surfaced only because an agent copied a path out of README.md into another
 document and then checked it.
+
+The first version of this guard then failed on a fresh clone, which is the only
+place that matters, because its premise was wrong. "Every cited path exists" is
+not the rule. A doc may legitimately cite a path that git deliberately ignores:
+
+  - ``ops/local-vllm/.env`` is created by the user (``cp env.example .env``) and
+    is gitignored, so it is absent from every clone by design;
+  - ``HANDOFF.md`` and ``CLAUDE.md`` are gitignored on purpose (see .gitignore),
+    so hardcoding them as documents to scan raised FileNotFoundError.
+
+The rule is: **a cited path must exist unless git ignores it.**
 """
 
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
 
 REPO = Path(__file__).resolve().parent.parent
 
+# Only documents that are actually present. HANDOFF.md and any CLAUDE.md are
+# gitignored, so they exist on a working checkout and not on a clone; scan them
+# when they are here, and do not demand them when they are not.
 DOCS = sorted(
-    [REPO / "README.md", REPO / "user_manual.md", REPO / "HANDOFF.md"]
-    + list((REPO / "ops").rglob("*.md"))
+    d for d in (
+        [REPO / "README.md", REPO / "user_manual.md", REPO / "HANDOFF.md"]
+        + list((REPO / "ops").rglob("*.md"))
+    )
+    if d.is_file()
 )
 
 # Directories whose contents are real, checkable repo paths. Deliberately not
@@ -52,15 +70,42 @@ def _cited_paths(text):
         yield p
 
 
+def _git_ignored(paths):
+    """Which of *paths* does git deliberately ignore?
+
+    Those are absent from a clone on purpose -- a user-created .env, a
+    machine-local HANDOFF.md -- so citing one is correct and it must not be
+    demanded. Uses .gitignore as the source of truth rather than a hand-kept
+    allowlist that would drift.
+    """
+    paths = list(paths)
+    if not paths:
+        return set()
+    try:
+        r = subprocess.run(
+            ["git", "check-ignore", "--stdin"],
+            input="\n".join(paths), cwd=REPO,
+            capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pytest.skip("git unavailable; this is a repo-hygiene check")
+    # 0 = some ignored, 1 = none ignored, anything else = not a checkout
+    if r.returncode not in (0, 1):
+        pytest.skip("not a git checkout; this is a repo-hygiene check")
+    return {line.strip() for line in r.stdout.splitlines() if line.strip()}
+
+
 @pytest.mark.parametrize("doc", DOCS, ids=lambda p: str(p.relative_to(REPO)))
 def test_cited_paths_exist(doc):
-    missing = sorted({p for p in _cited_paths(doc.read_text())
-                      if not (REPO / p).exists()})
+    absent = {p for p in _cited_paths(doc.read_text()) if not (REPO / p).exists()}
+    missing = sorted(absent - _git_ignored(absent))
     assert not missing, (
         f"{doc.relative_to(REPO)} cites paths that do not exist:\n  "
         + "\n  ".join(missing)
         + "\n\nEither the file was renamed and the doc was not updated, or the "
-          "doc invented a filename. Both have happened here."
+          "doc invented a filename. Both have happened here.\n"
+          "(A path git ignores -- a user-created .env, say -- is exempt and "
+          "would not be listed.)"
     )
 
 
