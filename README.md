@@ -60,7 +60,7 @@ added to it is forced on every user of the package:
 
 ```bash
 pip install -e ".[dev]"     # adds pytest; the base install does not
-pytest tests/ -q            # 248 tests
+pytest tests/ -q            # 255 tests on a fresh clone
 ```
 
 Two groups are worth knowing about:
@@ -74,8 +74,17 @@ pytest tests/test_ops_local_vllm_setup.py -q
 pytest tests/ -q -k "shard or provenance or json2table"
 ```
 
-There is no CI, so the suite runs when you run it. Worth doing after touching
-`ops/local-vllm/` or anything under `pxgpt/core/`.
+**CI runs all of this on every push and pull request** — Linux on the supported
+Python floor and the current version, macOS, plus `shellcheck` over the ops
+scripts. The badge at the top of this file links to the runs, and the logs are
+public, so the suite's result is checkable without installing anything. Run it
+locally too after touching `ops/local-vllm/` or anything under `pxgpt/core/`;
+that is faster than waiting for a push.
+
+macOS is in the matrix on purpose. It is **not** a supported inference backend
+(see [Providers](#providers)), but the test suite must not assume an operating
+system — a test that read `/proc/meminfo` shipped undetected until it was found
+by hand on a Mac.
 
 ## Configuration
 
