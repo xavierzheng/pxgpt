@@ -1299,9 +1299,22 @@ build it — then fans the rest onto the warm prefix.
 |---|---|---|
 | `--concurrency` | 8 | cap on concurrent requests *within* one plant, after its cold shard. A hardware-pressure limit, **not** `n_shards - 1`: effective width is `min(--concurrency, n_shards - 1)`, so a 30-shard set still fans out 8. `1` = fully serial. |
 | `--pipeline-depth` | 2 | plants in flight, so one's cold prefill overlaps another's warm group. Refused above 2. |
-| `--mem-floor-gib` | 5 | do not *start* another plant below this host `MemAvailable`; recovers automatically. |
+| `--mem-floor-gib` | 5 | do not *start* another plant below this host `MemAvailable`; recovers automatically. **Linux only** — see below. |
 | `--limit` | — | run only the first N plants, for timing. |
 | `--max-tokens` | 2048 | per-shard output cap. `finish_reason == "length"` fails that shard rather than storing a truncated result. |
+
+> **The memory guard is Linux-only, and it fails open.** `MemAvailable` is read
+> from `/proc/meminfo`, which does not exist on macOS. There the reading is
+> `None`, `--mem-floor-gib` has no effect whatever you set it to, and the run
+> prints `Note: /proc/meminfo is unavailable, so the memory guard is off`. It
+> does not stop, and it does not fall back to another source.
+>
+> This matters most exactly where the guard would help most. The defaults
+> (`--concurrency 8`, `--pipeline-depth 2`, `--mem-floor-gib 5`) were measured on
+> a 128 GB GB10 box; a laptop has far less headroom and no guard. On macOS,
+> control the pressure yourself: `--pipeline-depth 1` to stop overlapping plants,
+> and a lower `--concurrency`. Run `--limit 4` first and watch Activity Monitor,
+> the way the `MemAvail` column would be watched on Linux.
 
 A separate global ceiling of `--concurrency + 1` requests applies across all
 in-flight plants. Depth alone would not bound this: depth 2 with width 8 could

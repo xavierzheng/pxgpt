@@ -258,6 +258,14 @@ def test_an_impossible_memory_floor_prevents_all_overlap(tmp_path, monkeypatch, 
     sd = _make_shard_set(tmp_path, 4)
     prov = RecordingProvider(delay=0.02)
 
+    # Pin the reading instead of taking the host's. `mem_available_gib` reads
+    # /proc/meminfo, which does not exist on macOS, where it returns None and
+    # the guard turns itself off -- so this test used to fail there for a
+    # reason that has nothing to do with the guard, and nothing to do with how
+    # much memory the machine has. The sibling test below covers the None path
+    # deliberately.
+    monkeypatch.setattr(sc, "mem_available_gib", lambda: 8.0)
+
     code = _run(monkeypatch, sd, tmp_path / "o", prov, tree=_make_tree(tmp_path, 3),
                 argv_extra=["--mem-floor-gib", "9999", "--pipeline-depth", "2"])
 
@@ -270,6 +278,9 @@ def test_an_impossible_memory_floor_prevents_all_overlap(tmp_path, monkeypatch, 
 
 def test_a_normal_floor_never_trips_the_guard(tmp_path, monkeypatch, capsys):
     sd = _make_shard_set(tmp_path, 4)
+
+    # Pinned for the same reason as above: assert on the guard, not on the host.
+    monkeypatch.setattr(sc, "mem_available_gib", lambda: 8.0)
 
     _run(monkeypatch, sd, tmp_path / "o", RecordingProvider(delay=0.01),
          tree=_make_tree(tmp_path, 3), argv_extra=["--mem-floor-gib", "0.001"])
