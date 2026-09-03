@@ -1,0 +1,70 @@
+name: CI
+
+# The point of this workflow is to be a signal a reviewer can check without
+# installing anything. The full pipeline needs a GPU and model weights and
+# nobody is going to stand that up to read a paper; the test suite needs
+# neither, so a green run plus a readable log makes "this is working software"
+# checkable rather than merely asserted.
+#
+# It needs no secrets: every test runs offline against fakes. Verified by
+# running the suite with the API keys unset and every HTTP proxy pointed at a
+# dead port.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: pytest · ${{ matrix.os }} · py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The floor and the current version, on the platform this is developed on.
+          - {os: ubuntu-latest, python: "3.10"}
+          - {os: ubuntu-latest, python: "3.13"}
+          # macOS is NOT a supported inference backend -- the visual token budget
+          # cannot be pinned there. It is a supported *test* platform, and that
+          # distinction is worth enforcing: a test that assumes /proc/meminfo
+          # exists is a bug wherever it runs, and one shipped undetected.
+          - {os: macos-latest, python: "3.13"}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install pxGPT with its test extra
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      # Installed so test_requested_extras_actually_exist can compare each
+      # requested extra against the distribution's real Provides-Extra. It skips
+      # anything not installed, which is exactly how `huggingface_hub[cli]` --
+      # an extra that does not exist -- went unnoticed: pip only warns.
+      - name: Install the ops requirements
+        run: pip install -r ops/local-vllm/requirements.txt
+
+      - name: Run the test suite
+        run: pytest tests/ -q
+
+  shellcheck:
+    name: shellcheck · ops scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: ./ops/local-vllm
+          severity: warning

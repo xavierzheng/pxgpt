@@ -1,5 +1,7 @@
 # pxGPT - Plant Analysis Tool
 
+[![CI](https://github.com/xavierzheng/pxgpt/actions/workflows/ci.yml/badge.svg)](https://github.com/xavierzheng/pxgpt/actions/workflows/ci.yml)
+
 **pxGPT** (Phenotype eXplorer GPT) is a command-line tool for large-scale plant phenotyping using multiple LLM providers (Anthropic Claude, OpenAI, Ollama, LM Studio, vLLM).
 
 > **Running locally? Use vLLM.** Ollama and LM Studio work, but neither lets you
@@ -505,6 +507,12 @@ Run `pxgpt <command> --help` for full argument details.
 | **Ollama** | — | — | ⚠️ | Works, **not recommended** — no visual-token control ([why](#which-local-backend-use-vllm)); removal planned. OpenAI-compatible (`OLLAMA_BASE_URL` + `/v1`); use a vision model |
 | **LM Studio** | — | — | ⚠️ | Works, **not recommended** — same reason; removal planned. OpenAI-compatible (`LMSTUDIO_*`); use a vision model |
 | **vLLM** | — | — | ✅ | **Recommended local backend** — pins the per-image token budget. OpenAI-compatible (`VLLM_*`, model required); use a vision model — [hosting guide](ops/local-vllm/README_vllm.md) |
+
+**pxGPT does not support Apple Silicon.** The visual token budget cannot be
+pinned there, and an unpinnable tokenizer makes the measurement irreproducible —
+the same reason Ollama and LM Studio are not supported. macOS remains a
+supported platform for the **test suite**, which needs no GPU and no weights;
+CI runs it there on every push.
 
 For `schema`, the JSON schema always reaches the model as a real decoding constraint, on every provider: Anthropic gets native `output_config.format`, the OpenAI-wire providers (OpenAI, Ollama, LM Studio, vLLM) get `response_format` `json_schema` with `strict: true`. It is **not** pasted into the system prompt, so the user prompt does **not** need to ask for JSON-only output. If a backend rejects `response_format` the command fails rather than silently falling back to prompt text.
 
