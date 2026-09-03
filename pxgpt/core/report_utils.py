@@ -12,9 +12,10 @@ Two input shapes are handled:
   multiple cultivars, each a ``### <id>`` section joined by ``---``.  Each
   section's ``<report>`` is extracted and the section structure is preserved.
 
-The core regex helpers mirror the standalone ``extract_report_tags.py`` script
-(kept alive for single-file use); this module adds the grouped-file handling
-used by the ``pxgpt extract-report`` command.
+The core regex helpers began as the standalone ``extract_report_tags.py``
+script, removed with the rest of the v0.1.0 method and preserved at the tag
+``v0.1.0-bioinformatics-submission``; this module adds the grouped-file
+handling used by the ``pxgpt extract-report`` command.
 """
 
 import re

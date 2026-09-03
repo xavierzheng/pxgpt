@@ -851,7 +851,7 @@ pxgpt extract-report --input descriptions.txt --output descriptions.clean.txt
 pxgpt extract-report --input one_plant.txt > one_plant.clean.txt
 ```
 
-> The standalone `extract_report_tags.py` script is still available for the simple single-file case (`python extract_report_tags.py FILE`), but `pxgpt extract-report` is preferred — it also handles the grouped batch output.
+> `pxgpt extract-report` replaced a standalone `extract_report_tags.py` script, which was removed along with the rest of the v0.1.0 method. It is preserved, with the whole pipeline that used it, at the tag `v0.1.0-bioinformatics-submission`.
 
 ---
 
@@ -963,7 +963,7 @@ done
   done
   ```
 
-  (Each file is a single response, so `extract-report` runs in `single` mode automatically. The legacy `python extract_report_tags.py results/${i}_description.txt` works identically here.)
+  (Each file is a single response, so `extract-report` runs in `single` mode automatically.)
 
 - **If you use native reasoning (`--effort`) or a plain prompt** — there are no tags, so the whole file *is* the description. Just concatenate, no extraction:
 
@@ -1411,8 +1411,6 @@ Run `pxgpt normalize-schema` to add these automatically. Review the `required` a
   }
 }
 ```
-
-See [Example_master_schema.tsv](Example_master_schema.tsv) for the flattened field reference of the included Brassica schema.
 
 ---
 

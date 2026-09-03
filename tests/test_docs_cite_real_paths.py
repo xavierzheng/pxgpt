@@ -95,9 +95,32 @@ def _git_ignored(paths):
     return {line.strip() for line in r.stdout.splitlines() if line.strip()}
 
 
+def _linked_paths(text, doc):
+    """Markdown link targets that name a file, resolved against *doc*'s folder.
+
+    The prefix scan above only sees paths under a known directory, so it misses
+    a repo-root file entirely -- `[x](Example_master_schema.tsv)` was invisible
+    to it. Links are where a stale filename does the most damage anyway: a
+    reader clicks it.
+    """
+    for m in re.finditer(r"\]\(([^)\s]+)\)", text):
+        target = m.group(1).split("#", 1)[0]
+        if not target or "://" in target or target.startswith(("mailto:", "#")):
+            continue
+        if "." not in Path(target).name:      # a directory, or an anchor-only link
+            continue
+        resolved = (doc.parent / target).resolve()
+        try:
+            yield str(resolved.relative_to(REPO))
+        except ValueError:
+            continue                          # points outside the repo; not ours
+
+
 @pytest.mark.parametrize("doc", DOCS, ids=lambda p: str(p.relative_to(REPO)))
 def test_cited_paths_exist(doc):
-    absent = {p for p in _cited_paths(doc.read_text()) if not (REPO / p).exists()}
+    text = doc.read_text()
+    cited = set(_cited_paths(text)) | set(_linked_paths(text, doc))
+    absent = {p for p in cited if not (REPO / p).exists()}
     missing = sorted(absent - _git_ignored(absent))
     assert not missing, (
         f"{doc.relative_to(REPO)} cites paths that do not exist:\n  "

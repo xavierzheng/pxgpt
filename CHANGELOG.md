@@ -1,5 +1,23 @@
 # Changelog
 
+## Removals
+
+- **The v0.1.0 method's artefacts are gone from `main`: `results.txt`,
+  `extract_report_tags.py`, `Example_master_schema.tsv`.** They were the
+  original submission's outputs and helper, produced with
+  `claude-3-7-sonnet-20250219` in the `<think>`/`<report>` format the pipeline
+  no longer emits — Stage 3 has used native structured output for some time.
+  Nothing referenced `results.txt` at all; `extract_report_tags.py` was
+  superseded by `pxgpt extract-report`, and `Example_master_schema.tsv`
+  described a schema shape that is no longer the one produced.
+  - Deleted rather than moved to an archive folder, because the archive already
+    exists and is better: the tag **`v0.1.0-bioinformatics-submission`**
+    (commit `c0f59e4`) holds the entire submitted state — all 28 files, the
+    prompts, and the pinned model identifier. A folder of three loose files
+    carries none of that context.
+  - Recover any of them with
+    `git show v0.1.0-bioinformatics-submission:<path>`.
+
 ## New features
 
 - **Record-level provenance: every merged Stage 3 record carries its own `_provenance` block.**

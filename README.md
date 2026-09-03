@@ -22,7 +22,6 @@
 - **Robust error handling**: exponential backoff, per-request failure isolation, crash-safe manifest
 - **Crash-safe sequential dispatch** (Stage 3 sharded): `--dispatch sequential` persists each shard to disk as it returns and **resumes** after a kill/crash — skipping already-completed calls (no re-billing) and retrying transient overloads in-run
 - **Recoverable batch gaps** (Stage 3 sharded): `fetch-results` saves every succeeded shard to `<output>/_partial/`, so a batch that errored some shards (e.g. a transient `overloaded_error`) is fixed by a short `--dispatch sequential` resume that re-issues **only** the failed shards
-- **Example master schema**: see [Example_master_schema.tsv](Example_master_schema.tsv) for the flattened field reference
 
 ## Pipeline overview
 
