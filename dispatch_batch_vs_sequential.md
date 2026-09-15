@@ -283,7 +283,7 @@ images against a 19.6-image mean over the whole 142-plant collection
 quarter. Measured over 10 plants at `gpt-5.6-luna` pricing, 142 plants
 sequentially cost **$11.91 at budget 40** versus **$5.10 at budget 80** — $5.96 and
 $2.55 respectively through `--dispatch batch`. Budget 320 extrapolates to ~$1.7
-(n = 1 plant), but see the quality verdict below: do not use it. Output tokens
+(n = 1 plant). Output tokens
 (~2,600 per plant) barely move, because the same 49 rationales get written either
 way.
 
@@ -292,7 +292,8 @@ way.
 in the 02_mature_v1 master, 45 of 45 nominal/ordinal traits get it injected, none
 list it themselves. So the shard set is not merely a split of the master, and you
 cannot skip `pxgpt shard-schema` on the grounds that OpenAI would accept a bigger
-schema. Raising the budget is safe; bypassing the generator is not.
+schema. Raising the budget preserves the generated field and value definitions;
+bypassing the generator does not.
 
 Before raising it, weigh three things:
 
@@ -302,21 +303,24 @@ Before raising it, weigh three things:
   you do this.
 - **Blast radius.** With 10 shards a failed request costs ~5 traits for that
   plant; with 1 shard it costs all 49.
-- **Quality does change, but less than the run-to-run noise.** Measured over 10
-  plants, two runs per configuration
+- **Output differences are not the same as accuracy loss.** A 10-plant pilot with
+  two runs per configuration
   ([`experiment_2026-08-14_shard_budget_openai.md`](experiment_2026-08-14_shard_budget_openai.md)):
-  a configuration disagrees with **itself** on 7.0 of 49 traits between runs, and
-  budget 80 disagrees with budget 40 on 8.2 — an excess of **+1.68 traits over all
-  49 pooled** (paired t(9) = 3.03, p = 0.014, 95% CI +0.42 … +2.93). Over the 45
+  found that a configuration disagreed with **itself** on 7.0 of 49 traits between
+  runs, while budget 80 disagreed with budget 40 on 8.2 — an excess of **+1.68
+  traits over all 49 pooled** (paired t(9) = 3.03, p = 0.014, 95% CI +0.42 …
+  +2.93). Over the 45
   **categorical** traits alone — the subset that speaks to scoring, since the 4
   quantitative traits are ruler estimates — the excess is **+1.88** (t(9) = 3.23,
   p = 0.010, 95% CI +0.56 … +3.19), and categorical run-to-run reproducibility is
-  **89.8%, Gwet's AC1 0.88**. Real, and smaller than a re-run. Per-trait
-  rationale length drops 15% (180.6 → 152.9 chars), which matters because
-  `trait_object()` puts `rationale` before `value` precisely to force
-  chain-of-thought. Budget 80 is a fair trade for 2.43× less input cost; budget
-  320 is not — on one plant it diverged 10.2 traits, as much as changing provider,
-  and cut rationale length by a third.
+  **89.8%, Gwet's AC1 0.88**. Because the pilot had no human reference, it could
+  not show which budget was more accurate. A later human-referenced ablation on
+  119 `mature_v2` plants compared the frozen budget-40 nine-shard condition with
+  budget 320 in one request, using two replicates per condition. Mean categorical
+  accuracy was 0.7066 versus 0.7150; the difference was +0.0084 (95% CI −0.0006
+  to +0.0175; paired t-test p = 0.0712), so no accuracy loss was detected. Larger
+  budgets shortened rationales in both studies, but rationale length alone did
+  not predict accuracy.
 
 ## `--dispatch sequential` (OpenAI)
 
