@@ -1,15 +1,24 @@
 # Experiment: does raising `--shard-budget` on OpenAI cost quality?
 
 **Date:** 2026-08-14
+**Conclusion updated:** 2026-09-15
 **Model:** `gpt-5.6-luna` (`STAGE3_EFFORT` off → `reasoning.effort: "none"`, `TEMPERATURE=0.5`)
 **Plants:** experiment A — 1 (`s0001`); experiment B — 10 (`s0001`–`s0011`)
 
-> **Data, scripts and reproduction notes:**
-> `02_mature_v1/Result_openai_shard_budget_pilot/LAB_NOTEBOOK.md`.
-> Every number here can be re-derived from the archived per-plant JSON with
-> `analysis/compare_configs.py` — no inference, no API calls, no cost. A long-format
-> table (`tables/all_configs_long.csv`, 1,960 rows) is ready to join against the
-> manual annotations.
+> **Status:** the original quality conclusion from this pilot is superseded. These
+> runs compared model outputs with one another but not with human reference labels,
+> so they measured disagreement rather than accuracy. A later human-referenced
+> ablation tested 119 `mature_v2` plants, with two replicates per condition. Mean
+> categorical accuracy was 0.7066 with the frozen nine-shard set (budget 40) and
+> 0.7150 without sharding (one request, budget 320). The difference was +0.0084
+> (95% CI −0.0006 to +0.0175; paired t-test p = 0.0712), so no accuracy loss was
+> detected. This document remains useful for its historical cost, output-difference
+> and rationale-length measurements, but it does not show that a larger shard
+> budget reduces scoring quality.
+>
+> The raw outputs and study-specific analysis artifacts are not distributed with
+> the pxGPT software repository. If released, they should be deposited as a
+> versioned research-data archive and cited here with a persistent identifier.
 
 ## Question
 
@@ -19,11 +28,12 @@ fewer requests per plant and, because every request repeats the same ~30 k-token
 image payload, a nearly proportional cut in input cost. The open question was
 whether packing more traits into one request degrades the scoring.
 
-## Answer
+## Updated answer
 
-**Budget 80 (4 shards) costs about 1.7 traits of the pooled 49 — 1.9 of the 45
-categorical traits — for a 2.43× saving, and that penalty is statistically
-detectable. Budget 320 (1 shard) is much worse and should not be used.**
+**Increasing the shard budget reduced input cost and changed some outputs in this
+10-plant pilot, but the pilot cannot identify those differences as errors because
+it has no human reference. The later 119-plant ablation found no detectable
+accuracy loss when sharding was removed (budget 320, one request).**
 
 Two experiments, in this order. The second supersedes the first wherever they
 overlap:
@@ -47,9 +57,10 @@ Headline numbers, disagreeing traits out of 49:
 quiet plant; across 10 plants a configuration disagrees with *itself* on 7 of 49
 traits on average, not 5. That reframes everything: budget 80's excess over noise
 is **+1.68 traits of the pooled 49** (paired t(9) = 3.03, p = 0.014,
-95% CI +0.42 … +2.93), which is real but modest — **re-running budget 40 already
-changes ~7 traits; switching to budget 80 changes ~8.2.** Over the 45 categorical
-traits alone the same test gives **+1.88** (t(9) = 3.23, p = 0.010,
+95% CI +0.42 … +2.93), which is statistically detectable but modest —
+**re-running budget 40 already changes ~7 traits; switching to budget 80 changes
+~8.2.** This is excess disagreement, not evidence of lower accuracy. Over the 45
+categorical traits alone the same test gives **+1.88** (t(9) = 3.23, p = 0.010,
 95% CI +0.56 … +3.19) — see the subset table below, and quote the subset with the
 number.
 
@@ -75,8 +86,8 @@ category**, not a scoring failure — read their repeatability as a CV instead
 ([below](#quantitative-traits-in-their-own-units)): 3% on leaf count, 8% on height, 9% on blade length,
 28% on canopy spread.
 
-Excluding them does not rescue budget 80: the categorical penalty is slightly
-*clearer* (+1.88 of 45, p = 0.010, 8 of 10 plants above their own noise).
+Excluding them makes the categorical excess disagreement slightly *clearer*
+(+1.88 of 45, p = 0.010, 8 of 10 plants above their own noise).
 Categorical reproducibility is **89.8% raw agreement, Gwet's AC1 0.88** — better
 than the 86% the pooled 49-trait count implies.
 
@@ -90,38 +101,25 @@ corrections.
 
 # Experiment A — one plant, three budgets
 
-## Data provenance
+## Experimental setup
 
-Everything below is reproducible from these exact paths. Nothing in
-`shard_master_schema/` or `Result_Stage3/` was modified (all 22 shard-set files
-verified byte-identical by sha256 after every run).
-
-| what | path |
-|---|---|
-| images (15 × `.jpg`) | `/home/xavier/project/pxgpt/02_mature_v1/images/s0001` |
-| master schema | `/home/xavier/project/pxgpt/02_mature_v1/master_schema_v2.json` |
-| system prompt (override) | `/home/xavier/project/pxgpt/02_mature_v1/system_2_schema.txt` |
-| shard set, budget 40 (frozen, under human evaluation) | `/home/xavier/project/pxgpt/02_mature_v1/shard_master_schema` |
-| shard set, budget 80 (generated for this experiment) | `/home/xavier/project/pxgpt/02_mature_v1/Result_openai_shard_budget_pilot/shardset_budget_80` |
-| shard set, budget 320 (generated for this experiment) | `/home/xavier/project/pxgpt/02_mature_v1/Result_openai_shard_budget_pilot/shardset_budget_320` |
-| **Anthropic reference result** (`claude-sonnet-5`, budget 40) | `/home/xavier/project/pxgpt/02_mature_v1/Result_Stage3/s0001.json` |
-| all raw OpenAI results from this experiment | `/home/xavier/project/pxgpt/02_mature_v1/Result_openai_shard_budget_pilot/` |
-
-The Anthropic reference is **your existing production run**, not something
-generated here — it is included only as a cross-provider yardstick for how large a
-"real" difference looks.
+Experiment A used 15 images of one `mature_v1` plant and the same 49-trait master
+schema at every budget. Fresh shard sets were generated at budgets 40, 80 and 320.
+The frozen budget-40 Anthropic production result was included only as a
+cross-provider comparison; it was not treated as ground truth. The frozen inputs
+and shard sets were verified unchanged across runs.
 
 Record labels used throughout:
 
-| label | provider / model | shards | dispatch | raw file (under `Result_openai_shard_budget_pilot/`) |
-|---|---|---|---|---|
-| `A-b40` | anthropic `claude-sonnet-5` | 10 | batch | *(your `02_mature_v1/Result_Stage3/s0001.json`)* |
-| `O-b40-s` | openai `gpt-5.6-luna` | 10 | sequential | `Result_Stage3_openai/s0001.json` |
-| `O-b40-b` | openai `gpt-5.6-luna` | 10 | batch | `Result_Stage3_openai_batch/s0001.json` |
-| `O-b80-1` | openai `gpt-5.6-luna` | 4 | sequential | `Result_b80_run1/s0001.json` |
-| `O-b80-2` | openai `gpt-5.6-luna` | 4 | sequential | `Result_b80_run2/s0001.json` |
-| `O-b320-1` | openai `gpt-5.6-luna` | 1 | sequential | `Result_b320_run1/s0001.json` |
-| `O-b320-2` | openai `gpt-5.6-luna` | 1 | sequential | `Result_b320_run2/s0001.json` |
+| label | provider / model | shards | dispatch |
+|---|---|---|---|
+| `A-b40` | anthropic `claude-sonnet-5` | 10 | batch |
+| `O-b40-s` | openai `gpt-5.6-luna` | 10 | sequential |
+| `O-b40-b` | openai `gpt-5.6-luna` | 10 | batch |
+| `O-b80-1` | openai `gpt-5.6-luna` | 4 | sequential |
+| `O-b80-2` | openai `gpt-5.6-luna` | 4 | sequential |
+| `O-b320-1` | openai `gpt-5.6-luna` | 1 | sequential |
+| `O-b320-2` | openai `gpt-5.6-luna` | 1 | sequential |
 
 Two runs per OpenAI configuration, so each configuration supplies its own
 run-to-run noise floor rather than being compared against an assumed one. For
@@ -131,8 +129,8 @@ tokens), so they function as two samples of one configuration.
 
 ## Shard-set generation
 
-`pxgpt shard-schema --master master_schema_v2.json --shard-budget N`, into a fresh
-directory each time. All sets retain **49/49 traits** and `not_assessable` on
+`pxgpt shard-schema` generated a fresh shard set at each budget. All sets retain
+**49/49 traits** and `not_assessable` on
 **every** nominal/ordinal enum — the generator injects that value (45 of 45 such
 traits in this master, none of which list it themselves), which is why raising the
 budget is acceptable but hand-writing a big schema is not.
@@ -163,7 +161,7 @@ $1.20/M output.
 
 `s0001` carries **15 images**, against a 19.9-image mean over experiment B's ten
 plants and a **19.6-image mean over the full 142-plant collection**
-(2,784 images / 142 plants, counted in `02_mature_v1/images/`). Because input
+(2,784 images / 142 plants). Because input
 scales with images, these per-plant figures under-state a whole-collection cost by
 about a quarter: budget 40 measures **403,506** input tokens per plant over ten
 plants, not 308,397.
@@ -199,11 +197,12 @@ Characters per trait rationale:
 | `O-b320-2` | 124 | 125 | 52 | 178 |
 
 The shortening is uniform, not concentrated on the traits that end up
-disagreeing (−32% on agreeing traits, −38% on disagreeing ones). Because
-`shard_builder.trait_object()` declares `rationale` *before* `value` specifically
-to force chain-of-thought under autoregressive decoding, a 32% shorter rationale
-means measurably less reasoning per trait. That is the design intent being
-partially defeated, and it is the most likely mechanism behind Result 3.
+disagreeing (−32% on agreeing traits, −38% on disagreeing ones).
+`shard_builder.trait_object()` declares `rationale` *before* `value` so that the
+rationale can condition the categorical value under autoregressive decoding.
+Rationale length alone is not a measure of reasoning or accuracy: the later
+119-plant ablation also found shorter rationales without a detectable loss in
+accuracy.
 
 A concrete pair, from a trait where the two configurations disagree:
 
@@ -223,7 +222,8 @@ leaf_blade.leaf_heterophylly_presence
 
 The budget-40 rationale cites specific structures and reaches `present`; the
 budget-320 one is generic and reaches the opposite conclusion. Note this is an
-illustration of the mechanism, not evidence about which answer is correct.
+illustration of an output difference, not evidence about which answer is correct
+or why the values differ.
 
 ## Result 3 — pairwise agreement
 
@@ -255,13 +255,14 @@ As disagreements (mean over all cross pairs in each class):
 
 Two readings matter:
 
-1. **The noise floor is 5/49 for every configuration.** Budget 320 is not
-   *noisier* than budget 40 — it is equally self-consistent and systematically
-   different. That rules out "the single shard is just less reliable" and points
-   at a shift in behaviour instead.
-2. **Budget 320's shift (10.2) equals a provider change (10.0).** That is the
-   scale of the decision being made. Budget 80's shift (6.5) is 1.5 traits above
-   noise.
+1. **The observed noise floor is 5/49 for every configuration.** In these two
+   runs, budget 320 was as self-consistent as budget 40 but produced different
+   values on some fields. With one plant and no human reference, this cannot be
+   interpreted as an accuracy difference.
+2. **The budget-320 difference (10.2) was similar in size to the provider
+   difference (10.0) on this plant.** These are output-disagreement counts, not
+   measures of which configuration is more accurate. Budget 80's difference
+   (6.5) was 1.5 traits above the observed within-configuration disagreement.
 
 ## Result 4 — the systematically shifted traits
 
@@ -311,20 +312,12 @@ variation with any confidence, and its noise estimate turned out to be low. B
 repeats the budget 40 vs budget 80 comparison on 10 plants, two runs per
 configuration, so each plant contributes its own noise floor.
 
-## Data provenance
-
-| what | path |
-|---|---|
-| images | `/home/xavier/project/pxgpt/02_mature_v1/images/{s0001,s0002,s0003,s0004,s0006,s0007,s0008,s0009,s0010,s0011}` |
-| master schema | `/home/xavier/project/pxgpt/02_mature_v1/master_schema_v2.json` |
-| system prompt (override) | `/home/xavier/project/pxgpt/02_mature_v1/system_2_schema.txt` |
-| shard set, budget 40 | `/home/xavier/project/pxgpt/02_mature_v1/shard_master_schema` (frozen) |
-| shard set, budget 80 | `/home/xavier/project/pxgpt/02_mature_v1/Result_openai_shard_budget_pilot/shardset_budget_80` |
-| raw results + analysis output | `/home/xavier/project/pxgpt/02_mature_v1/Result_openai_shard_budget_pilot/tenplant/` |
+## Experimental setup
 
 The 10 plants are the first ten by ID (note `s0005` does not exist in the image
 tree). Image counts vary 15–26 per plant, 199 images total — deliberately not
-uniform, so the result is not specific to one image count.
+uniform, so the result is not specific to one image count. The same master schema,
+system prompt and generated field definitions were used at both budgets.
 
 Four `--dispatch batch` submissions, 280 requests total, **0 failures**:
 
@@ -361,9 +354,9 @@ plant, and these 10 plants average **19.9 images** against **19.6 for the whole
 
 ## Validity check: the two shard sets differ ONLY in partitioning
 
-The frozen budget-40 set was generated on 2026-07-30 and `master_schema_v2.json`
-was copied in on 2026-08-14, so a changed master would have confounded the whole
-comparison. Ruled out:
+The frozen budget-40 set was generated on 2026-07-30. A changed master schema
+would have confounded the comparison, so the two generated shard sets were checked
+directly:
 
 - Regenerating budget 40 from today's master reproduces the frozen shard schemas
   **byte-identically** (all 10 files, sha256).
@@ -412,14 +405,12 @@ t(9) = 3.23   two-sided p = 0.0104   95% CI  +0.56 … +3.19
 8 of 10 plants diverged more than their own noise
 ```
 
-Both blocks come from `analysis/compare_configs.py`; the categorical one is the
-number [`HANDOFF.md`](HANDOFF.md) and the lab notebook quote. Cite the subset with
-the number — the pooled +1.68 / CI +0.42 … +2.93 / "7 of 10" and the categorical
+The pooled +1.68 / CI +0.42 … +2.93 / "7 of 10" and the categorical
 +1.88 / CI +0.56 … +3.19 / "8 of 10" are different measurements, not a
 disagreement.
 
-So yes — detectable, and small. The confidence interval spans "half a trait" to
-"three traits". Image count does not predict divergence
+The excess disagreement is detectable and small. Its confidence interval spans
+"half a trait" to "three traits". Image count does not predict divergence
 (Pearson r = +0.03, n = 10).
 
 ### The most important number is the noise floor itself
@@ -428,14 +419,14 @@ A configuration disagrees with **itself** on 7 of 49 traits between two runs at
 `TEMPERATURE=0.5`. Stated as a rate that is 86%, but **the pooled figure is the
 wrong one to quote**: it drags the 4 ruler-eyeballed quantitative traits into a
 count of categorical agreement. On the 45 categorical traits the same two runs give
-**89.8% raw agreement and Gwet's AC1 0.88** (`analysis/reproducibility_b40.txt`) —
-so the honest headline is **~90% categorical run-to-run reproducibility, AC1 0.88**,
+**89.8% raw agreement and Gwet's AC1 0.88**. The appropriate headline is therefore
+**~90% categorical run-to-run reproducibility, AC1 0.88**,
 with the quantitative traits reported separately as CVs.
 
 Either way this is a property of the current production setup, not of budget 80,
-and it is larger than the entire budget effect. Any downstream analysis that treats
-a single Stage 3 run as a fixed measurement is absorbing ~10% per-trait categorical
-instability already.
+and it is larger than the measured excess disagreement between budgets 40 and 80.
+Any downstream analysis that treats a single Stage 3 run as a fixed measurement
+is absorbing ~10% per-trait categorical instability already.
 
 ## Result — rationale length
 
@@ -473,7 +464,7 @@ accordingly.
 This corrects experiment A twice over. From one plant it looked as though budget 80
 shifted a specific handful of traits; across ten it does not concentrate anywhere,
 and the single apparent concentration is a ruler-eyeballed measurement. Budget 80
-is diffusely slightly less stable, not biased on particular traits.
+produces diffuse differences rather than a directional shift in particular traits.
 
 ## Quantitative traits, in their own units
 
@@ -510,18 +501,20 @@ values.
 
 - **Keep budget 40 for anything compared against the human evaluation.** That
   evaluation runs against the frozen budget-40 shard set; re-sharding makes the
-  results incomparable regardless of quality. This is a blocker independent of the
-  measurements above.
-- **Budget 80 is defensible for a new collection**: 2.43× less input cost
+  model configuration different, regardless of whether accuracy changes.
+- **A larger budget can reduce OpenAI input cost for a new collection.** In this
+  pilot, budget 80 gave a 2.43× reduction
   ($11.91 → $5.10 per 142 plants sequentially, or $5.96 → $2.55 via
-  `--dispatch batch`) for +1.68 traits of divergence beyond noise. Note the honest
-  framing — re-running budget 40 already moves ~7 traits, so budget 80 moves ~1.7
-  more than a re-run would.
-- **Do not use budget 320.** On one plant it diverged 10.2 traits, as much as
-  changing provider, and cut rationale length by a third. Not re-tested on 10
-  plants because experiment A was already disqualifying.
-- **Fix provider and shard budget within a collection.** Both move results by
-  enough traits to be mistaken for biological variation if mixed.
+  `--dispatch batch`). It produced +1.68 traits of disagreement beyond the
+  within-configuration rate, but this pilot could not determine whether those
+  changes were more or less accurate.
+- **Budget 320 is technically viable on OpenAI.** The later 119-plant ablation
+  completed with one request per plant and found no detectable accuracy loss
+  relative to budget 40. This result supports its use on that tested dataset; it
+  does not guarantee the same result for every schema, model or collection.
+- **Fix the provider, model, frozen schema and shard configuration within a formal
+  comparison.** This keeps the model inputs and output contract reproducible and
+  avoids attributing configuration differences to biological variation.
 - **Consider whether one run per plant is enough at all.** The 7/49 noise floor is
   the largest effect measured here. If per-trait reliability matters, two runs and
   a disagreement flag would buy more than any budget change — and at budget 80,
@@ -530,146 +523,19 @@ values.
 # Limitations
 
 - **No ground truth in either experiment.** Every comparison is between model
-  configurations, so "more divergent" is not "less accurate". Which configuration
-  is closer to truth needs the manual corrections; the per-trait table at the end
-  has an empty `human` column for exactly that.
+  configurations, so "more divergent" is not "less accurate". The later
+  human-referenced 119-plant ablation supplies the accuracy comparison that this
+  pilot lacked and supersedes its original quality conclusion.
 - **10 plants, 2 runs each.** Enough to establish the noise floor and to detect
-  the budget-80 excess (p = 0.014), not enough to characterise which *kinds* of
-  traits are affected — 23 traits with 1–4 hits each is too sparse for that.
+  excess disagreement at budget 80 (p = 0.014), not enough to characterise which
+  *kinds* of traits are affected — 23 traits with 1–4 hits each is too sparse for
+  that.
 - **Budgets 160 and 320 were only compile-checked on 10 plants, not scored.** The
-  320 result is n = 1.
+  budget-320 result reported in this historical pilot is n = 1; the later
+  119-plant ablation used a different dataset and frozen schema.
 - Cost figures scale with images per plant (15–26 here, mean 19.9; the full
   142-plant collection means 19.6, so these 10 plants extrapolate cleanly). A
   collection with more images per plant pays proportionally more, and the budget
   saving grows in absolute terms.
 - All runs used `STAGE3_EFFORT` off (`reasoning.effort: "none"`) and
   `TEMPERATURE=0.5`. Reasoning-enabled runs may behave differently — untested.
-
-
-## `pxgpt json-to-table` verification on OpenAI output
-
-Separately requested: confirm `json-to-table` handles OpenAI-produced Stage 3
-JSON. It does — the merged records are provider-agnostic by construction, since
-both providers go through the same `merge_sharded_results`.
-
-```bash
-pxgpt json-to-table \
-  --result-dir Result_Stage3_openai_batch \
-  --master-schema 02_mature_v1/master_schema_v2.json \
-  --shard-dir 02_mature_v1/shard_master_schema \
-  --out-prefix table_openai_b40
-# -> Rows: 2   Columns: 50
-```
-
-Verified against the source JSON for all three scale types:
-
-| scale type | JSON value | table column | table value | notes |
-|---|---|---|---|---|
-| quantitative | `9.0` | `plant_height_cm` | `9.0` (float64) | unit suffix appended, numeric dtype |
-| ordinal | `2` | `stem_elongation` | `slightly_elongated` | integer level reconstructed to the schema label |
-| ordinal | `0` | `leaf_blade_anthocyanin_coverage` | `none` | level 0 handled (not treated as missing) |
-| nominal | `open_spreading` | `plant_growth_habit` | `open_spreading` | plain string passthrough |
-
-The feather file carries ordinal columns as **ordered** pandas Categoricals
-(`ordered=True` confirmed), so `arrow::read_feather()` reads them as ordered
-factors in R. 2 rows for 2 plants, 50 columns = 49 traits + `cultivar_id`.
-
-Output archived at
-`Result_openai_shard_budget_pilot/json_to_table_verification_b40.csv`.
-
-Run `json-to-table` only on a **completed** result set: recover any shards left
-missing (via `--dispatch sequential` to the same `--output`, which reads
-`_partial/`) before tabulating.
-
-## Reproducing this
-
-```bash
-set -a && source project_A.env && set +a     # OPENAI_API_KEY; STAGE3_EFFORT unset (off)
-cd /home/xavier/project/pxgpt/02_mature_v1
-
-# 1. generate a shard set at the budget under test (writes a NEW directory)
-pxgpt shard-schema --master master_schema_v2.json \
-    --shard-dir /tmp/b80 --shard-budget 80
-
-# 2. one plant, two independent runs -> separate --output dirs
-mkdir -p /tmp/one/s0001 && cp images/s0001/*.jpg /tmp/one/s0001/
-for R in 1 2; do
-  pxgpt phenotype-batch-openai \
-    --input-dir /tmp/one \
-    --shard-dir /tmp/b80 \
-    --system-prompt system_2_schema.txt \
-    --dispatch sequential \
-    --output /tmp/Result_b80_run$R \
-    --manifest /tmp/manifest_pilot.json
-done
-
-# 3. clean up the OpenAI uploads (OpenAI bills for stored files)
-pxgpt cleanup-files --manifest /tmp/manifest_pilot.json
-```
-
-Separate `--output` directories are required: a second run pointed at the first
-one would adopt its `_partial/` shards and make no API calls at all.
-
-## Full per-trait results — `s0001` (experiment A)
-
-⚠ marks a trait where both runs of that budget diverge from both budget-40 runs.
-The `human` column is intentionally empty — fill it from the manual corrections to
-turn this table into an accuracy comparison rather than a consistency one.
-
-This is one plant. For the same comparison across all 10 plants of experiment B,
-the raw records are at
-`02_mature_v1/Result_openai_shard_budget_pilot/tenplant/Result_b{40,80}_r{1,2}/<plant>.json`,
-and `pxgpt json-to-table` will flatten any of those directories into one row per
-plant for a bulk diff against the corrections.
-
-| group | trait | scale | A-b40 | O-b40-s | O-b40-b | O-b80-1 | O-b80-2 | O-b320-1 | O-b320-2 | human |
-|---|---|---|---|---|---|---|---|---|---|---|
-| whole_plant_architecture | plant_growth_habit | nom | `open_spreading` | `open_spreading` | `open_spreading` | `open_spreading` | `open_spreading` | `open_spreading` | `open_spreading` |  |
-| whole_plant_architecture | plant_branching_habit | nom | `unbranched_single_axis` | `unbranched_single_axis` | `unbranched_single_axis` | `unbranched_single_axis` | `unbranched_single_axis` | `unbranched_single_axis` | `unbranched_single_axis` |  |
-| whole_plant_architecture | plant_height | qty | `10.5` | `10.0` | `9.0` | `10.0` | `10.0` | `10.0` | `10.0` |  |
-| whole_plant_architecture | plant_canopy_spread ⚠b80 ⚠b320 | qty | `19.0` | `12.0` | `14.0` | `10.0` | `11.0` | `12.5` | `13.0` |  |
-| whole_plant_architecture | plant_true_leaf_number | qty | `5.0` | `8.0` | `8.0` | `8.0` | `8.0` | `8.0` | `8.0` |  |
-| whole_plant_architecture | plant_axillary_bud_development | nom | `absent` | `absent` | `absent` | `absent` | `absent` | `absent` | `absent` |  |
-| whole_plant_architecture | plant_head_formation | nom | `absent` | `absent` | `absent` | `absent` | `absent` | `absent` | `absent` |  |
-| whole_plant_architecture | leaf_phyllotaxy | nom | `spiral_alternate` | `spiral_alternate` | `spiral_alternate` | `spiral_alternate` | `spiral_alternate` | `spiral_alternate` | `spiral_alternate` |  |
-| stem | stem_elongation | ord | `2` | `2` | `2` | `2` | `2` | `2` | `2` |  |
-| stem | stem_base_anthocyanin | nom | `present` | `present` | `present` | `present` | `present` | `present` | `present` |  |
-| stem | stem_surface_texture | nom | `smooth` | `smooth` | `smooth` | `smooth` | `smooth` | `smooth` | `smooth` |  |
-| stem | stem_thickness | ord | `1` | `2` | `2` | `2` | `2` | `2` | `2` |  |
-| stem | stem_leaf_scars | nom | `absent` | `absent` | `absent` | `absent` | `absent` | `absent` | `absent` |  |
-| leaf_blade | leaf_blade_shape | nom | `obovate_spatulate` | `obovate_spatulate` | `obovate_spatulate` | `obovate_spatulate` | `obovate_spatulate` | `obovate_spatulate` | `obovate_spatulate` |  |
-| leaf_blade | leaf_blade_apex_shape | nom | `rounded` | `rounded` | `rounded` | `rounded` | `rounded` | `rounded` | `rounded` |  |
-| leaf_blade | leaf_blade_base_shape | nom | `tapering_decurrent` | `tapering_decurrent` | `tapering_decurrent` | `tapering_decurrent` | `tapering_decurrent` | `tapering_decurrent` | `tapering_decurrent` |  |
-| leaf_blade | leaf_blade_length ⚠b80 ⚠b320 | qty | `10.5` | `5.0` | `5.0` | `7.0` | `6.0` | `8.0` | `8.0` |  |
-| leaf_blade | leaf_blade_curvature | nom | `flat` | `flat` | `flat` | `flat` | `flat` | `concave_cupped` | `flat` |  |
-| leaf_blade | leaf_blade_green_intensity | ord | `2` | `2` | `2` | `2` | `2` | `2` | `2` |  |
-| leaf_blade | leaf_blade_anthocyanin_coverage | ord | `0` | `0` | `0` | `0` | `0` | `0` | `0` |  |
-| leaf_blade | leaf_heterophylly_presence ⚠b320 | nom | `absent` | `present` | `present` | `present` | `present` | `absent` | `absent` |  |
-| leaf_margin | leaf_margin_type | nom | `wavy_undulate` | `toothed` | `wavy_undulate` | `wavy_undulate` | `toothed` | `wavy_undulate` | `toothed` |  |
-| leaf_margin | leaf_margin_anthocyanin | nom | `absent` | `absent` | `absent` | `absent` | `absent` | `absent` | `absent` |  |
-| leaf_surface | leaf_surface_texture ⚠b80 ⚠b320 | ord | `1` | `1` | `1` | `2` | `2` | `2` | `2` |  |
-| leaf_surface | leaf_surface_glaucousness | ord | `1` | `1` | `1` | `1` | `1` | `1` | `1` |  |
-| leaf_surface | leaf_surface_pubescence | nom | `glabrous` | `glabrous` | `glabrous` | `glabrous` | `glabrous` | `glabrous` | `glabrous` |  |
-| leaf_surface | leaf_abaxial_anthocyanin | nom | `not_assessable` | `absent` | `absent` | `absent` | `absent` | `absent` | `absent` |  |
-| venation | leaf_venation_pattern | nom | `pinnate_reticulate` | `pinnate_reticulate` | `pinnate_reticulate` | `pinnate_reticulate` | `pinnate_reticulate` | `pinnate_reticulate` | `pinnate_reticulate` |  |
-| venation | leaf_vein_anthocyanin | nom | `absent` | `absent` | `absent` | `absent` | `absent` | `absent` | `absent` |  |
-| petiole | petiole_thickness | ord | `2` | `2` | `2` | `1` | `2` | `2` | `2` |  |
-| petiole | petiole_relative_length ⚠b320 | ord | `1` | `2` | `2` | `2` | `2` | `1` | `1` |  |
-| petiole | petiole_anthocyanin | nom | `absent` | `absent` | `absent` | `absent` | `present` | `absent` | `present` |  |
-| petiole | petiole_cross_section_shape ⚠b80 | nom | `slender_ungrooved` | `not_assessable` | `flattened_channeled` | `slender_ungrooved` | `slender_ungrooved` | `slender_ungrooved` | `flattened_channeled` |  |
-| inflorescence | inflorescence_stage | ord | `0` | `0` | `0` | `0` | `0` | `0` | `0` |  |
-| inflorescence | flower_petal_color_hue | nom | `not_assessable` | `not_assessable` | `not_assessable` | `not_assessable` | `not_assessable` | `not_assessable` | `not_assessable` |  |
-| inflorescence | inflorescence_curd_formation | nom | `absent` | `absent` | `absent` | `absent` | `absent` | `absent` | `absent` |  |
-| inflorescence | fruit_silique_presence | nom | `absent` | `absent` | `absent` | `absent` | `absent` | `absent` | `absent` |  |
-| root_system | root_density | ord | `1` | `1` | `2` | `1` | `1` | `2` | `2` |  |
-| root_system | root_color | nom | `white_cream` | `white_cream` | `white_cream` | `white_cream` | `white_cream` | `white_cream` | `white_cream` |  |
-| root_system | root_hair_visibility ⚠b320 | nom | `sparse_or_absent` | `sparse_or_absent` | `sparse_or_absent` | `sparse_or_absent` | `sparse_or_absent` | `present` | `present` |  |
-| root_system | root_colonization_extent ⚠b320 | ord | `1` | `1` | `1` | `1` | `1` | `2` | `2` |  |
-| phenology | plant_developmental_stage | ord | `2` | `2` | `2` | `2` | `2` | `2` | `2` |  |
-| phenology | cotyledon_persistence | nom | `absent` | `absent` | `absent` | `absent` | `absent` | `absent` | `absent` |  |
-| phenology | foliar_senescence | ord | `0` | `0` | `0` | `0` | `0` | `0` | `0` |  |
-| foliar_condition | leaf_interveinal_chlorosis | nom | `absent` | `absent` | `absent` | `absent` | `absent` | `absent` | `absent` |  |
-| foliar_condition | leaf_necrotic_lesions | nom | `absent` | `absent` | `absent` | `absent` | `absent` | `absent` | `absent` |  |
-| foliar_condition | leaf_variegation | nom | `absent` | `absent` | `absent` | `absent` | `absent` | `absent` | `absent` |  |
-| leaf_damage | leaf_damage_type | nom | `none` | `none` | `none` | `none` | `none` | `none` | `none` |  |
-| leaf_damage | leaf_damage_extent | ord | `0` | `0` | `0` | `0` | `0` | `0` | `0` |  |
