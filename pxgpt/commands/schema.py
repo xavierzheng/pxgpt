@@ -967,10 +967,6 @@ def _print_run_summary(plants, plants_done, stats, status_counts, completions,
           f"{f'{mem_low:.1f} GiB' if mem_low is not None else 'n/a'}; "
           f"guard withheld a plant {guard_trips} time(s)")
     print(f"Peak in-flight:    {gate.peak} request(s) (global cap {gate.limit})")
-    # Ticket #6 is not implemented, so there is no value_status field to count.
-    print("value_status:      not available — ticket #6 (value_raw / "
-          "value_status) is not implemented, so merged records carry no "
-          "per-value status to summarise.")
     if failed_total:
         print(f"\n{failed_total} shard(s) failed.  Re-run the same command; "
               f"--resume skips everything already on disk.")
