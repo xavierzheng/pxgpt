@@ -4,7 +4,7 @@ Everything below was measured on this machine, not copied from a playbook. There
 is no vendor-published recipe for this checkpoint on GB10: NVIDIA's
 `dgx-spark-playbooks` support matrix lists Gemma 4 26B A4B only as BF16 Base (the
 31B is the one with an NVFP4 entry), and vLLM's own DGX Spark blog post is a
-Nemotron-3-Super-120B recipe. Half of this ticket was finding out which image and
+Nemotron-3-Super-120B recipe. Half of this work was finding out which image and
 flags actually work.
 
 - **Host**: `spark-1306`, NVIDIA GB10, sm_121 (compute cap 12.1), aarch64,
@@ -29,12 +29,19 @@ flags actually work.
 | **Thinking** | **off** (`enable_thinking: false` per request) |
 | **Visual token budget** | **1120 tokens/image** (`--mm-processor-kwargs '{"max_soft_tokens": 1120}'`) |
 | **MoE backend** | **pinned** — `MOE_BACKEND=cutlass` → `--moe-backend cutlass`, which the log calls `VLLM_CUTLASS` |
-| **Sampling** | **top_p 0.95 / top_k 64**, set on both the server and every request. **No seed.** Temperature was 1.0 when the measurements below were taken (the checkpoint's own `generation_config.json` default); `env.example` now ships **0.5**. Every latency, completion-token and runaway-generation number in this document is therefore at 1.0 — re-confirm from a run summary before quoting them for the shipped config. The one figure already re-measured at 0.5 is the per-shard completion-token p90: **381**, against 607 at 1.0. |
+| **Sampling** | **top_p 0.95 / top_k 64**, on the server and on every request. **No seed.** Temperature **0.5** (`env.example`). |
+
+> **Read every number below at temperature 1.0.** That was the checkpoint's own
+> `generation_config.json` default, and it was in force for all the measurements
+> here: latency, completion tokens, runaway generation. `env.example` now ships
+> **0.5** instead. So before you quote any number for the shipped config,
+> re-confirm it from a run summary. Only one figure has been re-measured at 0.5:
+> the per-shard completion-token p90 is **381**, against 607 at 1.0.
 
 ## Image selection
 
-Tried in the ticket's order; the first one that loaded the model and answered
-`/health` wins.
+Three images were tried, in the order below. The first one that loaded the
+model and answered `/health` wins.
 
 ### 1. `vllm/vllm-openai:gemma4-cu130` — REJECTED
 
@@ -72,23 +79,24 @@ The model card says "do not use the Marlin backend (around 2x slower); let vLLM
 auto-select the NVFP4 kernel" — auto-selection picks a FlashInfer/CUTLASS path,
 never Marlin.
 
-> **Superseded.** This section originally read that the MoE choice is "not
-> stable across boots" because an earlier boot selected `VLLM_CUTLASS`, and
-> concluded that pinning a backend by hand would be wrong. Five consecutive
-> boots later failed to reproduce any drift, and the earlier `VLLM_CUTLASS`
-> sighting matches the log of the **rejected** candidate 1 quoted above, not
-> this image. `--moe-backend` is now pinned to `cutlass` (= `VLLM_CUTLASS`) —
-> see "Pinned runtime selections" for the boot-diff table, the reasoning and the
-> measured cost.
+> **Superseded.** The backend is now pinned by hand: `--moe-backend cutlass`
+> (= `VLLM_CUTLASS`). See "Pinned runtime selections" for the boot-diff table,
+> the reasoning and the measured cost.
+>
+> This section once said the MoE choice was "not stable across boots", and
+> concluded that pinning it by hand would be wrong. Both claims were wrong.
+> Five boots in a row showed no drift. The one `VLLM_CUTLASS` sighting that
+> started the worry came from the log of the **rejected** candidate 1 above,
+> not from this image.
 
 ### 3. `vllm/vllm-openai:cu130-nightly` — works, but not needed
 
 Tested anyway because candidate 2 initially looked unreachable (see the registry
 note below). vLLM `0.19.2rc1.dev107+g4eafc7292` — it *does* load this checkpoint
 (so the fix for candidate 1's `KeyError` landed between `0.19.1` and `0.19.2rc1`)
-and served a text completion. Left unselected because candidate 2 ranks higher
-in the ticket's list. Kept here as a fallback: it is a *floating nightly* tag, so
-pin it by digest if you ever switch to it.
+and served a text completion. Left unselected because candidate 2 ranked
+higher. Kept here as a fallback: it is a *floating nightly* tag, so pin it by
+digest if you ever switch to it.
 
 Comparison on the same text prompt ("Name three plant organs."):
 candidate 3 took 6.2 s / 200 completion tokens; candidate 2 took 1.6 s /
@@ -197,7 +205,7 @@ either top-level or from `images_kwargs`. It works both as a server flag
 | 1120 | 1131 |
 
 The checkpoint's own `processor_config.json` sets `image_seq_length` and
-`max_soft_tokens` to **280**, so unset == 280. The ticket's worry about
+`max_soft_tokens` to **280**, so unset == 280. The worry about
 25 x 1120 ≈ 28 k tokens is real at the top of the ladder but affordable: the
 largest line in the dataset is 32 photos, so 32 x 1120 + prompt ≈ **37 k**, still
 inside `MAX_MODEL_LEN=65536`.
@@ -240,28 +248,29 @@ benchmarked on a fresh container; see the Benchmark section for the raw runs.
 | decode throughput | 44.2 tok/s | **40.8 tok/s** |
 | 2400-request run, measured per-shard | 9.0 h* | **12.0 h** |
 
-The shape of the cost is the interesting part, and it is *not* the 4x that the
-token count suggests:
+The token count is 4x higher. The cost is not. Where the cost lands is the
+interesting part:
 
-- **Cold prefill gets much worse — 7.4x.** Effective cold prefill throughput
-  drops from ~1 110 tok/s at 280 to ~528 tok/s at 1120, because the vision tower
-  does far more work per image: patches scale as
-  `max_soft_tokens x pooling_kernel_size^2`, i.e. 2 520 patches per image at 280
-  against 10 080 at 1120. Much of that 58 s is the encoder, not LLM prefill.
-- **Cached requests barely move — 12.2 s to 14.6 s.** Once the image prefix is
+- **Cold prefill gets much worse: 7.4x.** Effective throughput drops from
+  ~1 110 tok/s at 280 to ~528 tok/s at 1120. The reason is the vision tower,
+  which does far more work per image. Patches scale as
+  `max_soft_tokens x pooling_kernel_size^2`, so each image goes from 2 520
+  patches at 280 to 10 080 at 1120. Much of that 58 s is the encoder, not LLM
+  prefill.
+- **Cached requests barely move: 12.2 s to 14.6 s.** Once the image prefix is
   cached, decode dominates, and decode only slows ~8 %.
-- **So the end-to-end cost rises ~33 %, not 4x**, because pxGPT sends 9 shard
-  requests per plant off one shared image prefix: only the first pays the cold
-  prefill, the other eight are cache hits. Verified directly by sending all 9
-  shards of one plant and reading `/metrics` per request — see "Per-shard
+- **So the end-to-end cost rises ~33 %, not 4x.** pxGPT sends 9 shard requests
+  per plant off one shared image prefix. Only the first pays the cold prefill.
+  The other eight are cache hits. This was verified directly: all 9 shards of
+  one plant were sent, and `/metrics` was read per request. See "Per-shard
   measurement of the real workload". (*the 9.0 h at 280 is the modelled figure;
   only 1120 was measured shard-by-shard.)
 
-An earlier note in this file extrapolated "~80-85 s per full-line request" from
-the 280 → 560 step. That number is about right *for a cold request* (measured
-72.7 s at 26 photos, 84.8 s at 32) but it is the wrong figure to plan with, since
-8 of every 9 requests are cache hits. The measured figure is **12.0 h**, not
-days.
+Do not plan with the old "~80-85 s per full-line request" figure. An earlier
+note in this file extrapolated it from the 280 → 560 step. It is about right
+*for a cold request*: 72.7 s measured at 26 photos, 84.8 s at 32. But 8 of every
+9 requests are cache hits, so it is the wrong figure for a whole run. The
+measured figure is **12.0 h**, not days.
 
 **This value is now pinned and must not drift** — it sets the visual information
 available to the model, so changing it invalidates comparisons against the
@@ -402,21 +411,23 @@ preallocated from `gpu-memory-utilization`, not from the sequence count —
 5 074 332 tokens at 16 against 5 081 419 at 2. At ~37 k tokens per request even
 16 concurrent requests need only ~600 k tokens.
 
-> **Narrowed.** This paragraph used to say the setting was free full stop, on
-> the evidence that the KV token count barely moved. That evidence cannot
-> support the broader claim: the KV pool is preallocated, so its size is
-> **constitutionally incapable** of reflecting what concurrency costs — the
-> vision encoder's activations and the multimodal processor cache are not in it,
-> and the failure mode this deployment actually risks is exhaustion of the
-> unified host pool, not a GPU-side OOM.
+> **Narrowed.** This paragraph used to say the setting was free, full stop. The
+> evidence was that the KV token count barely moved. That evidence is too weak
+> for such a broad claim. The KV pool is preallocated, so its size can never
+> show what concurrency costs: the vision encoder's activations and the
+> multimodal processor cache sit outside it. And the real risk here is not a
+> GPU-side OOM. It is running the unified host pool dry.
 >
-> What is now measured: **free when the multimodal cache is fully hit** — a
-> plant's warm shards run 8-wide at no memory cost, because no new images are
-> processed. **Not free for cold concurrency** — running several plants' cold
-> prefills at once does move host memory, and at three plants in flight
-> `MemAvailable` fell to 7.37 GiB, past the 8 GiB stop line. See "Pipeline
-> depth, memory, and runaway generation" for the numbers; the recommended depth
-> is **2 plants**, not more.
+> Here is what is now measured:
+>
+> - **Free when the multimodal cache is fully hit.** A plant's warm shards run
+>   8-wide at no memory cost, because no new images are processed.
+> - **Not free for cold concurrency.** Several plants doing cold prefill at once
+>   does move host memory. At three plants in flight, `MemAvailable` fell to
+>   7.37 GiB, past the 8 GiB stop line.
+>
+> So the recommended depth is **2 plants**, not more. See "Pipeline depth,
+> memory, and runaway generation" for the numbers.
 
 ### Concurrency on an already-cached prefix
 
@@ -507,7 +518,7 @@ Five consecutive `./down.sh && ./up.sh` cycles on the pinned digest, with
 
 Three findings worth stating plainly:
 
-1. **The MoE drift this ticket was written to stop did not reproduce.** Five
+1. **The MoE drift this work was meant to stop did not reproduce.** Five
    boots, same backend every time. The selection is not a race or a
    timing-based probe either: `select_nvfp4_moe_backend()` walks a fixed
    priority list (`FLASHINFER_TRTLLM`, `FLASHINFER_CUTEDSL`,
@@ -521,14 +532,18 @@ Three findings worth stating plainly:
    backend`. That is vLLM `0.19.1`, a different priority list. Two images, one
    note, read as one image drifting.
 
-   Pinning is still right — the choice is now stated instead of inherited from
-   a list any image bump can reorder — but it is insurance, not a fix for an
-   observed fault.
+   Pinning is still right, because the choice is now stated here instead of
+   inherited from a list that any image bump can reorder. But it is insurance,
+   not a fix for a fault anyone saw.
 
-2. **The attention backend cannot float on this model.** Before any
-   auto-selection runs, `config.py:99` prints `Gemma4 model has heterogeneous
-   head dimensions (head_dim=256, global_head_dim=512). FA4 not available,
-   forcing TRITON_ATTN backend.` It is forced by the architecture, not chosen.
+2. **The attention backend cannot float on this model.** The architecture
+   forces it. Auto-selection never gets a say. Before auto-selection runs,
+   `config.py:99` prints:
+
+   ```
+   Gemma4 model has heterogeneous head dimensions (head_dim=256,
+   global_head_dim=512). FA4 not available, forcing TRITON_ATTN backend.
+   ```
 
 3. **The one thing that does move is the KV cache size**, by up to 37 k tokens
    (0.4 %) between boots. That is memory-profiling noise —
@@ -543,7 +558,7 @@ Three findings worth stating plainly:
 `enable_flashinfer_autotune=True` runs a **timing-based** tactic search at every
 startup. It profiles tactics and keeps the fastest, and the winner is never
 logged — so it cannot be diffed across boots the way the table above was, and
-there is no CLI flag that pins the outcome. Per the ticket, recorded rather than
+there is no CLI flag that pins the outcome. So it is recorded here, not
 fought with environment variables or patches.
 
 Pinning the MoE backend does cut it down measurably. Counting autotuner blocks
@@ -695,7 +710,7 @@ still is not.
 ### Departure: `--enable-prompt-tokens-details`
 
 `up.sh` also passes `--enable-prompt-tokens-details`, which is not on the
-ticket's flag list. It is a **reporting** flag only — no kernel, no sampling, no
+planned flag list. It is a **reporting** flag only — no kernel, no sampling, no
 memory — and it makes the server fill in
 `usage.prompt_tokens_details.cached_tokens` per response. Without it that field
 is `null`, and a per-request prefix-cache hit count is unobtainable: `/metrics`
@@ -722,7 +737,7 @@ Neither uses `watch` — the number that matters is the *lowest point*
 afterwards.
 
 **Metric names were read off this build's live `/metrics`, not from docs**, and
-the ticket's warning was justified: the cache-usage series is
+the warning about stale metric names was justified: the cache-usage series is
 `vllm:kv_cache_usage_perc` here, **not** the `vllm:gpu_cache_usage_perc` older
 vLLM used. A stale name greps to an empty column rather than an error, so
 `sample_metrics.sh` verifies every name against `/metrics` before it starts and
@@ -803,8 +818,9 @@ subsection).
 | 4 | — | **not run** — N = 3 tripped the stop rule | | | | | | |
 
 **N = 3 triggered the stop condition, so N = 4 was not attempted and the
-recommendation falls back to N = 2.** Per the ticket this is a pass, not a
-failure. The excursion is not one stray sample: 22 of 2 092 samples (1.1 %,
+recommendation falls back to N = 2.** This is a pass, not a failure: the stop
+condition did its job. The excursion is not one stray sample: 22 of 2 092
+samples (1.1 %,
 4.4 s of wall clock) sat below 8 GiB, p1 was 7.85 GiB, and the *median* fell
 from 10.06 GiB at N = 2 to 8.56 GiB at N = 3. The machine survived and was
 healthy afterwards — but a single survival is not evidence about a failure mode
@@ -842,24 +858,25 @@ N=3  s0018: 181.5 31.6 18.1 99.1 23.1 25.3 25.5 29.2 127.2
      s0178: 157.4 41.8 24.0 37.3 18.7 22.9 24.6 19.8 37.3
 ```
 
-Individual requests get much slower as N rises — cold `shard_01` goes 58–66 s at
-N = 1 to 110–113 s at N = 2 to 87–182 s at N = 3, and the N = 3 tail is ragged
-(`s0018` has warm shards at 99 s and 127 s). Throughput still improves because
-the machine is never idle. Anything that cares about per-request latency rather
-than total wall clock should read this table before choosing a depth.
+**Each request gets much slower as N rises.** Cold `shard_01` takes 58–66 s at
+N = 1, 110–113 s at N = 2, and 87–182 s at N = 3. The N = 3 tail is ragged:
+`s0018` has warm shards at 99 s and 127 s. Total throughput still improves,
+because the machine is never idle. But if you care about per-request latency
+rather than total wall clock, read this table before you choose a depth.
 
 **What the memory trace actually shows.** The drop is a **step, not a spike**.
-At N = 1, `MemAvailable` sits at 12.9 GiB idle, falls to ~9.3 GiB within four
-seconds of the first cold prefill and stays flat there for its whole 66 s, rises
-to ~10.6 GiB during the decode-bound warm set, and reaches its 8.7 GiB minimum
-at the instant one plant's warm tail overlaps the next plant's cold prefill —
-the Pattern D handover itself. So the cost is a resident working set plus a
-handover overlap, not a sub-second activation peak. The 0.2 s sampling was still
-the right choice: it is what establishes that there is no spike.
+Follow N = 1: `MemAvailable` sits at 12.9 GiB when idle. It falls to ~9.3 GiB
+within four seconds of the first cold prefill, then stays flat there for the
+whole 66 s. It rises to ~10.6 GiB during the decode-bound warm set. It reaches
+its 8.7 GiB minimum at one instant only: when one plant's warm tail overlaps the
+next plant's cold prefill, which is the Pattern D handover. So the cost is a
+resident working set plus a handover overlap, not a sub-second activation
+peak. The 0.2 s sampling was still the right choice: it is what establishes
+that there is no spike.
 
 Note also that N = 2's low-water mark (9.04 GiB) is *higher* than N = 1's
 (8.74 GiB). Memory does not scale with the number of plants in flight the way
-the ticket's premise assumed — the KV pool is preallocated and the multimodal
+the original plan assumed — the KV pool is preallocated and the multimodal
 cache is capped, so what grows is largely bounded. It is only at N = 3 that the
 floor moves decisively.
 
@@ -989,8 +1006,8 @@ is: rare enough not to appear in 30 requests, not rare enough to ignore.
 **Suggested cap: `max_tokens = 2048`** — about 3.4x the observed p90 (607) and
 <!-- p90 607 is at temperature 1.0, as is everything in this document; re-measured at the shipped 0.5 it is 381, making 2048 ~5.4x. The cap is unchanged either way. -->
 3x the observed max (681), so it cannot truncate a legitimate answer, while
-bounding a runaway at ~50 s instead of ~190 s. This is a recommendation only;
-the ticket puts the retry/timeout decision at the provider layer.
+bounding a runaway at ~50 s instead of ~190 s. This is a recommendation only.
+The retry/timeout decision belongs at the provider layer.
 
 What runaway does to the estimate, using N = 2's measured 5.57 h as the base:
 
@@ -1008,7 +1025,7 @@ Concurrency makes it worse than the arithmetic suggests, because a runaway
 occupies a scheduler slot for its whole duration and holds up the batch it is
 in.
 
-## Deviations from the ticket's flag list
+## Deviations from the planned flag list
 
 The "deliberately not added" list was honoured in full: no `--kv-cache-dtype`,
 no `--quantization`, no `--linear-backend`, no `--enable-prefix-caching`, no
@@ -1028,19 +1045,22 @@ measured cost.) Four unavoidable departures:
 
 ## Known failure modes
 
-- **Runaway generation to `max_tokens`.** Observed once: a structured-output
-  request on `s0016` produced 8192 completion tokens and took **190.6 s** instead
-  of the usual ~500 tokens / ~12 s. The grammar keeps output well-formed, but
-  nothing bounds *length* — the model can pad `rationale` strings indefinitely.
-  A 30-request probe over 10 plants at temperature 1.0 produced **none**, which
-  bounds the rate at ~10 % (95 %, rule of three) rather than measuring it; the
-  point estimate including the earlier sighting is ~0.5 %. Suggested cap
-  `max_tokens=2048` — 3.4x the observed p90 of 607 at temperature 1.0 (5.4x the
-  381 measured at the shipped 0.5). The #1 provider still needs
-  a per-request timeout and should treat `finish_reason == "length"` as a failed
-  shard rather than a partial result. Not worked around here: that is a
-  provider-layer decision. Numbers in "Pipeline depth, memory, and runaway
-  generation".
+- **Runaway generation to `max_tokens`.** Set `max_tokens=2048`. That is 3.4x
+  the observed p90 of 607 at temperature 1.0, and 5.4x the 381 measured at the
+  shipped 0.5, so it cannot cut off a real answer.
+
+  Seen once: a structured-output request on `s0016` produced 8192 completion
+  tokens and took **190.6 s**, against the usual ~500 tokens / ~12 s. The
+  grammar keeps the output well-formed, but nothing bounds its *length*. The
+  model can pad `rationale` strings without end. A 30-request probe over 10
+  plants at temperature 1.0 produced **none**. That bounds the rate at ~10 %
+  (95 %, rule of three); it does not measure it. Counting the earlier sighting,
+  the point estimate is ~0.5 %.
+
+  The provider layer still needs a per-request timeout, and should treat
+  `finish_reason == "length"` as a failed shard, not as a partial result. That
+  is not worked around here, because it is a provider-layer decision. Numbers
+  in "Pipeline depth, memory, and runaway generation".
 - **Memory is genuinely tight at `GPU_MEM_UTIL=0.80`.** With the server up,
   `free -g` shows 109 GiB of 121 GiB used and only ~12 GiB available. Under load
   that shrinks further: a single plant's cold prefill holds it at ~9.3 GiB, and
