@@ -1,6 +1,39 @@
 # Changelog
 
-## Removals
+## v0.4.0 — 2026-09-24
+
+> **This release is the version of pxGPT used for the revision of the
+> *Bioinformatics* Application Note.** The originally submitted state is the
+> tag `v0.1.0-bioinformatics-submission`.
+
+### Highlights
+
+- **Local inference on a self-hosted vLLM server.** `pxgpt schema --shard-dir
+  --input-dir` runs Stage 3 over a whole dataset without a cloud Batch API, and
+  `ops/local-vllm/` holds the scripts that serve Gemma 4 26B A4B (NVFP4) on a
+  DGX Spark with a pinned visual token budget of 1120.
+- **Stage 3 schema sharding.** `pxgpt shard-schema` splits the master schema
+  into small, compilable shards; `phenotype-batch`, `phenotype-batch-openai`
+  and `schema` all accept `--shard-dir` and merge the shards back into one
+  record per plant.
+- **Google Gemini support is removed**, and with it the LiteLLM dependency.
+  Every OpenAI-wire backend (OpenAI, vLLM, Ollama, LM Studio) now goes through
+  the `openai` SDK.
+- **Provenance in every Stage 3 record.** Each merged `<line_id>.json` names
+  the provider, model, schema name and version, pxGPT version, UTC creation
+  time and run id; `json-to-table` carries provider, model and schema version
+  into the CSV and feather outputs.
+
+### Removals
+
+- **Google Gemini provider.** `--provider google`, `GOOGLE_API_KEY` and
+  `GOOGLE_MODEL` are gone. Google was the only backend that was not
+  OpenAI-compatible, so LiteLLM is dropped too (as is the `pathlib` backport,
+  which does not belong on Python 3).
+- **`OPENAI_REASONING_EFFORT`.** The OpenAI stages use the same knobs as the
+  Anthropic stages: `DESCRIBE_EFFORT` (Stage 1) and `STAGE3_EFFORT` (Stage 3).
+- **`.gif` and `.webp` images.** Only `.jpg`, `.jpeg` and `.png` are accepted,
+  in any letter case, from one shared `IMAGE_EXTENSIONS` definition.
 
 - **The v0.1.0 method's artefacts are gone from `main`: `results.txt`,
   `extract_report_tags.py`, `Example_master_schema.tsv`.** They were the
@@ -18,7 +51,33 @@
   - Recover any of them with
     `git show v0.1.0-bioinformatics-submission:<path>`.
 
-## New features
+### New features
+
+- **`ops/local-vllm/`: scripts to serve the local model.** `pull.sh` pins the
+  vLLM image by digest and the Hugging Face revision by commit; `up.sh`,
+  `down.sh` and `logs.sh` manage the server; `smoke.py` runs acceptance checks
+  against real shard schemas and photos; `bench.sh`, `sample_mem.sh` and
+  `sample_metrics.sh` measure it. `README_vllm.md` is the setup guide and
+  `RUNBOOK.md` holds the measurements. vLLM is the supported local backend,
+  because it lets the visual token budget be pinned and recorded; Ollama and
+  LM Studio still work but are planned for removal.
+- **`phenotype-batch-openai` supports shard sets**, with the same flags as
+  `phenotype-batch`: `--shard-dir`, `--master-schema`, `--allow-reshard`,
+  `--dispatch {batch,sequential}` and `--resume/--no-resume`. Both dispatch
+  paths send the same request body, so their `_partial/` stores can be mixed.
+  `fetch-results` handles the OpenAI `phenotype_sharded` checkpoint.
+- **`describe-batch-openai --effort`**, matching `describe-batch`.
+- **The `_partial/` store is stamped with provider and model.**
+  `_partial/.run.json` records the run that created the store, and a later run
+  with a different provider or model is refused before anything is read or
+  written, so two runs pointed at one `--output` cannot merge each other's
+  shards.
+- **CI**: GitHub Actions runs the test suite on Linux (Python 3.10 and 3.13)
+  and macOS, and shellcheck over `ops/local-vllm/`. Test-only dependencies are
+  in a `dev` extra: `pip install -e ".[dev]"`.
+- **Automatic releases**: after CI passes on `main`, a workflow creates the tag
+  `v<version>` and a GitHub Release from `setup.py`'s `version=`, if that tag
+  does not exist yet.
 
 - **Record-level provenance: every merged Stage 3 record carries its own `_provenance` block.**
   `_partial/.run.json` stamps a *store* with the run that created it, but that guard
@@ -260,7 +319,8 @@
     `--dispatch {batch,sequential}` (default `batch`) selects one Message Batch
     for everything vs. near-synchronous per-plant calls. A **pre-flight live
     compile check** verifies each shard schema compiles and **auto-reshards** at a
-    smaller budget (re-running `build_stage3.py`) if one still trips the limit. In
+    smaller budget if one still trips the limit — only with `--allow-reshard`
+    (see **Changed**); by default it stops and leaves the shard set alone. In
     sharded mode `--schema`/`--system-prompt`/`--prompt` are optional (taken from
     the shard set). `--master-schema` overrides the manifest's master path used
     for merge validation.
@@ -275,8 +335,8 @@
   Keeps only the `<report>` body (discards `<think>`); auto-closes truncated
   tags. Handles a single-response file **and** the grouped multi-cultivar
   `describe-batch` output (one `<report>` per `### <id>` section) via
-  `--mode {auto,grouped,single}`. The standalone `extract_report_tags.py` stays
-  available for the simple single-file case. Use this only with the
+  `--mode {auto,grouped,single}`. It replaces the standalone
+  `extract_report_tags.py` (see **Removals**). Use this only with the
   chain-of-thought prompt path; native reasoning (`--effort`) needs no extraction.
 - **`DESCRIBE_EFFORT` reasoning knob for Stage 1**: `describe-batch` now accepts
   `--effort {off,low,medium,high,xhigh,max}` (and the `DESCRIBE_EFFORT` env),
@@ -285,25 +345,18 @@
   effort is set, the temperature guard omits temperature and native thinking
   blocks are stripped from the saved description.
 - **`analyze` / `schema` support more backends**: `lmstudio` and `vllm` are now
-  first-class `--provider` values alongside `openai`, `ollama`, `google`. LM
-  Studio and vLLM route through LiteLLM's OpenAI-compatible path
-  (`openai/<model>` + their own base URL), each with dedicated env vars
+  first-class `--provider` values alongside `openai` and `ollama`. All four speak
+  the OpenAI wire protocol and go through `OpenAICompatProvider` (the `openai`
+  SDK with the backend's own base URL), each with dedicated env vars
   (`LMSTUDIO_BASE_URL`/`LMSTUDIO_MODEL`/`LMSTUDIO_API_KEY`,
-  `VLLM_BASE_URL`/`VLLM_MODEL`/`VLLM_API_KEY`). `api_base`/`api_key` are now
-  passed per request instead of via LiteLLM globals (no cross-provider clash),
-  `drop_params=True` is set for cross-backend robustness, OpenAI reasoning
-  models (gpt-5/o-series) omit a custom temperature, and Google routes via
-  `gemini/<model>`. vLLM requires `VLLM_MODEL` (clear error otherwise).
+  `VLLM_BASE_URL`/`VLLM_MODEL`/`VLLM_API_KEY`). vLLM requires `VLLM_MODEL`
+  (clear error otherwise).
 - **`--effort` reasoning control for sync commands**: `analyze` and `schema`
-  accept `--effort {off,low,medium,high,xhigh,max}` (Anthropic adaptive thinking).
-  `analyze` gains optional reasoning (new `ANALYZE_EFFORT` env, default off);
-  `schema`'s flag overrides `STAGE3_EFFORT`. Non-anthropic providers ignore it.
-  Config gains `Config.build_output_config(effort, schema)`.
-- **OpenAI Batch API stages**: new `describe-batch-openai` (Stage 1) and
-  `phenotype-batch-openai` (Stage 3) commands, mirroring the Anthropic batch
-  commands on the OpenAI Batch API using the **Responses** endpoint
-  (`/v1/responses` JSONL). The Responses API is required because images can only
-  be referenced by Files-API `file_id` there (Chat Completions cannot reference
+  accept `--effort {off,low,medium,high,xhigh,max}`. On Anthropic it is adaptive
+  thinking; on OpenAI reasoning models it becomes `reasoning_effort`; on the
+  local backends see `analyze --effort` above. `analyze` gains optional
+  reasoning (new `ANALYZE_EFFORT` env, default off); `schema`'s flag overrides
+  `STAGE3_EFFORT`. Config gains `Config.build_output_config(effort, schema)`.
 - **OpenAI Batch API stages**: new `describe-batch-openai` (Stage 1) and
   `phenotype-batch-openai` (Stage 3) commands, mirroring the Anthropic batch
   commands on the OpenAI Batch API using the **Responses** endpoint
@@ -314,9 +367,8 @@
   (`openai_file_manifest.json`); the same `--no-files-api` / `USE_FILES_API=false`
   toggle embeds them inline as base64. Stage 3 uses OpenAI strict structured
   outputs (`text.format` json_schema with `strict: true`, all properties
-  required). New env vars:
-  `OPENAI_REASONING_EFFORT` (gpt-5/o-series only) and
-  `OPENAI_BATCH_COMPLETION_WINDOW` (default `24h`).
+  required). New env var `OPENAI_BATCH_COMPLETION_WINDOW` (default `24h`);
+  reasoning effort uses the shared `DESCRIBE_EFFORT` / `STAGE3_EFFORT` knobs.
 - **`fetch-results` is provider-aware**: dispatches on the checkpoint
   `provider` field (`anthropic` or `openai`); pre-existing checkpoints without
   the field default to `anthropic`.
@@ -333,7 +385,17 @@
   request instead; the `files-api-2025-04-14` beta header and the manifest are
   skipped in that mode.
 
-## Changed
+### Changed
+
+- **Auto-reshard is opt-in (`--allow-reshard`).** When the pre-flight compile
+  check fails, pxGPT used to rewrite the whole shard set in place at a halved
+  budget. The shard sets are frozen and under human evaluation, so the default
+  is now to stop with an error that names the failed shards and says the shard
+  directory was not modified.
+- **Default OpenAI model is `gpt-5.6-luna`** (override with `OPENAI_MODEL`).
+- **Dependencies**: `openai` is declared (it was only installed as a LiteLLM
+  dependency before); both SDKs are bounded to the majors this code runs on
+  (`anthropic>=0.105.2,<1.0`, `openai>=1.66.0,<=3.0.0`).
 
 - **`schema` no longer uses the legacy system-prompt path for any provider**, and the
   user prompt no longer needs to ask for JSON-only output. `README.md`,
@@ -347,8 +409,8 @@
   max **832**, **0 over 2048**. Sonnet-5 is 1.36x more verbose than Gemma on identical
   shards, so that is a conservative bound.
 - **An image folder containing no images is now an error** (see Fixed).
-- **`--provider` accepts `ollama`, `lmstudio` and `vllm`**; the long-removed `google`
-  choice is gone from the docs that still advertised it.
+- **`--provider` accepts `anthropic`, `openai`, `ollama`, `lmstudio` and `vllm`**;
+  `google` is removed (see **Removals**) and gone from the docs.
 - `CLAUDE.md` and `HANDOFF.md` are no longer tracked. Both are session hand-off notes
   for this checkout, not part of the package.
 - The run summary no longer prints a speed-up ratio against a fixed constant. Per-plant
@@ -399,7 +461,7 @@
 
 - **Effort env vars accept `off`/`none`** (in addition to blank) as the
   "no reasoning" value, so they match the `--effort off` flag. Across
-  `STAGE3_EFFORT`, `DESCRIBE_EFFORT`, `ANALYZE_EFFORT`, `OPENAI_REASONING_EFFORT`:
+  `STAGE3_EFFORT`, `DESCRIBE_EFFORT`, `ANALYZE_EFFORT`:
   **default = off = none = no reasoning + temperature is sent**; a level
   (`low`…`max`) enables reasoning.
 - **Reasoning is now OFF by default everywhere.** `STAGE3_EFFORT` default changed
@@ -408,7 +470,25 @@
   structured output (`output_config.format`) is unaffected. Set `STAGE3_EFFORT`
   (or pass `--effort`) to opt back into adaptive thinking.
 
-## Fixed
+### Fixed
+
+- **OpenAI runs reasoned at `medium` while the config said reasoning was off.**
+  Omitting `reasoning.effort` does not turn reasoning off on gpt-5.6; the model
+  falls back to its own default. Reasoning models now always receive an
+  explicit effort (default `none`), and `temperature` is sent only at effort
+  `none`, the only level that accepts it. The run banner prints the effort.
+- **`analyze` / `schema --provider openai` failed on every call with
+  gpt-5.6-luna** (`'max_tokens' is not supported with this model`). Reasoning
+  models now get `max_completion_tokens`.
+- **The sync `analyze` / `schema` path dropped `.jpeg`, `.JPG` and `.png`
+  images without a warning**, because it only matched `*.jpg`. All paths now
+  share one sorted, extension-filtered image discovery.
+- **The local vLLM setup could not succeed on a fresh machine.** `env.example`
+  shipped `<FILL>` placeholders that are a bash syntax error when sourced;
+  `pull.sh` called `hf` without checking for it; `requirements.txt` asked for a
+  `huggingface_hub[cli]` extra that does not exist; and the scripts checked for
+  the `docker` binary but not for access to the daemon. All four are fixed and
+  covered by tests that need no GPU and no download.
 
 - **`pxgpt --version` and `pxgpt.__version__` could disagree, because the version
   lived as three hand-edited literals.** `pxgpt/__init__.py` had drifted to
