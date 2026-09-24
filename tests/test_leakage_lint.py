@@ -10,7 +10,7 @@ def test_find_leakage_flags_population_phrases():
 
 def test_find_leakage_clean_text_is_empty():
     assert sb.find_leakage("flat/tight rosette; leaves held vertically") == []
-    # botanical 'typical' must not false-positive
+    # benign botanical wording must not false-positive
     assert sb.find_leakage("narrow, several times longer than wide") == []
 
 def _master(defs_note):
@@ -52,6 +52,7 @@ def test_find_leakage_still_catches_support_counts_and_cultivars():
 
 def test_find_leakage_word_boundary_on_trailing_alternatives():
     from pxgpt.core import shard_builder as sb
-    # 'within this material' must NOT flag (boundary fix), but a real phrase does
+    # 'within this material' must NOT flag (word boundary on 'in'), but a real
+    # phrase does
     assert sb.find_leakage("grown within this material for weeks") == []
     assert sb.find_leakage("brown/rotted roots do not occur in this material")

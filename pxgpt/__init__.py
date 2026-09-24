@@ -2,10 +2,9 @@
 
 from importlib.metadata import PackageNotFoundError, version as _installed_version
 
-# Single source of truth is setup.py's `version=`.  Reading it back from the
-# installed distribution means the number cannot be edited in one place and go
-# stale in another -- which is exactly what had happened: this file said 0.3.0
-# while setup.py and `--version` both said 0.4.0.
+# Single source of truth is setup.py's `version=`; read it from the installed
+# distribution so the number cannot be edited in one place and go stale in
+# another.
 try:
     __version__ = _installed_version("pxgpt")
 except PackageNotFoundError:

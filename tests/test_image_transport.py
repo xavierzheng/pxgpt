@@ -1,9 +1,9 @@
 """Image discovery, ordering and the two transports.
 
-Ordering is not cosmetic here.  A plant's nine shards send the same photos nine
-times; if the order differs between them the server's prefix cache misses from
-the first differing block onward and the 97-99 % hit rate this whole run is
-costed on collapses.  So the order is pinned by a test rather than left to
+Ordering is not cosmetic here.  Every shard of a plant sends the same photos;
+if the order differs between them the server's prefix cache misses from the
+first differing block onward and the cache hit rate the run depends on
+collapses.  So the order is pinned by a test rather than left to
 whatever ``iterdir`` returns on the day.
 """
 

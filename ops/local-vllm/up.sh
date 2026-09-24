@@ -16,8 +16,8 @@ fi
 
 # `command -v docker` only proves the binary exists. It says nothing about
 # whether this user can reach the daemon, and that is a separate, very common
-# failure: the socket is root-owned. Without this check pull.sh sails past the
-# gate, downloads 17 GB of weights, and only then dies at `docker pull`.
+# failure: the socket is root-owned. Without this check up.sh dies later, at
+# its first docker call, with a bare socket permission error.
 if ! docker info >/dev/null 2>&1; then
   echo "docker is installed, but this user cannot talk to the daemon:" >&2
   # `|| true`: the pipeline is expected to fail, and set -e + pipefail would
@@ -169,8 +169,8 @@ echo "    sampling : temperature=$TEMPERATURE top_p=$TOP_P top_k=$TOP_K (no seed
 #     temperature > 0 -- kernel drift there would be indistinguishable from
 #     model instability. NOTE the CLI takes lowercase names: `cutlass` is what
 #     the startup log calls VLLM_CUTLASS.
-#   - --override-generation-config states the sampling parameters that were
-#     previously inherited, unrecorded, from the checkpoint's
+#   - --override-generation-config states the sampling parameters instead of
+#     inheriting them, unrecorded, from the checkpoint's
 #     generation_config.json. It MERGES into that file rather than replacing it
 #     (verified, see RUNBOOK). smoke.py and bench.sh send the same three values
 #     per request from the same .env, so the two layers cannot disagree.

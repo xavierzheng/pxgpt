@@ -301,7 +301,7 @@ def test_output_pointing_at_an_existing_file_is_rejected(run, tmp_path):
 def test_max_tokens_defaults_to_the_shard_cap(run):
     _, provider, _ = run()
 
-    # 2048: ~3.4x the observed p90 shard answer, so it cannot truncate a real
+    # 2048: ~5.4x the observed p90 shard answer, so it cannot truncate a real
     # one, but it caps the runaway rationale case at ~50 s instead of ~190 s.
     assert provider.config.max_tokens == 2048
 

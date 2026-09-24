@@ -27,10 +27,10 @@
 #   mm_cache_*       the same, for the vision encoder's output cache.
 #
 # The metric names below were read off this build's live /metrics, not copied
-# from vLLM docs: the names do move between versions (cache usage used to be
-# vllm:gpu_cache_usage_perc; here it is vllm:kv_cache_usage_perc). A stale name
-# would silently produce an empty column rather than an error, so the script
-# refuses to start if any of them is missing.
+# from vLLM docs: the names do move between versions (older builds call cache
+# usage vllm:gpu_cache_usage_perc; this one calls it vllm:kv_cache_usage_perc).
+# A stale name would silently produce an empty column rather than an error, so
+# the script refuses to start if any of them is missing.
 set -euo pipefail
 cd "$(dirname "$0")"
 

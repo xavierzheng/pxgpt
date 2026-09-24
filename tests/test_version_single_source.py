@@ -1,7 +1,6 @@
 """The version number must exist in exactly one editable place.
 
-It had drifted before this test existed: pxgpt/__init__.py said 0.3.0 while
-setup.py and `--version` both said 0.4.0, because each was edited by hand.
+Hand-edited copies drift apart, so setup.py holds the only literal.
 """
 
 import re
@@ -28,16 +27,15 @@ def test_cli_reports_the_same_version_as_the_package():
 # The one literal allowed inside the package: the not-installed sentinel.
 SENTINEL = "0.0.0+source"
 
-# Leading/trailing underscores must be part of the match -- the drift that
-# actually happened was `__version__ = "0.3.0"`, and a pattern anchored on a bare
-# `version=` sails straight past it.
+# Leading/trailing underscores must be part of the match -- a pattern anchored
+# on a bare `version=` misses the dunder form `__version__ = "0.3.0"`.
 VERSION_LITERAL = re.compile(r"""(?i)_*version_*\s*=\s*["']([^"']*\d+\.\d+[^"']*)["']""")
 
 
 def test_setup_py_is_the_only_hardcoded_copy():
     """setup.py declares it; nothing under pxgpt/ may restate it.
 
-    A second literal is how the drift happened, so any dotted-number assignment
+    A second literal is how drift starts, so any dotted-number assignment
     to a version-ish name inside the package fails here -- except the sentinel
     used when the package is not installed at all.
     """
@@ -53,7 +51,7 @@ def test_setup_py_is_the_only_hardcoded_copy():
 
 def test_the_guard_itself_catches_a_reintroduced_literal():
     """Guard the guard: a regex that matches nothing would pass silently."""
-    assert VERSION_LITERAL.search('__version__ = "0.3.0"')      # the real drift
+    assert VERSION_LITERAL.search('__version__ = "0.3.0"')      # dunder style
     assert VERSION_LITERAL.search('    version="0.4.0",')       # setup.py style
     assert VERSION_LITERAL.search("version = '1.2'")
     assert VERSION_LITERAL.search('VERSION = "9.9.9"')
@@ -74,8 +72,7 @@ def test_setup_py_still_declares_one():
 # Test-only dependencies must not leak into install_requires.
 #
 # setup.py feeds requirements.txt straight into install_requires, so adding
-# pytest there -- which looked like the obvious fix when someone forgot to
-# install it -- would force a test runner on every user of the package.
+# pytest there would force a test runner on every user of the package.
 # --------------------------------------------------------------------------
 
 TEST_ONLY = ("pytest", "packaging")

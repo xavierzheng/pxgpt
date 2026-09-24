@@ -156,7 +156,8 @@ def describe_batch_command(args):
 
         # Stage 1: effort is off by default. build_request_params decides whether
         # temperature survives — it is dropped when effort is set, and also on the
-        # strict-guard tiers (Sonnet 5 and newer) even with effort off.
+        # strict-guard tiers (model_uses_strict_temperature_guard) even with
+        # effort off.
         params = build_request_params(
             model=config.anthropic_model,
             max_tokens=config.stage1_max_tokens,

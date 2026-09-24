@@ -25,8 +25,7 @@ setup(
             "packaging",   # tests/test_ops_local_vllm_setup.py parses PEP 508
             # test_version_single_source.py introspects this file to check that
             # test-only deps stay out of install_requires. Declared explicitly
-            # because a Python 3.12+ venv no longer ships setuptools, so the
-            # test passed on a developer box and failed in a clean environment.
+            # because a Python 3.12+ venv does not ship setuptools.
             "setuptools",
         ],
     },

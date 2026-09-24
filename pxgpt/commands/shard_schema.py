@@ -3,7 +3,8 @@
 Splits a master phenotype schema (Stage 2 format) into per-organ-group shards,
 bin-packed to a grammar-cost budget, so each Stage 3 request carries a small,
 compilable structured-output schema instead of one schema too large to compile.
-The shard set produced here is consumed by ``phenotype-batch --shard-dir``.
+The shard set produced here is consumed by ``--shard-dir`` on ``schema``,
+``phenotype-batch`` and ``phenotype-batch-openai``.
 """
 
 import os

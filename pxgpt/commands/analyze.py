@@ -84,7 +84,7 @@ def analyze_command(args):
                   f"Reasoning stays in the response's own field and is NOT "
                   f"written to --output.")
 
-    # Create provider and send request
+    # Create provider
     try:
         provider = create_provider(provider_name, config)
     except Exception as e:

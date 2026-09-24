@@ -1,6 +1,6 @@
 """Tests for json2table column-name collision handling (on_collision / rename_map).
 
-Fixtures mirror the worked examples in the design spec (Examples A-E): same
+Fixtures cover worked Examples A-E: same
 leaf key appearing under two organ groups, a three-level nested path that
 needs to auto-deepen past one prefix level, a same-name-different-unit
 non-collision, and a rename_map that itself collides (safety net).
@@ -192,7 +192,7 @@ def test_example_c_regression_no_collision_default_error_is_noop(master_c, resul
         "cultivar_id", *json2table.PROVENANCE_COLUMNS, "plant_height_cm", "leaf_color", "vigor",
     ]
     assert list(feather_df.columns) == list(csv_df.columns)
-    # These fixtures predate _provenance, so the one warning is that fallback;
+    # These fixtures carry no _provenance, so the one warning is that fallback;
     # what this test is about is that no collision warning is raised.
     assert [w for w in warnings if "_provenance" not in w] == []
 

@@ -36,9 +36,9 @@ def write_json_atomic(path: Path, obj: Any) -> None:
 
 # Model tiers where the API rejects a non-default temperature/top_p/top_k
 # unconditionally (not just while thinking is active) and where omitting
-# `thinking` now defaults to adaptive thinking ON instead of off. Sonnet 4.6
-# and earlier tiers keep the original rule: a custom temperature is fine as
-# long as thinking is off, and omitting `thinking` means thinking is off.
+# `thinking` defaults to adaptive thinking ON. On Sonnet 4.6 and earlier
+# tiers a custom temperature is fine as long as thinking is off, and omitting
+# `thinking` means thinking is off.
 _STRICT_TEMPERATURE_GUARD_PREFIXES = (
     "claude-sonnet-5",
     "claude-opus-4-7",
@@ -348,7 +348,7 @@ def assert_partial_provenance(
     """Refuse to reuse a ``_partial/`` store another run created.
 
     Stamps the store on first use.  An unstamped store that already holds
-    partials is a legacy one: it is adopted as before, with one warning.  Raises
+    partials is a legacy one: it is adopted, with one warning.  Raises
     ``RuntimeError`` when the stamp names a different provider, model or schema
     version, without writing anything.
 

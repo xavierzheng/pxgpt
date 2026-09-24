@@ -1,11 +1,11 @@
 """Stage 3 schema-sharding helpers.
 
 The full Stage 3 structured-output schema is too large to compile into a
-constrained-decoding grammar (400 "Schema is too complex").  ``build_stage3.py``
-(in the analysis tree) shards the master schema by organ group, bin-packed to a
-grammar-cost budget, and writes one ``{schema, prompt}`` pair per shard plus a
-``shards_manifest.json``.  This module is the *consumer* side used by
-``phenotype-batch``:
+constrained-decoding grammar (400 "Schema is too complex").
+:mod:`pxgpt.core.shard_builder` (``pxgpt shard-schema``) shards the master
+schema by organ group, bin-packed to a grammar-cost budget, and writes one
+``{schema, prompt}`` pair per shard plus a ``shards_manifest.json``.  This
+module is the *consumer* side used by ``phenotype-batch``:
 
   - load a shard set (schemas + prompts + trait inventory),
   - live compile-check each distinct shard schema and, only when explicitly
@@ -45,7 +45,7 @@ def load_shard_set(shard_dir: str) -> Tuple[Dict[str, Any], List[Dict[str, Any]]
     manifest_path = sdir / MANIFEST_NAME
     if not manifest_path.exists():
         raise FileNotFoundError(
-            f"{manifest_path} not found. Generate shards first with build_stage3.py."
+            f"{manifest_path} not found. Generate shards first with `pxgpt shard-schema`."
         )
     with open(manifest_path, encoding="utf-8") as f:
         manifest = json.load(f)
@@ -80,7 +80,7 @@ def load_system_prompt(shard_dir: str, manifest: Dict[str, Any],
     if not system_file:
         raise FileNotFoundError(
             "No system_file in manifest and no --system-prompt given; "
-            "regenerate shards with build_stage3.py or pass --system-prompt."
+            "regenerate shards with `pxgpt shard-schema` or pass --system-prompt."
         )
     with open(Path(shard_dir) / system_file, encoding="utf-8") as f:
         return f.read()

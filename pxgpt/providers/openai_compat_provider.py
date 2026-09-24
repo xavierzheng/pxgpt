@@ -12,7 +12,7 @@ def _cached_prompt_tokens(usage) -> int:
     """Return ``prompt_tokens_details.cached_tokens``, or 0 when absent.
 
     This is the prefix-cache hit count.  It is the number that shows whether a
-    plant's 9 shards really pay one cold prefill between them, so it is read off
+    plant's shards really pay one cold prefill between them, so it is read off
     every response rather than inferred from wall-clock timing.
     """
     details = getattr(usage, "prompt_tokens_details", None)
@@ -255,10 +255,11 @@ class OpenAICompatProvider(BaseProvider):
         deliberately no fallback to the legacy path, because a silent downgrade
         produces output that looks fine and is in fact completely unconstrained.
 
-        Only ``output_config["effort"]`` is honoured here, and only for OpenAI
-        reasoning models, where it becomes ``reasoning_effort``.  The Anthropic
-        ``format`` key has no equivalent on this wire protocol and is ignored;
-        the local backends ignore effort as well.
+        Only ``output_config["effort"]`` is honoured here.  On OpenAI reasoning
+        models it becomes ``reasoning_effort``; on the local backends it has no
+        levels, and any effort at all turns thinking on
+        (``chat_template_kwargs.enable_thinking``).  The Anthropic ``format`` key
+        has no equivalent on this wire protocol and is ignored.
         """
         if json_schema is not None and schema:
             raise ValueError(

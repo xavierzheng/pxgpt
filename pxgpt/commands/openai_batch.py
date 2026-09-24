@@ -813,7 +813,7 @@ def setup_phenotype_batch_openai_parser(subparsers):
     schema_source.add_argument(
         "--shard-dir",
         help="Enable SHARDED mode: directory of per-shard {schema, prompt} pairs "
-             "+ shards_manifest.json produced by build_stage3.py. Each plant is "
+             "+ shards_manifest.json produced by `pxgpt shard-schema`. Each plant is "
              "scored with one small schema per shard and the shard outputs are "
              "merged into one record per plant. Mutually exclusive with --schema.",
     )

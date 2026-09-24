@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Acceptance checks A-H for the local vLLM server, against real pxGPT data.
+"""Acceptance checks A, B, C, D1, D2, E and H for the local vLLM server,
+against real pxGPT data.
 
 Everything under --shard-dir and --media-root is opened read-only; the frozen
 shard set is never written to. Run after ./up.sh:
@@ -344,7 +345,7 @@ def main():
             log(f"  {t:2} : {'PASS' if results[t] else 'FAIL'}")
 
     hard = [t for t in ("A", "B", "C", "E", "H") if t in results and not results[t]]
-    # The ticket's rule: at least one of D1/D2 must work. Both failing is a
+    # The acceptance rule: at least one of D1/D2 must work. Both failing is a
     # real finding about this checkpoint's guided decoding -- report, don't patch.
     d_run = [t for t in ("D1", "D2") if t in results]
     d_ok = [t for t in d_run if results[t]]

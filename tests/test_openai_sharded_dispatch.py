@@ -206,7 +206,7 @@ def _batch_result_client(payloads, errors=()):
     return client, batch
 
 
-# --- acceptance 12: identical bodies -----------------------------------------
+# --- identical bodies --------------------------------------------------------
 
 def test_batch_and_sequential_send_identical_bodies(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -253,7 +253,7 @@ def test_batch_envelope_adds_only_custom_id_method_url(tmp_path, monkeypatch):
         assert env["url"] == "/v1/responses"
 
 
-# --- acceptance 13: one response-format name per shard ------------------------
+# --- one response-format name per shard ---------------------------------------
 
 def test_format_name_is_per_shard_not_generic():
     requests = build_openai_sharded_requests(
@@ -307,7 +307,7 @@ def test_reasoning_level_drops_temperature():
     assert "temperature" not in body
 
 
-# --- acceptance 11: the batch input size guard -------------------------------
+# --- the batch input size guard ----------------------------------------------
 
 def test_oversized_jsonl_is_refused_before_upload(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
@@ -353,7 +353,7 @@ def test_base64_shard_size_warning_scales_with_shard_count(tmp_path, capsys):
     assert "8 shard requests" in out
 
 
-# --- acceptance 8: provenance guard on the OpenAI paths ----------------------
+# --- provenance guard on the OpenAI paths ------------------------------------
 
 def test_sequential_refuses_an_anthropic_partial_store(tmp_path):
     out = tmp_path / "out"
@@ -396,7 +396,7 @@ def test_fetch_refuses_an_anthropic_partial_store(tmp_path):
     assert not list(out.glob("*.json"))
 
 
-# --- acceptance 7: cross-dispatch recovery -----------------------------------
+# --- cross-dispatch recovery -------------------------------------------------
 
 def test_batch_gaps_are_filled_by_a_sequential_resume(tmp_path, capsys):
     """The end-to-end reason the two dispatches share a _partial/ store."""

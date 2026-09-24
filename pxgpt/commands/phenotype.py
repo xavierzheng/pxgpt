@@ -448,7 +448,8 @@ def _dispatch_sequential(args, config, client, requests, line_ids, master_index,
     prior run contribute nothing and are reported as a separate count.  Failed /
     unparseable calls write no partial, so they are retried on the next resume.
     A clean uninterrupted run produces the same ``<line_id>.json`` /
-    ``<line_id>.gaps.json`` set as before (plus the ``_partial/`` dir alongside).
+    ``<line_id>.gaps.json`` set as batch dispatch (plus the ``_partial/`` dir
+    alongside).
     """
     betas = ["files-api-2025-04-14"] if use_files_api else []
     group_order, group_traits, trait_meta = master_index
@@ -642,7 +643,7 @@ def setup_phenotype_parser(subparsers):
     parser.add_argument(
         "--shard-dir", default=None,
         help="Enable SHARDED mode: directory of per-shard {schema, prompt} pairs "
-             "+ shards_manifest.json produced by build_stage3.py. Each plant is "
+             "+ shards_manifest.json produced by `pxgpt shard-schema`. Each plant is "
              "scored with one small schema per shard (cached system prefix; images "
              "are ordinary input) and the shard outputs are merged into one record "
              "per plant.",

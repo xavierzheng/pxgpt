@@ -156,7 +156,7 @@ PROBE="${CONTAINER_NAME}-probe"
 
 # Ordered best-tested first, so a fresh setup does not spend a 20+ GB download
 # on a candidate this repo already knows fails. See README_vllm.md
-# "The version constraint" for the tested verdict on each.
+# "The vLLM version constraint" for the tested verdict on each.
 CANDIDATES=(
   "nvcr.io/nvidia/vllm:26.07-py3"    # vLLM 0.24.0 -- the pinned choice; loads it
   "vllm/vllm-openai:cu130-nightly"   # 0.19.2rc1  -- loads it, but a floating tag

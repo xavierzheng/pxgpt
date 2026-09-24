@@ -1,11 +1,9 @@
 """Batch fetch of sharded results must be partial-aware and cumulative.
 
-Regression tests for the bug where ``phenotype-batch --dispatch batch`` gaps
-(a shard that errored, e.g. a transient ``overloaded_error``) could not be
-recovered: the batch path overwrote ``<lid>.json`` from scratch each fetch and
-never persisted per-shard partials, so there was nothing for a later resume to
-build on.  ``write_phenotype_sharded_results`` is now expected to share the
-sequential dispatch's ``<output>/_partial/<line_id>__<shard_id>.json`` store:
+A ``phenotype-batch --dispatch batch`` gap (a shard that errored, e.g. a
+transient ``overloaded_error``) must be recoverable by a later resume, so
+``write_phenotype_sharded_results`` shares the sequential dispatch's
+``<output>/_partial/<line_id>__<shard_id>.json`` store:
 
   * adopt any per-shard partials already on disk,
   * persist each freshly-succeeded shard as a partial,

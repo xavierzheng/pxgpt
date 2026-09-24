@@ -63,8 +63,9 @@ class Config:
     timeout: int = 300
     # Temperature is only sent when thinking is off, and only on model tiers
     # that allow a custom temperature while thinking is off (Sonnet 4.6 and
-    # earlier). Newer tiers (Sonnet 5, Opus 4.7/4.8, Fable 5) reject a custom
-    # temperature unconditionally — see batch_utils.build_request_params.
+    # earlier). The strict-guard tiers (Sonnet 5, Opus 4.7/4.8, Fable 5,
+    # Mythos 5) reject a custom temperature unconditionally — see
+    # batch_utils.build_request_params.
     temperature: float = 0.5
     # Nucleus / top-k sampling for the OpenAI-compatible backends.  Defaults are
     # the Gemma 4 checkpoint's own generation_config.json values.  The local

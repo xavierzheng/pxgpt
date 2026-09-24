@@ -1,18 +1,16 @@
 """The local vLLM setup must be runnable on a machine that has never run it.
 
-Four bugs shipped in `ops/local-vllm/` in a row, and every one of them was
-invisible on the development box, because that box already had the weights
-cached, a filled-in `.env`, and no reason to re-run `pull.sh`:
+Setup faults stay invisible on a box that already has the weights cached, a
+filled-in `.env`, and no reason to re-run `pull.sh`. These tests guard:
 
-1. `env.example` shipped `VLLM_IMAGE=<FILL>`. In bash `<` opens a redirection,
-   so `source .env` died with a syntax error on line 7 -- and `pull.sh` sources
-   `.env` on line 12, then fills `VLLM_IMAGE` on line 99. The two values it
-   exists to write were the two that stopped it starting.
-2. The image candidate list began with the one image the guide's own table marks
-   as "No -- the KeyError", so a fresh setup spent 20+ GB proving that.
-3. `pull.sh` called `hf`, which nothing declared. `hf: command not found`.
-4. `requirements.txt` asked for `huggingface_hub[cli]`; no such extra exists on
-   1.x, so pip warned and ignored it.
+1. `env.example` must be sourceable. A placeholder like `VLLM_IMAGE=<FILL>` is a
+   bash redirection, so `source .env` dies before `pull.sh` can fill the value.
+2. The image candidate list must not start with an image the guide's table
+   marks as not working; each try is a 20+ GB download.
+3. Every tool the scripts call (`hf`, `docker`, `curl`) must be checked for,
+   and the docker daemon must be reachable, before any download starts.
+4. Every extra in `requirements.txt` must exist; pip only warns about an
+   unknown extra such as `huggingface_hub[cli]` on 1.x, and ignores it.
 
 These tests do the whole setup path except the parts that cost a GPU or a
 download: no `docker pull`, no weights, no server. They need no network unless
@@ -76,7 +74,7 @@ def tool_path(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# 1. env.example must be loadable. This is bug 1.
+# 1. env.example must be loadable.
 # --------------------------------------------------------------------------
 
 def test_env_example_is_valid_shell():
@@ -141,7 +139,7 @@ def test_unedited_env_stops_on_media_root_not_on_a_syntax_error(setup_dir, tool_
 
 
 def test_a_reintroduced_placeholder_is_explained(setup_dir, tool_path):
-    """Bug 1's symptom must now come with the fix attached."""
+    """A `<FILL>` placeholder must be reported with the fix attached."""
     env = setup_dir / ".env"
     env.write_text(env.read_text().replace("MEDIA_ROOT=", "MEDIA_ROOT=<FILL>"))
     r = _run(["./pull.sh"], cwd=setup_dir, env={"PATH": tool_path})
@@ -178,7 +176,7 @@ def test_up_sh_refuses_before_pull_sh_has_run(setup_dir, tmp_path, tool_path):
 
 
 # --------------------------------------------------------------------------
-# 3. Declared tools. This is bug 3.
+# 3. Declared tools.
 # --------------------------------------------------------------------------
 
 @pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
@@ -206,7 +204,7 @@ def test_pull_sh_checks_for_the_huggingface_cli():
 
 
 def test_missing_hf_is_named_and_stops_before_any_download(setup_dir, tmp_path):
-    """Bug 3, end to end: hide the CLI and check what the user is told."""
+    """End to end: hide the CLI and check what the user is told."""
     fakebin = tmp_path / "bin"
     fakebin.mkdir()
     for tool in ("bash", "cat", "sed", "grep", "curl", "docker", "printf",
@@ -226,8 +224,8 @@ def test_missing_hf_is_named_and_stops_before_any_download(setup_dir, tmp_path):
 def test_scripts_check_the_daemon_not_just_the_binary():
     """`command -v docker` passes on a host whose socket is root-owned.
 
-    Bug 5: pull.sh cleared the tool gate, downloaded 17 GB of weights, and only
-    then died at `docker pull` with a socket permission error.
+    Without a daemon probe, pull.sh clears the tool gate, downloads 17 GB of
+    weights, and only then fails at `docker pull` with a socket permission error.
     """
     for script in SCRIPTS:
         text = script.read_text()
@@ -279,7 +277,7 @@ def test_readme_documents_the_docker_socket_error():
 
 
 # --------------------------------------------------------------------------
-# 4. requirements.txt. This is bug 4.
+# 4. requirements.txt.
 # --------------------------------------------------------------------------
 
 REQ_FILES = [REPO / "requirements.txt", OPS / "requirements.txt"]
@@ -296,7 +294,7 @@ def test_requirements_parse_as_pep508(req):
 
 @pytest.mark.parametrize("req", REQ_FILES, ids=lambda p: str(p.relative_to(REPO)))
 def test_requested_extras_actually_exist(req):
-    """`huggingface_hub[cli]` warned and was ignored; nothing caught it."""
+    """pip only warns about an unknown extra and ignores it, so check here."""
     from importlib.metadata import PackageNotFoundError, distribution
 
     Requirement = pytest.importorskip("packaging.requirements").Requirement
@@ -332,7 +330,7 @@ def test_ops_requirements_declare_the_hf_cli():
 
 
 # --------------------------------------------------------------------------
-# 5. The image candidate order. This is bug 2.
+# 5. The image candidate order.
 # --------------------------------------------------------------------------
 
 def test_known_bad_image_is_not_tried_first():

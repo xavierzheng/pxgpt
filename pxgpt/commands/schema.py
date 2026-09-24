@@ -91,14 +91,14 @@ OPENAI_COMPAT_PROVIDERS = {"openai", "ollama", "lmstudio", "vllm"}
 LOCAL_BACKENDS = {"ollama", "lmstudio", "vllm"}
 
 # Per-shard output cap.  Measured p90 for a shard answer is 381 completion tokens
-# at TEMPERATURE=0.5 (n=10, one plant of 02_mature_v1 on a clean container); the
-# older 607 figure was taken at temperature 1.0.  So 2048 is 5.4x p90 and cannot
-# truncate a sane response.  What it does cut short is the runaway case (a
-# `rationale` string that will not stop), measured at ~190 s / 8192 tokens and
-# dropping to ~50 s under this cap.  The run summary reprints the real
-# distribution for the dataset actually run -- re-confirm from there after any
-# model or temperature change.  Only the sharded mode defaults to this; a single
-# whole-master schema answer is far larger, so --schema mode keeps MAX_TOKENS.
+# at TEMPERATURE=0.5 (n=10, one plant of 02_mature_v1 on a clean container),
+# so 2048 is 5.4x p90 and cannot truncate a sane response.  What it does cut
+# short is the runaway case (a `rationale` string that will not stop), measured
+# at ~190 s / 8192 tokens and dropping to ~50 s under this cap.  The run
+# summary reprints the real distribution for the dataset actually run --
+# re-confirm from there after any model or temperature change.  Only the
+# sharded mode defaults to this; a single whole-master schema answer is far
+# larger, so --schema mode keeps MAX_TOKENS.
 SHARD_MAX_TOKENS = 2048
 
 # Consecutive plants with zero successful shards before the run gives up.  A
@@ -123,12 +123,9 @@ MAX_PIPELINE_DEPTH = 2
 
 # No all-serial constant here on purpose.  A speed-up ratio is only meaningful
 # against a baseline on the SAME plants: per-plant cost scales with photo count
-# and shard count, so dividing 03_mature_v2 (9 shards, 14-20 photos, measured
-# 111.8 s serial) by a figure taken on 02_mature_v1 (10 shards, 26-32 photos,
-# 161.6 s) overstated the gain as 2.67x when it is 1.85x.  Worse, a genuinely
-# serial run then reported "1.44x the all-serial reference" -- a serial run
-# claiming a speed-up over serial.  The summary now prints seconds per plant and
-# says how to obtain a comparable baseline.
+# and shard count, so a fixed figure from another dataset gives a wrong ratio.
+# The summary prints seconds per plant and says how to obtain a comparable
+# baseline.
 
 # How much of the first good response to echo for eyeballing.
 RAW_PREVIEW_CHARS = 2000
@@ -473,8 +470,8 @@ def _send_one(ctx, line_id, image_blocks, shard) -> ShardResult:
     """Issue one shard request and return its outcome.  Never raises.
 
     Writes the parsed JSON to ``_partial/`` the moment it succeeds, so crash
-    safety is unchanged by the move to threads: a kill loses at most the requests
-    actually in flight.
+    safety holds on the threaded path: a kill loses at most the requests actually
+    in flight.
     """
     shard_id = shard["shard_id"]
     custom_id = sharding.shard_custom_id(line_id, shard_id)
@@ -620,7 +617,7 @@ def _run_sharded(args, config, provider_name, plants):
     7.37 GiB against an 8 GiB stop line, and exhausting the unified pool hard
     locks the machine -- so depth is capped at 2.
 
-    Merging stays a single pass at the end.  Per-plant merging would re-glob the
+    Merging is a single pass at the end.  Per-plant merging would re-glob the
     whole ``_partial/`` store for every plant and would race between threads;
     the store itself is the crash-safety mechanism, and an interrupted run still
     merges what finished (see the KeyboardInterrupt path).

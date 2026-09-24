@@ -1,28 +1,14 @@
-"""Every repo-relative path a doc cites must exist.
+"""Every repo-relative path a doc cites must exist, unless git ignores it.
 
-Commit 40c7004 ("Split describe/phenotyping prompts by growth stage") renamed
-two prompts and retired three others into prompts/old_v0.1.0/. The docs were
-never updated, so for a long while ALL FIVE `prompts/` paths in README.md and
-user_manual.md pointed at files that did not exist -- every copy-pasteable
-example in the project was broken, and nothing noticed:
+A renamed or retired file leaves every copy-pasteable example that cites it
+broken, and nothing else notices.
 
-    prompts/phenotyping_system.txt         -> describe_plant_system.txt
-    prompts/describe_plant.txt             -> describe_plant_{mature,seedling}.txt
-    prompts/extract_traits.txt             -> retired
-    prompts/phenotype_schema.json          -> retired (use --shard-dir)
-    prompts/phenotyping_system_schema.txt  -> retired
-
-It surfaced only because an agent copied a path out of README.md into another
-document and then checked it.
-
-The first version of this guard then failed on a fresh clone, which is the only
-place that matters, because its premise was wrong. "Every cited path exists" is
-not the rule. A doc may legitimately cite a path that git deliberately ignores:
+A doc may legitimately cite a path that git deliberately ignores:
 
   - ``ops/local-vllm/.env`` is created by the user (``cp env.example .env``) and
     is gitignored, so it is absent from every clone by design;
   - ``HANDOFF.md`` and ``CLAUDE.md`` are gitignored on purpose (see .gitignore),
-    so hardcoding them as documents to scan raised FileNotFoundError.
+    so they are scanned only when present.
 
 The rule is: **a cited path must exist unless git ignores it.**
 """
@@ -99,9 +85,8 @@ def _linked_paths(text, doc):
     """Markdown link targets that name a file, resolved against *doc*'s folder.
 
     The prefix scan above only sees paths under a known directory, so it misses
-    a repo-root file entirely -- `[x](Example_master_schema.tsv)` was invisible
-    to it. Links are where a stale filename does the most damage anyway: a
-    reader clicks it.
+    a repo-root file entirely, such as `[x](Example_master_schema.tsv)`. Links
+    are where a stale filename does the most damage anyway: a reader clicks it.
     """
     for m in re.finditer(r"\]\(([^)\s]+)\)", text):
         target = m.group(1).split("#", 1)[0]

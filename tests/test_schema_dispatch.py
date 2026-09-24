@@ -109,7 +109,7 @@ def _run(monkeypatch, shard_dir, out, provider, argv_extra=(), tree=None, plant=
     return sc.schema_command(_parser().parse_args(argv))
 
 
-# ------------------------------------------------------- 2/3/4: width is a cap
+# ------------------------------------------------------------ width is a cap
 
 @pytest.mark.parametrize("n_shards,expected_width", [(7, 6), (10, 8), (9, 8), (30, 8)])
 def test_effective_width_is_capped_never_derived_from_shard_count(
@@ -153,7 +153,7 @@ def test_concurrency_zero_is_refused():
                               "--input-dir", "t", "--concurrency", "0"])
 
 
-# ------------------------------------------------------ 6: exactly one cold shard
+# --------------------------------------------------------- exactly one cold shard
 
 def test_exactly_one_shard_is_sent_alone_before_the_rest(tmp_path, monkeypatch):
     """The cold shard must complete before any other starts.
@@ -185,7 +185,7 @@ def test_concurrency_one_is_fully_serial(tmp_path, monkeypatch):
     assert prov.order == [f"score t{i:02d}" for i in range(1, 6)]
 
 
-# ------------------------------------------- 7: the global in-flight ceiling
+# ---------------------------------------------- the global in-flight ceiling
 
 def test_global_inflight_never_exceeds_the_cap(tmp_path, monkeypatch):
     """depth 2 x width 8 must NOT become 16 concurrent requests."""
@@ -212,7 +212,7 @@ def test_reported_peak_matches_the_gate(tmp_path, monkeypatch, capsys):
     assert 1 < peak <= 9
 
 
-# --------------------------------------------------------------- 8: resume head
+# ------------------------------------------------------------------ resume head
 
 def test_resume_sends_only_the_missing_shards_and_colds_the_first(tmp_path, monkeypatch):
     """After deleting shard_05 and shard_07, shard_05 is the new cold shard.
@@ -237,7 +237,7 @@ def test_resume_sends_only_the_missing_shards_and_colds_the_first(tmp_path, monk
     assert prov.peak == 1                               # only one left to fan out
 
 
-# ------------------------------------------------------------- 9: head failure
+# ---------------------------------------------------------------- head failure
 
 def test_a_failed_head_still_lets_the_rest_fan_out(tmp_path, monkeypatch):
     """length / reasoning leak / parse error all happen AFTER the prefill."""
@@ -252,7 +252,7 @@ def test_a_failed_head_still_lets_the_rest_fan_out(tmp_path, monkeypatch):
     assert prov.peak == 5
 
 
-# ------------------------------------------------------- 10/11: memory guard
+# ---------------------------------------------------------------- memory guard
 
 def test_an_impossible_memory_floor_prevents_all_overlap(tmp_path, monkeypatch, capsys):
     sd = _make_shard_set(tmp_path, 4)
@@ -260,10 +260,9 @@ def test_an_impossible_memory_floor_prevents_all_overlap(tmp_path, monkeypatch, 
 
     # Pin the reading instead of taking the host's. `mem_available_gib` reads
     # /proc/meminfo, which does not exist on macOS, where it returns None and
-    # the guard turns itself off -- so this test used to fail there for a
-    # reason that has nothing to do with the guard, and nothing to do with how
-    # much memory the machine has. The sibling test below covers the None path
-    # deliberately.
+    # the guard turns itself off, so an unpinned test would fail there for a
+    # reason unrelated to the guard. The sibling test below covers the None
+    # path deliberately.
     monkeypatch.setattr(sc, "mem_available_gib", lambda: 8.0)
 
     code = _run(monkeypatch, sd, tmp_path / "o", prov, tree=_make_tree(tmp_path, 3),
@@ -302,7 +301,7 @@ def test_missing_proc_meminfo_disables_the_guard_without_erroring(
     assert "memory guard is off" in capsys.readouterr().out
 
 
-# ------------------------------------------------------------ 12/13: aborting
+# -------------------------------------------------------------------- aborting
 
 def test_circuit_breaker_aborts_after_three_barren_plants_and_still_merges(
         tmp_path, monkeypatch, capsys):
@@ -417,7 +416,7 @@ def test_provenance_guard_blocks_before_any_request(tmp_path, monkeypatch, capsy
     assert not list((out / "_partial").glob("s*.json"))
 
 
-# ------------------------------------- 2 (real datasets), 17 (data unchanged)
+# ------------------------------------------- real datasets, data unchanged
 
 REAL = Path("/home/xavier/project/pxgpt")
 DATASETS = [("01_seedling", 7, 6), ("02_mature_v1", 10, 8), ("03_mature_v2", 9, 8)]
@@ -440,7 +439,7 @@ def test_the_three_real_shard_sets_load_and_cap_correctly(name, n_shards, width)
 
 @pytest.mark.parametrize("name", [d[0] for d in DATASETS])
 def test_frozen_data_checksums_verify(name):
-    """The 鐵則: shard set and images are read-only and must still match."""
+    """Frozen data: shard set and images are read-only and must still match."""
     import subprocess
     root = REAL / name
     for f in ("shard_schema.sha256", "images.sha256"):

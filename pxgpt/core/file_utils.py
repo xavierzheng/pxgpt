@@ -13,7 +13,7 @@ def clean_text(text: str) -> str:
     Returns:
         Cleaned text
     """
-    # Remove zero-width spaces
+    # Remove the BOM (U+FEFF, zero-width no-break space)
     text = text.replace('\ufeff', '')
     
     # Normalize line breaks

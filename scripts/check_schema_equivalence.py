@@ -5,7 +5,7 @@
 
 For every ``*.schema.json`` in *shard_dir* this builds three versions —
 
-  raw        the file on disk, as Anthropic's xgrammar / vLLM consume it
+  raw        the file on disk, as vLLM (xgrammar) consumes it
   anthropic  ``schema_utils.normalize_schema()``
   openai     ``openai_batch_utils.openai_normalize_schema()``
 
