@@ -2,13 +2,29 @@
 
 [![CI](https://github.com/xavierzheng/pxgpt/actions/workflows/ci.yml/badge.svg)](https://github.com/xavierzheng/pxgpt/actions/workflows/ci.yml)
 
-**pxGPT** (Phenotype eXplorer GPT) is a command-line tool for large-scale plant phenotyping using multiple LLM providers (Anthropic Claude, OpenAI, Ollama, LM Studio, vLLM).
+
+**pxGPT** (Phenotype eXplorer Generative Plant Traits) uses multimodal large language models and human-reviewed trait schemas to convert plant images from multiple views into structured phenotype records.
+
+The command-line tool supports multiple LLM providers (Anthropic Claude, OpenAI, Ollama, LM Studio, vLLM).
+
+## Publication
+
+If you use pxGPT in your research, please cite:
+
+> Po-Xing Zheng, Jheng-Yan Ou, Yu-Lin Wu, Ruei-Shiuan Wang, Ting-Li Wu, 
+> Te-Chang Hsu, and Yao-Cheng Lin (2026). **pxGPT: A schema-constrained multimodal
+> large language model framework for plant phenotyping.**
+> *Bioinformatics*, btag781. https://doi.org/10.1093/bioinformatics/btag781
+
+Developed by the [Bioinformatics and Computational Genomics Group](https://www.southerngenomics.org/home), Academia Sinica, Taiwan.
+
+
+## Features
 
 > **Running locally? Use vLLM.** Ollama and LM Studio work, but neither lets you
 > control the per-image visual token budget — and for phenotyping, that budget is
 > the measurement. See [Which local backend](#which-local-backend-use-vllm).
 
-## Features
 
 - **Batch API** (Stage 1 & 3): submit hundreds of plant lines in a single API call; fire-and-forget with checkpoint-based result retrieval
 - **Files API**: upload each image once, reuse the same `file_id` across Stage 1 and Stage 3 — no re-uploading 10 k images
@@ -563,4 +579,4 @@ pxgpt/
 
 ## License
 
-MIT License
+MIT License. See [LICENSE](LICENSE).
